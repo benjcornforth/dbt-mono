@@ -87,6 +87,8 @@ dbt/models/schema.yml    ← generated tests
 dbt/migrations/*.yml     ← schema changes (you create)
 src/forge/               ← CLI + engines (you don't touch)
 artifacts/               ← graph snapshots, compiled output
+docs/                    ← guides, roadmap, planning specs
+docs/examples/           ← example projects
 ```
 
 Macros (lineage, quarantine, prior_version, UDFs) live in the **dbt-dab-tools** package, pulled via `packages.yml`. They are never in this repo.
@@ -124,3 +126,11 @@ Macros (lineage, quarantine, prior_version, UDFs) live in the **dbt-dab-tools** 
 ## Full Documentation
 
 Run `forge guide` to generate a comprehensive step-by-step guide covering every feature, option, and edge case.
+
+Deeper docs live in `docs/`:
+
+| File | What it covers |
+|---|---|
+| `docs/GUIDE.md` | Full reference guide (all 18 sections) |
+| `docs/ROADMAP_REVIEW.md` | Architecture decisions + roadmap |
+| `docs/planning/` | Implementation specs + enablement audits |

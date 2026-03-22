@@ -33,8 +33,8 @@ packages = [{ include = "forge", from = "src" }]
 # =============================================
 [tool.poetry.dependencies]
 python = "^3.10"          # works on Databricks 13.3+ and local
-typer = "^0.12.0"         # ← FIXED: clean CLI (setup/deploy/teardown/diff)
-click = "^8.1.7"          # kept for compatibility (Typer uses it underneath)
+typer = ">=0.15.0"        # clean CLI (setup/deploy/teardown/diff)
+click = ">=8.1.7"          # kept for compatibility (Typer uses it underneath)
 pyyaml = "^6.0.2"         # reads the single forge.yml file
 databricks-sdk = "^0.30"  # auto-generates perfect databricks.yml bundles
 

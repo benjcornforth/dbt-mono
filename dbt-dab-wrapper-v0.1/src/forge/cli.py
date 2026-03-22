@@ -364,7 +364,7 @@ def compile(
 def migrate(
     ddl: str = typer.Option("dbt/models.yml", "--ddl", help="Path to models.yml DDL file"),
     migrations: str = typer.Option("dbt/migrations", "--migrations", "-m", help="Migrations directory"),
-    recompile: bool = typer.Option(True, "--recompile/--no-recompile", help="Recompile SQL after migrating"),
+    recompile: bool = typer.Option(True, help="Recompile SQL after migrating"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without applying"),
 ):
     """forge migrate → applies migration YAMLs to models.yml + recompiles"""
@@ -535,7 +535,7 @@ def validate(
 @app.command(name="dev-up")
 def dev_up(
     schema_suffix: Optional[str] = typer.Option(None, "--schema", "-s", help="Dev schema suffix (default: username)"),
-    seed: bool = typer.Option(True, "--seed/--no-seed", help="Seed sample data after setup"),
+    seed: bool = typer.Option(True, help="Seed sample data after setup"),
 ):
     """forge dev-up → creates isolated dev schema + seeds sample data"""
     if not CONFIG_FILE.exists():
