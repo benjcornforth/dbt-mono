@@ -399,6 +399,55 @@ def workflow(
 
 
 # =============================================
+# PYTHON-TASK – scaffold + manage Python tasks
+# =============================================
+@app.command("python-task")
+def python_task(
+    name: str = typer.Argument(..., help="Name for the Python task (e.g. enrich_customers)"),
+    stage: str = typer.Option("enrich", "--stage", "-s", help="Pipeline stage: ingest/stage/clean/enrich/serve"),
+    output: str = typer.Option("python", "--output", "-o", help="Output directory for task file"),
+    description: str = typer.Option("", "--desc", help="Short description of the task"),
+):
+    """forge python-task <name> → scaffolds a Python task file + registers in forge.yml"""
+    from forge.python_task import scaffold_python_task
+
+    out = scaffold_python_task(
+        name=name,
+        output_dir=Path(output),
+        stage=stage,
+        description=description,
+    )
+    typer.echo(f"✅ Created {out}")
+
+    # Auto-register in forge.yml if not already present
+    if CONFIG_FILE.exists():
+        config = yaml.safe_load(CONFIG_FILE.read_text())
+        py_tasks = config.get("python_tasks", [])
+        existing_names = {t["name"] for t in py_tasks}
+        if name not in existing_names:
+            # Append to forge.yml without rewriting (preserves comments)
+            entry_yml = yaml.dump(
+                [{"name": name, "file": str(out), "stage": stage}],
+                sort_keys=False, default_flow_style=False,
+            )
+            raw = CONFIG_FILE.read_text()
+            if "python_tasks:" not in raw:
+                raw += "\n# =============================================\n"
+                raw += "# PYTHON TASKS — included in forge workflow\n"
+                raw += "# =============================================\n"
+                raw += "python_tasks:\n"
+            # Indent entries under python_tasks:
+            for line in entry_yml.strip().splitlines():
+                raw += f"  {line}\n"
+            CONFIG_FILE.write_text(raw)
+            typer.echo(f"📝 Registered '{name}' in forge.yml python_tasks")
+    else:
+        typer.echo("⚠️  No forge.yml found — add python_tasks entry manually")
+
+    typer.echo(f"   Edit {out} then run: forge workflow")
+
+
+# =============================================
 # COMPILE – models.yml → SQL (no coding needed)
 # =============================================
 @app.command()

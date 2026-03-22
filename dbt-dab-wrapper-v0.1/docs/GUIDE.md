@@ -46,13 +46,14 @@ Everything else is generated.
 13. [HOW-TO: Multi-Environment Profiles](#13-how-to-multi-environment-profiles)
 14. [HOW-TO: Naming Patterns (Catalogs & Schemas)](#14-how-to-naming-patterns-catalogs--schemas)
 15. [HOW-TO: SQL-Only Mode (No dbt at Runtime)](#15-how-to-sql-only-mode-no-dbt-at-runtime)
-16. [Reference: Column Options](#16-reference-column-options)
-17. [Reference: Model Options](#17-reference-model-options)
-18. [Reference: Migration Actions](#18-reference-migration-actions)
-19. [Reference: forge.yml Options](#19-reference-forgeyml-options)
-20. [Reference: Project Structure](#20-reference-project-structure)
-21. [Reference: Environment Variables & Authentication](#21-reference-environment-variables--authentication)
-22. [Troubleshooting](#22-troubleshooting)
+16. [HOW-TO: Python Tasks (Read/Write Tables from Python)](#16-how-to-python-tasks-readwrite-tables-from-python)
+17. [Reference: Column Options](#17-reference-column-options)
+18. [Reference: Model Options](#18-reference-model-options)
+19. [Reference: Migration Actions](#19-reference-migration-actions)
+20. [Reference: forge.yml Options](#20-reference-forgeyml-options)
+21. [Reference: Project Structure](#21-reference-project-structure)
+22. [Reference: Environment Variables & Authentication](#22-reference-environment-variables--authentication)
+23. [Troubleshooting](#23-troubleshooting)
 
 ---
 
@@ -1129,7 +1130,132 @@ for f in sql/*.sql; do databricks sql execute --file "$f"; done
 
 ---
 
-## 16. Reference: Column Options
+## 16. HOW-TO: Python Tasks (Read/Write Tables from Python)
+
+Python tasks run alongside dbt models in the same workflow. They use the same naming patterns (catalogs, schemas) so Python code reads/writes the same tables dbt manages.
+
+### Scaffold a Python task
+
+```bash
+forge python-task enrich_customers --stage enrich
+forge python-task export_report --stage serve --desc "Export daily report"
+```
+
+This creates `python/enrich_customers.py` and registers it in `forge.yml`.
+
+### forge.yml declaration
+
+```yaml
+python_tasks:
+  - name: enrich_customers
+    file: python/enrich_customers.py
+    stage: enrich
+  - name: export_report
+    file: python/export_report.py
+    stage: serve
+    depends_on: [customer_summary]   # explicit dependency
+```
+
+### Reading and writing tables (PySpark / on-cluster)
+
+```python
+from forge.python_task import ForgeTask
+
+task = ForgeTask()                          # reads forge.yml, resolves profile
+
+# Read a table → PySpark DataFrame
+df = task.read_table("stg_customers")       # resolves catalog.schema.table
+
+# Transform
+df = df.filter(df.email.isNotNull())
+
+# Write
+task.write_table("customer_enriched", df)   # uses naming patterns
+task.write_table("customer_enriched", df, mode="append")
+
+# Run arbitrary SQL
+result = task.run_sql("SELECT count(*) FROM " + task.table("stg_orders"))
+```
+
+### Reading tables (lightweight / local)
+
+No Spark needed — uses `databricks-sql-connector`:
+
+```python
+from forge.python_task import ForgeTask
+
+with ForgeTask(profile="dev") as task:
+    rows = task.sql("SELECT * FROM " + task.table("stg_customers") + " LIMIT 10")
+    for row in rows:
+        print(row["email"])
+```
+
+Requires: `pip install databricks-sql-connector`
+
+### Table name resolution
+
+`ForgeTask.table()` applies the same naming patterns as dbt:
+
+```python
+task = ForgeTask(profile="dev")
+task.table("stg_customers")    # → "dev_fd_silver.dev_demo.stg_customers"
+task.table("customer_summary") # → "dev_fd_silver.dev_demo.customer_summary"
+task.catalog("bronze")         # → "dev_fd_bronze"
+task.schema("gold")            # → "dev_demo"
+```
+
+### With type-safe models
+
+Combine `ForgeTask` with the generated Pydantic SDK for validated reads/writes:
+
+```python
+from forge.python_task import ForgeTask
+from forge.type_safe import build_models
+
+task = ForgeTask()
+models = build_models()
+
+# Read + validate
+df = task.read_table("stg_orders")
+errors = models.StgOrders.validate_dataframe(df)
+if errors:
+    print(f"{len(errors)} bad rows found")
+
+# Type-safe insert
+order = models.StgOrders(order_id=1, customer_id=42, product="Widget", quantity=5)
+task.run_sql(order.to_insert_sql())
+```
+
+### Orchestration
+
+Python tasks are automatically included in `forge workflow`:
+
+```bash
+forge workflow          # shows dbt + Python tasks in pipeline
+forge workflow --dab    # generates Databricks job YAML with spark_python_task
+forge workflow --mermaid  # visual DAG (Python tasks show with 🐍)
+```
+
+Python tasks run **after** the dbt task for their stage:
+
+```
+ingest → stage → clean → enrich (dbt) → enrich (Python) → serve (dbt) → serve (Python)
+```
+
+The generated DAB YAML uses `spark_python_task`:
+
+```yaml
+- task_key: dbt-forge-py-enrich_customers
+  spark_python_task:
+    python_file: python/enrich_customers.py
+  environment_key: default
+  depends_on:
+    - task_key: dbt-forge-enrich
+```
+
+---
+
+## 17. Reference: Column Options
 
 | Option | Type | Example | What it does |
 |--------|------|---------|-------------|
@@ -1146,7 +1272,7 @@ for f in sql/*.sql; do databricks sql execute --file "$f"; done
 
 ---
 
-## 17. Reference: Model Options
+## 18. Reference: Model Options
 
 | Option | Type | Example | What it does |
 |--------|------|---------|-------------|
@@ -1163,7 +1289,7 @@ for f in sql/*.sql; do databricks sql execute --file "$f"; done
 
 ---
 
-## 18. Reference: Migration Actions
+## 19. Reference: Migration Actions
 
 | Action | Format | What it does |
 |--------|--------|-------------|
@@ -1177,7 +1303,7 @@ for f in sql/*.sql; do databricks sql execute --file "$f"; done
 
 ---
 
-## 19. Reference: forge.yml Options
+## 20. Reference: forge.yml Options
 
 | Key | Type | Example | Description |
 |-----|------|---------|-------------|
@@ -1194,6 +1320,16 @@ for f in sql/*.sql; do databricks sql execute --file "$f"; done
 | `dbt.version` | string | `1.8.0` | Required dbt version |
 | `features.*` | bool | `true` | Feature flags (graph, quarantine, prior_version, python_udfs) |
 | `portability.postgres_compatible` | bool | `true` | Avoid Databricks-only SQL |
+| `python_tasks` | list | See section 16 | Python tasks included in workflow |
+
+### Python task options
+
+| Key | Type | Example | Description |
+|-----|------|---------|-------------|
+| `name` | string | `enrich_customers` | Task name (used in workflow task key) |
+| `file` | string | `python/enrich_customers.py` | Path to Python file |
+| `stage` | string | `enrich` | Pipeline stage: ingest/stage/clean/enrich/serve |
+| `depends_on` | list | `[customer_summary]` | Explicit dependencies on other Python tasks |
 
 ### Profile options
 
@@ -1211,7 +1347,7 @@ for f in sql/*.sql; do databricks sql execute --file "$f"; done
 
 ---
 
-## 20. Reference: Project Structure
+## 21. Reference: Project Structure
 
 ```
 dbt-forge-v0.1/
@@ -1244,6 +1380,10 @@ dbt-forge-v0.1/
 │   ├── 001_stg_customers.sql
 │   └── ...
 │
+├── python/                    ← Python tasks (read/write tables from Python)
+│   ├── enrich_customers.py    ← Created by: forge python-task enrich_customers
+│   └── export_report.py
+│
 ├── resources/
 │   └── jobs/                  ← GENERATED: DAB workflow YAML (--dab mode)
 │
@@ -1253,7 +1393,8 @@ dbt-forge-v0.1/
 │   ├── simple_ddl.py          ← YAML compiler + migration + UDF + checks engine
 │   ├── type_safe.py           ← Pydantic model generator
 │   ├── workflow.py            ← Databricks Workflow DAG generator
-│   └── compute_resolver.py   ← Profile + connection + naming-pattern resolver
+│   ├── compute_resolver.py   ← Profile + connection + naming-pattern resolver
+│   └── python_task.py         ← Python task helpers (ForgeTask, scaffold)
 │
 ├── artifacts/                 ← Graph exports, contracts
 ├── docs/                      ← Guides, roadmap, planning specs
@@ -1273,7 +1414,7 @@ dbt-forge-v0.1/
 
 ---
 
-## 21. Reference: Environment Variables & Authentication
+## 22. Reference: Environment Variables & Authentication
 
 ### Authentication priority
 
@@ -1314,7 +1455,7 @@ profiles:
 
 ---
 
-## 22. Troubleshooting
+## 23. Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
@@ -1371,6 +1512,8 @@ profiles:
 | `forge workflow --dab -p prod` | DAB workflow for a specific profile |
 | `forge codegen` | Generates type-safe Python SDK |
 | `forge codegen --check` | CI mode: fail if SDK is stale |
+| `forge python-task <name>` | Scaffolds a Python task file + registers in forge.yml |
+| `forge python-task <name> --stage serve` | Python task in a specific pipeline stage |
 | `forge profiles` | List all profiles + expanded catalog/schema names |
 | `forge profiles --generate` | Auto-generate profiles.yml with dbt vars |
 | `forge profiles --show-connection` | Show resolved connection details |

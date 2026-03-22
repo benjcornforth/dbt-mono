@@ -130,7 +130,9 @@ class WorkflowTask:
     """One task in the Databricks workflow DAG."""
     name: str
     stage: str
+    task_type: str = "dbt"             # "dbt" or "python"
     models: list[str] = field(default_factory=list)
+    python_file: str | None = None      # path for spark_python_task
     depends_on: list[str] = field(default_factory=list)
     compute_type: str = "serverless"
     timeout_minutes: int = 60
@@ -160,7 +162,11 @@ class Workflow:
                 {
                     "task_key": t.name,
                     "stage": t.stage,
+                    "task_type": t.task_type,
                     "models": t.models,
+                    **(                        {"python_file": t.python_file}
+                        if t.python_file else {}
+                    ),
                     "depends_on": [{"task_key": d} for d in t.depends_on],
                     "compute_type": t.compute_type,
                     "timeout_minutes": t.timeout_minutes,
@@ -200,16 +206,24 @@ class Workflow:
         for task in self.tasks:
             task_def: dict[str, Any] = {
                 "task_key": task.name,
-                "dbt_task": {
+                "timeout_seconds": task.timeout_minutes * 60,
+            }
+
+            if task.task_type == "python" and task.python_file:
+                # spark_python_task — runs a .py file on the cluster
+                task_def["spark_python_task"] = {
+                    "python_file": task.python_file,
+                }
+            else:
+                # dbt_task — runs dbt commands
+                task_def["dbt_task"] = {
                     "project_directory": "dbt",
                     "commands": [
                         f"dbt run --select {' '.join(task.models)}"
                     ],
                     "catalog": self.catalog,
                     "schema": self.schema,
-                },
-                "timeout_seconds": task.timeout_minutes * 60,
-            }
+                }
 
             if task.compute_type == "serverless":
                 task_def["environment_key"] = "default"
@@ -254,7 +268,10 @@ class Workflow:
                 model_list = ", ".join(task.models[:3])
                 if len(task.models) > 3:
                     model_list += f" +{len(task.models)-3}"
-                lines.append(f'        {safe}["{task.name}<br/>{model_list}"]')
+                if task.task_type == "python":
+                    lines.append(f'        {safe}["{task.name}<br/>🐍 {task.python_file or model_list}"]')
+                else:
+                    lines.append(f'        {safe}["{task.name}<br/>{model_list}"]')
             lines.append("    end")
 
         # Edges
@@ -317,6 +334,9 @@ def build_workflow(
     Each stage gets one task containing all models
     assigned to that stage. Dependencies between tasks
     mirror the stage ordering.
+
+    Python tasks declared in forge.yml python_tasks:
+    are injected into the appropriate stage.
     """
     project_name = forge_config.get("name", "unnamed")
     environment = forge_config.get("environment", "dev")
@@ -346,26 +366,64 @@ def build_workflow(
         stage = _assign_stage(model_name, contract, depth, has_quarantine)
         stage_models[stage].append(model_name)
 
+    # ── Load python_tasks from forge.yml ──────────────
+    from forge.python_task import load_python_tasks
+    python_tasks = load_python_tasks(forge_config)
+    # Group Python tasks by stage
+    python_by_stage: dict[str, list[dict]] = {s: [] for s in STAGES}
+    for pt in python_tasks:
+        python_by_stage.get(pt["stage"], python_by_stage["enrich"]).append(pt)
+
     # Build tasks — one per non-empty stage
     tasks: list[WorkflowTask] = []
     prev_task_name: str | None = None
 
     for stage in STAGES:
         models = stage_models[stage]
-        if not models:
+        py_tasks = python_by_stage[stage]
+
+        if not models and not py_tasks:
             continue
 
-        task_name = f"{project_name}-{stage}"
-        depends = [prev_task_name] if prev_task_name else []
+        # dbt task for this stage (if there are models)
+        if models:
+            task_name = f"{project_name}-{stage}"
+            depends = [prev_task_name] if prev_task_name else []
 
-        tasks.append(WorkflowTask(
-            name=task_name,
-            stage=stage,
-            models=sorted(models),
-            depends_on=depends,
-            compute_type=compute_type,
-        ))
-        prev_task_name = task_name
+            tasks.append(WorkflowTask(
+                name=task_name,
+                stage=stage,
+                task_type="dbt",
+                models=sorted(models),
+                depends_on=depends,
+                compute_type=compute_type,
+            ))
+            prev_task_name = task_name
+
+        # Python tasks for this stage
+        for pt in py_tasks:
+            pt_name = f"{project_name}-py-{pt['name']}"
+            # Python task depends on stage's dbt task (if any) plus explicit deps
+            pt_depends: list[str] = []
+            if models:
+                pt_depends.append(f"{project_name}-{stage}")
+            elif prev_task_name:
+                pt_depends.append(prev_task_name)
+            # Add explicit depends_on from forge.yml
+            for dep in pt.get("depends_on", []):
+                dep_task = f"{project_name}-py-{dep}"
+                if dep_task not in pt_depends:
+                    pt_depends.append(dep_task)
+
+            tasks.append(WorkflowTask(
+                name=pt_name,
+                stage=stage,
+                task_type="python",
+                python_file=pt["file"],
+                depends_on=pt_depends,
+                compute_type=compute_type,
+            ))
+            prev_task_name = pt_name
 
     return Workflow(
         name=f"{project_name}-pipeline",
