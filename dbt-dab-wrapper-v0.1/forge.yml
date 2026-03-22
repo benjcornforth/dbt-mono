@@ -1,11 +1,51 @@
 name: dbt-forge
-environment: dev
-target_platform: databricks
-catalog: main
-schema: silver
-compute:
-  type: serverless
-  auto_scale: true
+active_profile: dev
+
+# =============================================
+# PROFILES – multi-environment, multi-platform
+# =============================================
+# Each profile can reference a ~/.databrickscfg profile
+# for zero-env-var setup:
+#   databricks configure --profile DEV
+#   Then just set databricks_profile: DEV below.
+#
+# Or use env vars (DBT_DATABRICKS_HOST, etc.) as before.
+# Or define connection: inline for non-Databricks platforms.
+
+profiles:
+  dev:
+    platform: databricks
+    databricks_profile: DEFAULT    # reads ~/.databrickscfg [DEFAULT]
+    catalog: main
+    schema: dev_silver
+    compute:
+      type: serverless
+      auto_scale: true
+
+  prod:
+    platform: databricks
+    databricks_profile: PROD       # reads ~/.databrickscfg [PROD]
+    catalog: main
+    schema: silver
+    compute:
+      type: serverless
+    schedule: "0 0 6 * * ?"        # Daily at 06:00 UTC
+
+  local:
+    platform: postgres
+    connection:
+      host: localhost
+      port: 5432
+      database: dev_warehouse
+      user: postgres
+    catalog: public
+    schema: silver
+    compute:
+      type: local
+
+# =============================================
+# SHARED SETTINGS (apply to all profiles)
+# =============================================
 dbt:
   version: 1.8.0
 features:
@@ -17,4 +57,3 @@ features:
 portability:
   avoid_databricks_only: true
   postgres_compatible: true
-schedule: "0 0 6 * * ?"  # Daily at 06:00 UTC

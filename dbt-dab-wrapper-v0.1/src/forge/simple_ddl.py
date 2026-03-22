@@ -421,6 +421,354 @@ def compile_all(
 
 
 # =============================================
+# PURE-SQL COMPILER (no dbt / no Jinja at runtime)
+# =============================================
+# Emits standalone SQL files that run directly on a
+# Databricks SQL warehouse — zero dbt installation needed.
+#
+#   forge compile --pure-sql
+#
+# Output (in sql/ folder, numbered for execution order):
+#   sql/000_udfs.sql          ← CREATE FUNCTION statements
+#   sql/001_stg_customers.sql ← CREATE VIEW AS SELECT ...
+#   sql/002_stg_orders.sql
+#   sql/003_customer_clean.sql
+#   sql/003_customer_clean_quarantine.sql
+#   sql/004_customer_orders.sql
+#   sql/005_customer_summary.sql
+#
+# Every file is executable as-is with `databricks sql` or
+# a SQL warehouse REST call. No Python. No cold starts.
+
+def topo_sort_models(models: dict[str, dict]) -> list[str]:
+    """
+    Topologically sort models by their source dependencies.
+
+    Returns model names in execution order (sources before dependents).
+    """
+    # Build adjacency: model → set of models it depends on
+    deps: dict[str, set[str]] = {}
+    model_names = set(models.keys())
+
+    for name, mdef in models.items():
+        d: set[str] = set()
+        if "source" in mdef and mdef["source"] in model_names:
+            d.add(mdef["source"])
+        for src in mdef.get("sources", {}).values():
+            if src in model_names:
+                d.add(src)
+        deps[name] = d
+
+    # Kahn's algorithm
+    in_degree = {n: len(deps[n]) for n in model_names}
+    queue = [n for n in model_names if in_degree[n] == 0]
+    ordered: list[str] = []
+
+    while queue:
+        queue.sort()  # deterministic ordering within same level
+        node = queue.pop(0)
+        ordered.append(node)
+        for n in model_names:
+            if node in deps[n]:
+                in_degree[n] -= 1
+                if in_degree[n] == 0:
+                    queue.append(n)
+
+    return ordered
+
+
+def _compile_lineage_struct(
+    model_name: str,
+    model_def: dict,
+    schema: str,
+    git_commit: str,
+    deploy_ts: str,
+    compute_type: str,
+    columns: dict[str, dict],
+    platform: str = "databricks",
+) -> str:
+    """
+    Compile static lineage metadata as a named_struct() / jsonb_build_object().
+
+    No Jinja. No dbt context. Pure SQL.
+    """
+    version = model_def.get("version", "v1")
+    # Collect source names
+    source_names: list[str] = []
+    if "source" in model_def:
+        source_names.append(model_def["source"])
+    for src in model_def.get("sources", {}).values():
+        source_names.append(src)
+
+    contract_id = f"{schema}.{model_name}"
+    sources_str = ", ".join(source_names)
+
+    # Build per-column lineage entries
+    col_entries: list[dict[str, Any]] = []
+    for col_name, col_def in columns.items():
+        if isinstance(col_def, str):
+            col_def = {"type": col_def}
+        elif col_def is None:
+            col_def = {}
+
+        entry: dict[str, str] = {"name": col_name}
+        if "udf" in col_def:
+            entry["expr"] = col_def["udf"]
+            entry["op"] = "UDF"
+        elif "expr" in col_def:
+            entry["expr"] = col_def["expr"]
+            expr_lower = col_def["expr"].lower().strip()
+            if any(expr_lower.startswith(fn) for fn in ["count(", "sum(", "avg(", "min(", "max("]):
+                entry["op"] = "AGGREGATION"
+            elif expr_lower.startswith("case "):
+                entry["op"] = "CASE"
+            else:
+                entry["op"] = "EXPRESSION"
+        elif col_def.get("cast"):
+            entry["expr"] = f"cast({col_name} as {col_def.get('type', 'string')})"
+            entry["op"] = "CAST"
+        else:
+            entry["op"] = "PASSTHROUGH"
+
+        col_entries.append(entry)
+
+    if platform in ("databricks", "spark"):
+        # Build column array
+        if col_entries:
+            col_parts = []
+            for e in col_entries:
+                inputs_key = e.get("name", "")
+                col_parts.append(
+                    f"        named_struct(\n"
+                    f"            'name', '{e['name']}',\n"
+                    f"            'expression', '{e.get('expr', e['name'])}',\n"
+                    f"            'op', '{e['op']}'\n"
+                    f"        )"
+                )
+            cols_sql = "array(\n" + ",\n".join(col_parts) + "\n    )"
+        else:
+            cols_sql = "cast(null as array<struct<name:string, expression:string, op:string>>)"
+
+        return (
+            f"    named_struct(\n"
+            f"        'schema_version', '3',\n"
+            f"        'model', '{model_name}',\n"
+            f"        'sources', '{sources_str}',\n"
+            f"        'git_commit', '{git_commit}',\n"
+            f"        'deployed_at', '{deploy_ts}',\n"
+            f"        'compute_type', '{compute_type}',\n"
+            f"        'contract_id', '{contract_id}',\n"
+            f"        'version', '{version}',\n"
+            f"        'columns', {cols_sql}\n"
+            f"    ) AS _lineage"
+        )
+    else:
+        # Postgres / generic fallback
+        import json
+        meta = {
+            "schema_version": "3",
+            "model": model_name,
+            "sources": sources_str,
+            "git_commit": git_commit,
+            "deployed_at": deploy_ts,
+            "compute_type": compute_type,
+            "contract_id": contract_id,
+            "version": version,
+            "columns": [{"name": e["name"], "expression": e.get("expr", e["name"]), "op": e["op"]} for e in col_entries],
+        }
+        json_str = json.dumps(meta).replace("'", "''")
+        return f"    cast('{json_str}' as varchar(8000)) AS _lineage"
+
+
+def compile_pure_sql_model(
+    model_name: str,
+    model_def: dict,
+    catalog: str,
+    schema: str,
+    git_commit: str = "unknown",
+    deploy_ts: str = "",
+    compute_type: str = "serverless",
+    platform: str = "databricks",
+) -> str:
+    """
+    Compile a model to standalone SQL — no Jinja, no dbt.
+
+    Emits CREATE OR REPLACE TABLE/VIEW with fully qualified table names.
+    """
+    if not deploy_ts:
+        from datetime import datetime, timezone
+        deploy_ts = datetime.now(timezone.utc).isoformat()
+
+    materialized = model_def.get("materialized", "view")
+    columns = model_def.get("columns", {})
+    is_join = "sources" in model_def or "join" in model_def
+    is_agg = "group_by" in model_def
+
+    lines: list[str] = []
+    lines.append(f"-- Model: {model_name}")
+    lines.append(f"-- Generated by: forge compile --pure-sql")
+    lines.append(f"-- No dbt required. Runs directly on SQL warehouse.")
+    lines.append("")
+
+    # DDL wrapper
+    fq_name = f"`{catalog}`.`{schema}`.`{model_name}`"
+    if materialized == "view":
+        lines.append(f"CREATE OR REPLACE VIEW {fq_name} AS")
+    else:
+        lines.append(f"CREATE OR REPLACE TABLE {fq_name}")
+        lines.append("USING DELTA")
+        lines.append("AS")
+
+    # SELECT columns
+    col_lines = []
+    for col_name, col_def in columns.items():
+        if isinstance(col_def, str):
+            col_def = {"type": col_def}
+        elif col_def is None:
+            col_def = {}
+        col_lines.append(_compile_column_select(col_name, col_def, None))
+
+    # Lineage struct (static, no Jinja)
+    lineage_sql = _compile_lineage_struct(
+        model_name, model_def, schema, git_commit, deploy_ts, compute_type, columns, platform,
+    )
+    col_lines.append(lineage_sql)
+
+    lines.append("SELECT")
+    lines.append(",\n".join(col_lines))
+
+    # FROM clause — fully qualified table names instead of {{ ref() }}
+    if is_join:
+        sources = model_def.get("sources", {})
+        join_condition = model_def.get("join", "")
+        join_type = model_def.get("join_type", "INNER JOIN")
+
+        source_items = list(sources.items())
+        first_alias, first_source = source_items[0]
+        lines.append(f"FROM `{catalog}`.`{schema}`.`{first_source}` {first_alias}")
+
+        for alias, source in source_items[1:]:
+            lines.append(f"{join_type} `{catalog}`.`{schema}`.`{source}` {alias}")
+            lines.append(f"    ON {join_condition}")
+    else:
+        source = model_def.get("source", "")
+        if source:
+            lines.append(f"FROM `{catalog}`.`{schema}`.`{source}`")
+
+    # GROUP BY
+    if is_agg:
+        group_cols = model_def.get("group_by", [])
+        if group_cols:
+            lines.append("GROUP BY")
+            lines.append(f"    {', '.join(group_cols)}")
+
+    lines.append(";")
+    return "\n".join(lines) + "\n"
+
+
+def compile_pure_sql_quarantine(
+    model_name: str,
+    condition: str,
+    catalog: str,
+    schema: str,
+    git_commit: str = "unknown",
+    deploy_ts: str = "",
+) -> str:
+    """
+    Compile quarantine as a standalone SQL statement.
+
+    Creates a sidecar table with rows matching the failing condition.
+    """
+    if not deploy_ts:
+        from datetime import datetime, timezone
+        deploy_ts = datetime.now(timezone.utc).isoformat()
+
+    fq_model = f"`{catalog}`.`{schema}`.`{model_name}`"
+    fq_quarantine = f"`{catalog}`.`{schema}`.`{model_name}_quarantine`"
+
+    return (
+        f"-- Quarantine: {model_name}\n"
+        f"CREATE OR REPLACE TABLE {fq_quarantine}\n"
+        f"USING DELTA\n"
+        f"AS\n"
+        f"SELECT *,\n"
+        f"    '{model_name}' AS _quarantine_source,\n"
+        f"    '{git_commit}' AS _quarantine_git_commit,\n"
+        f"    '{deploy_ts}' AS _quarantine_detected_at\n"
+        f"FROM {fq_model}\n"
+        f"WHERE {condition};\n"
+    )
+
+
+def compile_all_pure_sql(
+    ddl_path: Path,
+    output_dir: Path,
+    catalog: str = "main",
+    schema: str = "silver",
+    git_commit: str = "unknown",
+    compute_type: str = "serverless",
+    platform: str = "databricks",
+) -> dict[str, Path]:
+    """
+    Compile models.yml into numbered, standalone SQL files.
+
+    No Jinja. No dbt. Runs directly on a SQL warehouse.
+    Files are numbered for execution order (topological sort).
+    """
+    from datetime import datetime, timezone
+    deploy_ts = datetime.now(timezone.utc).isoformat()
+
+    models = load_ddl(ddl_path)
+    udfs = load_udfs(ddl_path)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    results: dict[str, Path] = {}
+
+    seq = 0
+
+    # Step 0: UDFs (must exist before any model references them)
+    if udfs:
+        udf_lines = []
+        for udf_name, udf_def in udfs.items():
+            fq_schema = f"`{catalog}`.`{schema}`"
+            udf_lines.append(compile_udf_sql(udf_name, udf_def, schema=fq_schema))
+            udf_lines.append("")
+        udf_path = output_dir / f"{seq:03d}_udfs.sql"
+        udf_path.write_text("\n".join(udf_lines))
+        results["_udfs"] = udf_path
+        seq += 1
+
+    # Step 1..N: Models in dependency order
+    ordered = topo_sort_models(models)
+    for model_name in ordered:
+        model_def = models[model_name]
+
+        # Model SQL
+        sql = compile_pure_sql_model(
+            model_name, model_def, catalog, schema,
+            git_commit=git_commit, deploy_ts=deploy_ts,
+            compute_type=compute_type, platform=platform,
+        )
+        out_path = output_dir / f"{seq:03d}_{model_name}.sql"
+        out_path.write_text(sql)
+        results[model_name] = out_path
+
+        # Quarantine (runs immediately after the model)
+        quarantine = model_def.get("quarantine")
+        if quarantine:
+            q_sql = compile_pure_sql_quarantine(
+                model_name, quarantine, catalog, schema,
+                git_commit=git_commit, deploy_ts=deploy_ts,
+            )
+            q_path = output_dir / f"{seq:03d}_{model_name}_quarantine.sql"
+            q_path.write_text(q_sql)
+            results[f"{model_name}_quarantine"] = q_path
+
+        seq += 1
+
+    return results
+
+
+# =============================================
 # MIGRATION ENGINE
 # =============================================
 # Migrations are also YAML — no SQL required.

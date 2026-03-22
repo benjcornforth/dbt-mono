@@ -37,12 +37,20 @@ from forge.type_safe import build_models, generate_sdk_file
 from forge.workflow import build_workflow
 from forge.simple_ddl import (
     compile_all,
+    compile_all_pure_sql,
     apply_all_migrations,
     apply_all_migrations_dry_run,
     generate_agent_guide,
     compile_checks_sql,
     compile_all_udfs,
     load_udfs,
+)
+from forge.compute_resolver import (
+    resolve_profile,
+    resolve_connection,
+    generate_profiles_yml,
+    read_databrickscfg,
+    list_databrickscfg_profiles,
 )
 
 app = typer.Typer(
@@ -57,11 +65,23 @@ app = typer.Typer(
 CONFIG_FILE = Path("forge.yml")
 DEFAULT_CONFIG = {
     "name": "my_project",
-    "environment": "dev",
-    "target_platform": "databricks",
-    "catalog": "main",
-    "schema": "silver",
-    "compute": {"type": "serverless", "auto_scale": True},
+    "active_profile": "dev",
+    "profiles": {
+        "dev": {
+            "platform": "databricks",
+            "databricks_profile": "DEFAULT",
+            "catalog": "main",
+            "schema": "dev_silver",
+            "compute": {"type": "serverless", "auto_scale": True},
+        },
+        "prod": {
+            "platform": "databricks",
+            "databricks_profile": "PROD",
+            "catalog": "main",
+            "schema": "silver",
+            "compute": {"type": "serverless"},
+        },
+    },
     "dbt": {"version": "1.8.0"},
     "features": {
         "graph": True,
@@ -104,14 +124,30 @@ def setup(
     (project_root / "artifacts").mkdir(parents=True, exist_ok=True)
 
     typer.echo("✅ Created dbt/models/, seeds/, sources/ – pure business logic only")
+
+    # Auto-generate profiles.yml from forge.yml
+    config = yaml.safe_load(CONFIG_FILE.read_text())
+    profiles_path = project_root / "profiles.yml"
+    if not profiles_path.exists():
+        generate_profiles_yml(config, output_path=profiles_path)
+        typer.echo("✅ Generated profiles.yml from forge.yml profiles")
+
     typer.echo("🔗 All macros (quarantine, python_udf, prior_version) live in dbt-dab-tools (via packages.yml)")
+    typer.echo("")
+    typer.echo("💡 Databricks auth — choose one:")
+    typer.echo("   a) databricks configure --profile DEFAULT   (recommended — zero env vars)")
+    typer.echo("   b) export DBT_DATABRICKS_HOST=... DBT_DATABRICKS_TOKEN=...")
+    typer.echo("")
     typer.echo("🎉 Setup complete! Now run:  forge deploy")
 
 # =============================================
 # DEPLOY – builds graph + DAB + runs dbt
 # =============================================
 @app.command()
-def deploy(env: str = typer.Option("dev", "--env", help="Environment to deploy")):
+def deploy(
+    env: str = typer.Option("dev", "--env", help="Environment to deploy"),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Forge profile (from forge.yml profiles:)"),
+):
     """forge deploy → reads forge.yml → auto-generates DAB → runs dbt"""
     typer.echo(f"🚀 Deploying to {env}...")
 
@@ -120,17 +156,36 @@ def deploy(env: str = typer.Option("dev", "--env", help="Environment to deploy")
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
+    prof = resolve_profile(config, profile_name=profile or env)
+    conn = resolve_connection(prof)
 
-    # TODO: call compute_resolver (next file we’ll ship)
-    typer.echo(f"✅ Resolved compute: {config['compute']['type']} (serverless/dedicated auto-switches)")
+    typer.echo(f"  📋 Profile: {prof['_name']} ({conn.platform})")
+    typer.echo(f"  ✅ Resolved compute: {conn.compute_type}")
+    if conn.host:
+        typer.echo(f"  🔗 Host: {conn.host}")
 
-    # TODO: generate databricks.yml + graph.json (next files)
-    typer.echo("✅ Generated Databricks Asset Bundle (databricks.yml)")
+    # Deploy UDFs first (dbt best practice: functions must exist before models reference them)
+    ddl_path = Path("dbt/models.yml")
+    if ddl_path.exists():
+        udfs = compile_all_udfs(ddl_path)
+        if udfs:
+            typer.echo("🔧 Deploying UDFs via dbt run-operation...")
+            udfs_sql = "\n".join(udfs.values())
+            try:
+                subprocess.run(
+                    ["dbt", "run-operation", "deploy_udfs",
+                     "--args", yaml.dump({"udfs_sql": udfs_sql}),
+                     "--project-dir", "."],
+                    check=True, capture_output=True,
+                )
+                typer.echo(f"  ✅ Deployed {len(udfs)} UDF(s): {', '.join(udfs.keys())}")
+            except (FileNotFoundError, subprocess.CalledProcessError):
+                typer.echo("  ⚠️  UDF deploy skipped (dbt run-operation unavailable). Deploy manually or use --pure-sql mode.")
 
-    # Run dbt (SQL preferred – zero cold starts)
-    typer.echo("✅ Running dbt (with quarantine, Python UDFs, provenance telemetry)")
+    # Run dbt (SQL-only models – zero cold starts on serverless)
+    typer.echo("✅ Running dbt...")
     try:
-        subprocess.run(["dbt", "run", "--project-dir", "dbt"], check=True)
+        subprocess.run(["dbt", "run", "--project-dir", "."], check=True)
     except FileNotFoundError:
         typer.echo("💡 Tip: install dbt-databricks with poetry if needed")
 
@@ -297,7 +352,8 @@ def codegen(
 def workflow(
     mermaid: bool = typer.Option(False, "--mermaid", help="Output Mermaid diagram"),
     dab: bool = typer.Option(False, "--dab", help="Output databricks.yml jobs section"),
-    output: Optional[str] = typer.Option(None, "--output", "-o", help="Write output to file"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Write output to file (default: resources/jobs/<name>.yml for --dab)"),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Forge profile (from forge.yml profiles:)"),
 ):
     """forge workflow → generates stage-based Databricks Workflow DAG"""
     if not CONFIG_FILE.exists():
@@ -305,6 +361,14 @@ def workflow(
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
+    if profile:
+        prof = resolve_profile(config, profile_name=profile)
+        # Merge profile values into config for workflow builder
+        config["catalog"] = prof.get("catalog", config.get("catalog", "main"))
+        config["schema"] = prof.get("schema", config.get("schema", "silver"))
+        config["compute"] = prof.get("compute", config.get("compute", {}))
+        config["environment"] = prof["_name"]
+
     graph = build_graph(config)
     wf = build_workflow(config, graph)
 
@@ -315,6 +379,10 @@ def workflow(
     else:
         # Default: print task summary
         result = yaml.dump(wf.to_dict(), sort_keys=False, default_flow_style=False)
+
+    # Default output path for --dab mode
+    if dab and not output:
+        output = f"resources/jobs/{wf.name}.yml"
 
     if output:
         Path(output).parent.mkdir(parents=True, exist_ok=True)
@@ -334,6 +402,8 @@ def workflow(
 def compile(
     ddl: str = typer.Option("dbt/models.yml", "--ddl", help="Path to models.yml DDL file"),
     output: str = typer.Option("dbt/models", "--output", "-o", help="Output directory for SQL files"),
+    pure_sql: bool = typer.Option(False, "--pure-sql", help="Emit standalone SQL (no dbt/Jinja). Runs directly on SQL warehouse."),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Forge profile (from forge.yml profiles:)"),
 ):
     """forge compile → turns models.yml into SQL + schema.yml (no SQL needed)"""
     ddl_path = Path(ddl)
@@ -341,6 +411,40 @@ def compile(
         typer.echo(f"❌ {ddl} not found. Create it or run 'forge setup' first!")
         raise typer.Exit(1)
 
+    if pure_sql:
+        # Pure-SQL mode: no Jinja, no dbt, runs on any SQL warehouse
+        if not CONFIG_FILE.exists():
+            typer.echo("❌ No forge.yml found. Run 'forge setup' first!")
+            raise typer.Exit(1)
+        config = yaml.safe_load(CONFIG_FILE.read_text())
+        prof = resolve_profile(config, profile_name=profile)
+        catalog = prof.get("catalog", "main")
+        schema = prof.get("schema", "silver")
+        compute_type = prof.get("compute", {}).get("type", "serverless") if isinstance(prof.get("compute"), dict) else "serverless"
+        platform = prof.get("platform", "databricks")
+
+        sql_dir = Path("sql")
+        results = compile_all_pure_sql(
+            ddl_path, sql_dir,
+            catalog=catalog, schema=schema,
+            compute_type=compute_type, platform=platform,
+        )
+
+        for name, path in results.items():
+            if name == "_udfs":
+                typer.echo(f"  🔧 {path.name} → UDF definitions")
+            elif name.endswith("_quarantine"):
+                typer.echo(f"  🔶 {path.name} → quarantine sidecar")
+            else:
+                typer.echo(f"  ✅ {path.name}")
+
+        model_count = len([k for k in results if not k.startswith("_") and not k.endswith("_quarantine")])
+        typer.echo(f"")
+        typer.echo(f"🎉 Compiled {model_count} models → sql/ (pure SQL, no dbt needed)")
+        typer.echo(f"   Run files in order on any SQL warehouse.")
+        return
+
+    # Standard dbt mode
     output_dir = Path(output)
     results = compile_all(ddl_path, output_dir)
 
@@ -543,7 +647,8 @@ def dev_up(
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
-    base_schema = config.get("schema", "silver")
+    prof = resolve_profile(config, profile_name="dev")
+    base_schema = prof.get("schema", "silver")
 
     import getpass
     suffix = schema_suffix or getpass.getuser()
@@ -637,7 +742,8 @@ def dev_down(
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
-    base_schema = config.get("schema", "silver")
+    prof = resolve_profile(config, profile_name="dev")
+    base_schema = prof.get("schema", "silver")
 
     import getpass
     suffix = schema_suffix or getpass.getuser()
@@ -646,7 +752,7 @@ def dev_down(
     typer.echo(f"🛑 Tearing down dev environment...")
     typer.echo(f"  📦 Dropping schema: {dev_schema}")
 
-    catalog = config.get("catalog", "main")
+    catalog = prof.get("catalog", "main")
     drop_sql = f"DROP SCHEMA IF EXISTS {catalog}.{dev_schema} CASCADE"
 
     try:
@@ -662,6 +768,76 @@ def dev_down(
         typer.echo(f"     {drop_sql}")
 
     typer.echo(f"🎉 Dev environment torn down.")
+
+
+# =============================================
+# PROFILES – list, inspect, generate profiles.yml
+# =============================================
+@app.command(name="profiles")
+def profiles_cmd(
+    generate: bool = typer.Option(False, "--generate", help="Auto-generate profiles.yml from forge.yml"),
+    show_connection: bool = typer.Option(False, "--show-connection", help="Show resolved connection details"),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Show details for one profile"),
+):
+    """forge profiles → list profiles, generate profiles.yml, show connections"""
+    if not CONFIG_FILE.exists():
+        typer.echo("❌ No forge.yml found. Run 'forge setup' first!")
+        raise typer.Exit(1)
+
+    config = yaml.safe_load(CONFIG_FILE.read_text())
+
+    if generate:
+        text = generate_profiles_yml(config, output_path=Path("profiles.yml"))
+        typer.echo("✅ Generated profiles.yml from forge.yml profiles")
+        typer.echo(f"\n{text}")
+        return
+
+    forge_profiles = config.get("profiles", {})
+    active = config.get("active_profile", "(none)")
+
+    if not forge_profiles:
+        typer.echo("📋 No profiles defined in forge.yml (using legacy flat config).")
+        typer.echo("   Add a profiles: block to enable multi-environment support.")
+        return
+
+    # Show ~/.databrickscfg profiles for context
+    dbr_profiles = list_databrickscfg_profiles()
+    if dbr_profiles:
+        typer.echo(f"🔗 ~/.databrickscfg profiles: {', '.join(dbr_profiles)}")
+        typer.echo("")
+
+    typer.echo(f"📋 Forge profiles (active: {active}):\n")
+
+    for name, prof in forge_profiles.items():
+        is_active = " ← active" if name == active else ""
+        platform = prof.get("platform", "databricks")
+        dbr_ref = prof.get("databricks_profile", "")
+        catalog = prof.get("catalog", config.get("catalog", "main"))
+        schema = prof.get("schema", config.get("schema", "silver"))
+        compute = prof.get("compute", {})
+        compute_type = compute.get("type", "serverless") if isinstance(compute, dict) else compute
+
+        typer.echo(f"  {'▸' if name == active else '·'} {name}{is_active}")
+        typer.echo(f"      platform: {platform}  |  catalog: {catalog}  |  schema: {schema}  |  compute: {compute_type}")
+        if dbr_ref:
+            typer.echo(f"      databricks_profile: {dbr_ref}")
+
+        if (show_connection or profile == name):
+            try:
+                resolved = resolve_connection(prof)
+                if resolved.host:
+                    typer.echo(f"      host: {resolved.host}")
+                if resolved.http_path:
+                    typer.echo(f"      http_path: {resolved.http_path}")
+                if resolved.port:
+                    typer.echo(f"      port: {resolved.port}")
+                if resolved.database:
+                    typer.echo(f"      database: {resolved.database}")
+                typer.echo(f"      ✅ Connection resolved")
+            except Exception as e:
+                typer.echo(f"      ⚠️  {e}")
+
+        typer.echo("")
 
 
 # =============================================
