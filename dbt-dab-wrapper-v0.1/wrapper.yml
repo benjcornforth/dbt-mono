@@ -1,0 +1,20 @@
+name: dbt-dab-wrapper-v0.1
+environment: dev
+target_platform: databricks
+catalog: main
+schema: silver
+compute:
+  type: serverless
+  auto_scale: true
+dbt:
+  version: 1.8.0
+features:
+  graph: true
+  quarantine: true
+  validation_exceptions: true
+  prior_version: true
+  python_udfs: true
+portability:
+  avoid_databricks_only: true
+  postgres_compatible: true
+schedule: "0 0 6 * * ?"  # Daily at 06:00 UTC

@@ -1,0 +1,27 @@
+# wrapper.yml - the ONLY config file you ever edit
+# A child can change 3 lines and redeploy everything.
+name: sales_data
+environment: prod
+target_platform: databricks        # databricks | postgres | redshift - change this and wrapper handles it
+catalog: main
+schema: silver
+
+compute:
+  type: serverless                 # serverless | dedicated | auto
+  cluster_id: ""                   # only used if dedicated
+  auto_scale: true
+
+dbt:
+  version: "1.8.0"
+  adapter: databricks
+
+features:
+  graph: true
+  quarantine: true
+  validation_exceptions: true
+  prior_version: true
+  python_udfs: true
+
+portability:
+  avoid_databricks_only: true      # forces clean SQL
+  postgres_compatible: true

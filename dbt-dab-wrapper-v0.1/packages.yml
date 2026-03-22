@@ -1,0 +1,10 @@
+# =============================================
+# packages.yml — dbt package dependencies
+# =============================================
+# Local path for development. Switch to git for production:
+#
+#   - git: https://github.com/yourorg/dbt-dab-tools
+#     version: [">=0.2.0", "<1.0.0"]
+
+packages:
+  - local: ../dbt-dab-tools

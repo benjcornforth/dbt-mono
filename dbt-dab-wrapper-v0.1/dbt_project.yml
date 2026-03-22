@@ -1,0 +1,46 @@
+# =============================================
+# dbt_project.yml
+# =============================================
+# THE CODE IS THE DOCUMENTATION
+#
+# This is the dbt project config for the wrapper.
+# The wrapper reads wrapper.yml, but dbt needs this file.
+# External macros live in dbt-tools/ (macro-paths below).
+
+name: 'dbt_dab_wrapper'
+version: '0.2.0'
+config-version: 2
+
+profile: 'dbt_dab_wrapper'
+
+# =============================================
+# PATHS - business logic in dbt/, tooling in dbt-tools/
+# =============================================
+model-paths: ["dbt/models"]
+seed-paths: ["dbt/seeds"]
+test-paths: ["dbt/tests"]
+analysis-paths: ["dbt/analysis"]
+macro-paths: ["macros"]               # project-level macros (if any)
+snapshot-paths: ["dbt/snapshots"]
+asset-paths: ["dbt/assets"]
+
+clean-targets:
+  - "dbt/target"
+  - "dbt_packages"
+
+# =============================================
+# VARS - lineage provenance injected at deploy time
+# =============================================
+# The wrapper CLI sets these via --vars at runtime.
+# Defaults here for local development.
+vars:
+  git_commit: "local"
+  compute_type: "serverless"
+  methodology_version: "v1"
+
+# =============================================
+# MODEL DEFAULTS - Unity Catalog aware
+# =============================================
+models:
+  dbt_dab_wrapper:
+    +materialized: view

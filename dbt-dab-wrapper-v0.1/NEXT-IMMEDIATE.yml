@@ -1,0 +1,147 @@
+# NEXT-IMMEDIATE.yml
+# ────────────────────────────────────────────────────────────────
+#   dbt-dab-wrapper — Immediate Next Changes (Post-UDF Complete)
+#   Date: 22 March 2026
+#   Phase: Hardening the "child can use it" promise
+#   Goal: Ship the last 10% that makes provenance, checks, and DX feel magical
+#   Rule: Every change keeps users editing ONLY wrapper.yml + models.yml
+#         Everything else = external macros + generated code
+#         Graph = single source of truth for diffs
+#         One command = deploy / teardown / dev / validate / explain
+# ────────────────────────────────────────────────────────────────
+
+project:
+  name: dbt-dab-wrapper
+  vision: >
+    Every value traceable. Every check visible. Every change obvious in the graph.
+    UDFs are done — now make provenance and rollup checks feel like magic.
+
+next_immediate_todos:
+
+  - id: provenance-explain-cli
+    category: Telemetry • Provenance & Lineage
+    title: Add `wrapper explain <model>.<column>` CLI command
+    priority: 1
+    status: Pending
+    owner: You
+    effort: S (1–2 days)
+    justification: >
+      Provenance already lives in _lineage struct. 
+      This turns it into one child-level command: 
+      "wrapper explain customer_summary.total_revenue" 
+      → beautiful terminal tree (or --mermaid) showing expression, UDF calls, 
+      methodology version, git commit, and every check that validated it.
+      Enables "data challenge at any stage" instantly. 
+      Uses existing graph.py — zero new concepts.
+    rebuttals: []
+    next_steps:
+      - Add CLI handler in cli.py
+      - Reuse graph.walk_lineage() + pretty printer
+      - Support --mermaid and --output flags
+      - Update auto-generated GUIDE.md section
+
+  - id: reconcile-check-primitive
+    category: Features • Data Checks
+    title: Add "reconcile" check type (rollup cross-model validation)
+    priority: 2
+    status: Pending
+    owner: You
+    effort: M (3–5 days)
+    justification: >
+      The #1 real-world data bug is revenue mismatch between layers.
+      Simple YAML in models.yml:
+        checks:
+          - name: revenue_match
+            type: reconcile
+            child_expr: "sum(total_revenue)"
+            parent_model: customer_orders
+            parent_expr: "sum(line_total)"
+            tolerance: 0.0001
+      Runs safely in `wrapper validate` (separate step).
+      Adds green/red node to graph. Full result in _checks struct.
+      Completes the "rock-solid" promise without any transaction headaches.
+    rebuttals:
+      - "Cross-model too complex?"
+      - "No — separate validate step keeps it simple and debuggable."
+    next_steps:
+      - Extend compile_checks_sql() in simple_ddl.py
+      - New macro dbt-dab-tools/checks/reconcile.sql
+      - Add example to test model in dbt/models.yml
+      - Graph edge from check node to parent model
+
+  - id: checks-graph-and-sdk
+    category: Telemetry • Graph + SDK
+    title: Make checks appear in graph diffs + extend Pydantic SDK
+    priority: 3
+    status: Pending
+    owner: You
+    effort: S (1 day)
+    justification: >
+      Graph already shows UDFs (purple). Checks must be visible too.
+      `wrapper diff` should say: "added reconcile check → impacts 2 models".
+      SDK models now include .checks_passed, .check_results[] for type-safe apps.
+      Code = documentation: SDK reflects checks automatically.
+    rebuttals: []
+    next_steps:
+      - Add check nodes/edges in graph.py
+      - Update type_safe.py to parse _checks struct
+
+  - id: auto-version-bump
+    category: Safety • Migrations
+    title: Auto-bump model version when UDF/check/quarantine changes
+    priority: 4
+    status: Pending
+    owner: You
+    effort: XS (½ day)
+    justification: >
+      Methodology version is already in lineage. 
+      Detect changes to udfs:, checks:, or quarantine: and bump version: v2 → v3 automatically.
+      Prevents "forgot to bump version" mistakes. 
+      One line in apply_migration() + migration dry-run.
+    rebuttals: []
+    next_steps:
+      - Add detection logic in simple_ddl.py
+      - Test with existing migration engine
+
+  - id: wrapper-challenge-prototype
+    category: DX • Data Challenges
+    title: Add `wrapper challenge` interactive mode
+    priority: 5
+    status: Pending
+    owner: You
+    effort: M (2–3 days)
+    justification: >
+      "I imagine a world where a data challenge can be made at any stage."
+      One command: pick any value → see provenance + checks → mark as challenged.
+      Logs to _challenges table. Perfect for audits or debugging.
+      Builds directly on explain + checks.
+    rebuttals:
+      - "Too advanced for MVP?"
+      - "Prototype only — interactive terminal flow, no GUI yet."
+    next_steps:
+      - Simple prompt loop in cli.py
+      - Write to new _challenges table via macro
+
+  - id: guide-and-examples-polish
+    category: Polish • Documentation
+    title: Update auto-generated GUIDE.md + add one rich example
+    priority: 6
+    status: Pending
+    owner: Anyone
+    effort: XS (1 hour)
+    justification: >
+      wrapper guide already exists. Just add the new explain, reconcile, and challenge sections.
+      One new model in dbt/models.yml showing reconcile + UDF together.
+      Keeps "THE CODE IS THE DOCUMENTATION" true.
+    rebuttals: []
+    next_steps:
+      - Extend generate_agent_guide() in simple_ddl.py
+      - Run `wrapper guide` to refresh
+
+backlog_for_next_sprint:
+  - Full patterns.yml + methodologies (extends:)
+  - Alerting hooks for failed checks (Slack/email)
+  - wrapper validate --model X --fix (auto-quarantine)
+  - Windows path handling polish for dev watch mode
+
+last_updated: 2026-03-22

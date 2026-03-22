@@ -1,0 +1,60 @@
+version: 2
+
+models:
+  - name: stg_customers
+    description: "Staged customers with typed columns and lineage provenance"
+    columns:
+      - name: customer_id
+        description: "Unique customer identifier"
+        data_tests:
+          - unique
+          - not_null
+      - name: email
+        description: "Customer email (may be null in raw data)"
+
+  - name: stg_orders
+    description: "Staged orders with computed line_total and lineage provenance"
+    columns:
+      - name: order_id
+        description: "Unique order identifier"
+        data_tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: "FK to customers"
+        data_tests:
+          - not_null
+
+  - name: customer_clean
+    description: "Clean customers - null emails and negative revenue quarantined"
+    columns:
+      - name: customer_id
+        data_tests:
+          - unique
+          - not_null
+      - name: email
+        description: "Validated email (nulls quarantined)"
+        data_tests:
+          - not_null
+      - name: revenue
+        description: "Non-negative revenue (negatives quarantined)"
+
+  - name: customer_orders
+    description: "Joined clean customers with their orders"
+    columns:
+      - name: order_id
+        data_tests:
+          - unique
+          - not_null
+
+  - name: customer_summary
+    description: "Aggregated customer metrics - gold layer"
+    columns:
+      - name: customer_id
+        data_tests:
+          - unique
+          - not_null
+      - name: total_orders
+        description: "Count of orders per customer"
+      - name: total_revenue
+        description: "Sum of all order line totals"

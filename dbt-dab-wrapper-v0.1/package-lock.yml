@@ -1,0 +1,4 @@
+packages:
+  - local: ../dbt-dab-tools
+    name: dbt_dab_tools
+sha1_hash: 88e6ae68cc479072c1058674c1bc670f99138cec
