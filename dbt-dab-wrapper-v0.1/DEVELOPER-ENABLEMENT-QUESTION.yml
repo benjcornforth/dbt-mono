@@ -1,0 +1,231 @@
+# DEVELOPER-ENABLEMENT-QUESTIONS.yml
+# ────────────────────────────────────────────────────────────────
+#   dbt-dab-wrapper — Developer Enablement Validation
+#   Purpose: Make sure the wrapper is SO simple a complete beginner
+#            can succeed in <30 minutes.
+#   Key focus: 
+#     • Poetry separability (dbt-dab-tools stays external forever)
+#     • Zero prior knowledge required (no SQL, no dbt, no Databricks)
+#   Rule: Answer honestly. Add "rebuttal" or "idea" if something feels off.
+#   Goal: "A child could use it" + "Code is the documentation"
+#   How to use: Share with the new developer. They fill in answers.
+#   Run `wrapper guide` after they reply — it will update automatically.
+# ────────────────────────────────────────────────────────────────
+
+project_vision_reminder: >
+  One command for everything. 
+  Users edit ONLY wrapper.yml + dbt/models.yml. 
+  All macros live in external ../dbt-dab-tools. 
+  Graph shows every change. Provenance for every value.
+
+questions:
+
+  # ── Poetry & Tool Separability (external dbt-dab-tools) ─────────
+  - id: poetry-1
+    section: Poetry Separability
+    question: >
+      Was it crystal clear that `poetry install` only installs the wrapper CLI 
+      and that all real dbt magic (macros for quarantine, checks, lineage, UDFs) 
+      lives in the external ../dbt-dab-tools directory — never inside your project?
+    answer: >
+      Mostly clear — pyproject.toml only lists typer, pyyaml, click, and databricks-sdk.
+      The macros clearly live in ../dbt-dab-tools and are pulled in via packages.yml
+      (local path for dev, git URL for prod). However, the dbt-tools/ folder inside the
+      project is confusing — it duplicates the same macros that live in ../dbt-dab-tools
+      and in dbt_packages/dbt_dab_tools. A new developer might wonder: "which copy is
+      the real one? Do I edit dbt-tools/ or ../dbt-dab-tools?" The answer is neither
+      (you never touch macros), but this isn't obvious until you read the GUIDE.
+    rebuttal_or_idea: >
+      Remove the dbt-tools/ folder from the project entirely. It's a leftover from
+      early development. All macros should come exclusively from dbt_packages/ (via
+      `dbt deps` pulling ../dbt-dab-tools). One copy, one truth. Also add a one-liner
+      to README.md: "Macros live in ../dbt-dab-tools — never edit anything in this project
+      except wrapper.yml and dbt/models.yml."
+
+  - id: poetry-2
+    section: Poetry Separability
+    question: >
+      After `poetry install`, could you update the shared macros (e.g. add a new check type) 
+      without touching a single file in your own project folder?
+    answer: >
+      Yes. The macro code lives in ../dbt-dab-tools/macros/. Editing lineage.sql,
+      quarantine.sql, or adding a new checks/reconcile.sql there requires zero changes
+      in the wrapper project. Running `dbt deps` pulls the updated macros into
+      dbt_packages/dbt_dab_tools automatically. The wrapper's compile/validate/explain
+      commands don't reference macro internals — they only read models.yml.
+    rebuttal_or_idea: >
+      One gap: adding a brand-new check TYPE (e.g. "reconcile") currently requires
+      changes in both ../dbt-dab-tools (new macro) AND src/wrapper/simple_ddl.py
+      (new entry in _CHECK_SCOPE + _compile_single_check). This breaks the separability
+      promise for check primitives. Consider making check types fully data-driven:
+      load check definitions from a primitives.yml in dbt-dab-tools so the wrapper
+      doesn't need code changes for new check types.
+
+  - id: poetry-3
+    section: Poetry Separability
+    question: >
+      Did Poetry feel simple (one command, no dependency hell) or confusing for a total beginner?
+    answer: >
+      For someone who knows Python: simple. `poetry install` → `wrapper --help` works.
+      For a total beginner who has never used Python: Poetry itself is a hurdle.
+      They need to install Python 3.10+, then install Poetry, then know to run
+      `poetry install` NOT `pip install`. The README says `pip install -e .` which
+      conflicts with the Poetry workflow. A beginner hitting both instructions would
+      be confused about which one to use.
+    rebuttal_or_idea: >
+      Two fixes: (1) Update README.md to show ONE path — either Poetry or pip, not
+      both. Poetry is the right choice since pyproject.toml is already set up for it.
+      (2) Add a `Makefile` or `setup.sh` with a single `make install` that handles
+      Poetry installation check + `poetry install` + venv activation hint. This
+      removes "which command do I run?" entirely.
+
+  # ── Onboarding for Brand-New Devs ───────────────────────────────
+  - id: newbie-1
+    section: First 5 Minutes
+    question: >
+      From cloning the repo to running `wrapper setup`, how many minutes did it take?
+      (Goal: <10 minutes for someone who has never seen Databricks or dbt)
+    answer: >
+      Assuming Python + Poetry pre-installed: ~3 minutes (clone, poetry install, wrapper setup).
+      From absolute zero (no Python, no Poetry): ~15-20 minutes. The main time sinks
+      are installing Python (brew install python@3.11), installing Poetry
+      (curl ... | python3), and figuring out venv activation. Once `wrapper` is
+      available, `wrapper setup` is instant (<2 seconds). The 10-minute goal is met
+      if the developer has ANY Python experience. Not met for true zero-knowledge.
+    rebuttal_or_idea: >
+      A Docker-based alternative would guarantee <5 minutes for anyone:
+      `docker run -it dbt-dab-wrapper` with everything pre-installed. Or a
+      GitHub Codespace devcontainer.json. Either removes 100% of local setup friction.
+
+  - id: newbie-2
+    section: First 5 Minutes
+    question: >
+      Could you create your first model in dbt/models.yml (copy-paste example), 
+      run `wrapper compile`, then `wrapper dev-up` without asking anyone for help?
+    answer: >
+      Yes for compile, partially for dev-up. The models.yml file has 5 working
+      examples right there — copy-pasting a new staging model and running `wrapper compile`
+      works immediately with clear output ("✅ model.sql → dbt/models/model.sql").
+      `wrapper dev-up` prints helpful output but requires a working dbt + Databricks
+      connection (profiles.yml with valid token). A beginner without Databricks credentials
+      would hit a wall at this point. The compile→inspect loop works fully offline though.
+    rebuttal_or_idea: >
+      Add a `--local` flag to `wrapper dev-up` that skips the Databricks seed step
+      and just compiles SQL locally. This lets a new dev see the full workflow
+      (edit → compile → inspect SQL) without needing credentials on day 1.
+
+  - id: newbie-3
+    section: First 5 Minutes
+    question: >
+      Did the auto-generated GUIDE.md (created by `wrapper guide`) feel like enough 
+      to get started, or did you need extra explanations?
+    answer: >
+      The auto-generated guide (.instructions.md from `wrapper guide`) is solid for
+      someone who already understands what a data pipeline is. It includes: quick start
+      commands, model patterns (staging, join, aggregation, quarantine), column options
+      reference, UDF examples, migration actions, provenance explain, and a current
+      models table. The hand-written GUIDE.md is even more comprehensive (18 sections).
+      Together they cover everything. One gap: neither guide explains WHY you'd use
+      quarantine vs. a WHERE filter, or WHY lineage matters. A "Concepts" section
+      (3 paragraphs) would help true beginners understand the motivation.
+    rebuttal_or_idea: >
+      Add a "## Core Concepts (2-minute read)" section to the auto-generated guide
+      explaining: (1) models.yml = your tables defined in YAML, (2) quarantine =
+      bad rows go to a side table instead of being silently lost, (3) lineage =
+      every value is traceable to its source for debugging and auditing.
+
+  # ── Daily Workflow Simplicity ───────────────────────────────────
+  - id: workflow-1
+    section: Daily Workflow
+    question: >
+      How easy was `wrapper dev` (watch mode) to use? Did saving dbt/models.yml 
+      feel magical (auto-recompile + deploy to your isolated dev schema)?
+    answer: >
+      The watch mode works and feels responsive — save models.yml, see "🔄 Change
+      detected — recompiling..." + "✅ Compiled 5 models" within ~1 second. The
+      polling approach (os.stat / st_mtime) is reliable and has zero extra
+      dependencies. One thing that's NOT magical yet: it only recompiles SQL files
+      locally. It does NOT auto-deploy to the dev schema (no `dbt run --select`).
+      So the loop is edit → auto-compile → manually run dbt. The "auto-deploy to
+      isolated dev schema" is aspirational — dev-up creates the schema and seeds
+      data, but dev watch mode stops at compilation.
+    rebuttal_or_idea: >
+      Wire up incremental `dbt run --select changed_model --target dev` inside the
+      watch loop when a Databricks connection is available. Detect which models
+      changed by comparing compiled SQL hashes. Fall back to compile-only when
+      offline. This would close the gap between "auto-recompile" and "auto-deploy".
+
+  - id: workflow-2
+    section: Daily Workflow
+    question: >
+      Could you explain a column with `wrapper explain customer_summary.total_revenue` 
+      and understand the full provenance (expression, UDF, checks, git commit) without help?
+    answer: >
+      Yes. The output is immediately readable:
+        🔎 Explaining customer_summary.total_revenue
+        ├─ Expression: sum(line_total)
+        ├─ From model: customer_orders
+        ├─ Git commit: c65af4f
+        └─ Checks (2): 🔴 revenue_non_negative, 🔴 has_customers
+        ⬆ Upstream: customer_orders.line_total → stg_orders.line_total (quantity * unit_price)
+      The tree structure, emoji icons, and upstream recursion make it self-explanatory.
+      The --mermaid output is also clear (purple UDFs, orange checks). --json works
+      for scripting. One minor issue: the check status shows the check definition
+      (severity) but not pass/fail — it can't query live data, only show what checks
+      exist. This is correct for a compile-time tool but might confuse someone who
+      expects runtime results.
+    rebuttal_or_idea: >
+      Add a note to the output: "Run `wrapper validate` to execute these checks
+      against live data." This bridges the gap between "what checks exist" (explain)
+      and "did they pass" (validate).
+
+  # ── Overall Enablement Check ────────────────────────────────────
+  - id: overall-1
+    section: Success Metric
+    question: >
+      On a scale of 1–10, how close are we to “a child could use this wrapper” 
+      for someone who has never used Python, SQL, or Databricks?
+    answer: >
+      7/10. The wrapper itself is genuinely simple — models.yml is readable YAML,
+      commands are one-word verbs, output has emoji + clear messages. What pulls it
+      down from 10: (1) Python/Poetry installation is a prerequisite with no escape
+      hatch (2 points lost), (2) Databricks credentials needed for anything beyond
+      compile (1 point lost). For someone who HAS Python installed, it's a 9/10.
+      The two-file contract (wrapper.yml + models.yml) is real — no one touches
+      src/wrapper/ or macros. The 16 CLI commands all work. The explain/diff/validate
+      trio gives immediate feedback. The gap is purely "getting to the starting line."
+    rebuttal_or_idea: >
+      To reach 9/10 for true beginners: (1) devcontainer.json or Docker image
+      (eliminates Python/Poetry setup), (2) `wrapper compile --preview` that shows
+      a sample of what the output table would look like (eliminates Databricks
+      dependency for learning). These two changes would make the <30 minute goal
+      achievable for literally anyone with a laptop.
+
+  - id: overall-2
+    section: Success Metric
+    question: >
+      What is the SINGLE biggest thing that would make onboarding dramatically better 
+      for a brand-new developer tomorrow?
+    answer: >
+      A devcontainer.json (VS Code Dev Container / GitHub Codespace). One click →
+      Python, Poetry, dbt, wrapper CLI all pre-installed, venv activated, models.yml
+      open. The developer types `wrapper compile`, sees SQL generated, types
+      `wrapper explain customer_summary.total_revenue`, sees the provenance tree.
+      Zero setup. Zero confusion about Python versions, Poetry vs pip, or venv.
+      This is the single change that turns "15-20 minutes with possible dead ends"
+      into "60 seconds to first compile." Everything else (the YAML DSL, the CLI,
+      the auto-generated guide) is already good enough.
+    rebuttal_or_idea: >
+      Runner-up: clean up the README.md to be a true 5-step quickstart with
+      exact shell commands and expected output at each step. Current README is
+      4 lines and doesn't mention Poetry, `wrapper compile`, or models.yml.
+
+success_criteria:
+  - All answers >= 8/10 on simplicity
+  - Poetry separability rated “very clear”
+  - New dev can finish first model + dev mode in <20 minutes
+  - No one needs to touch src/wrapper/ or dbt-dab-tools to do real work
+
+next_action: >
+  After the developer replies, run `wrapper guide` — the GUIDE.md will 
+  automatically include their feedback as a new “Developer Stories” section.

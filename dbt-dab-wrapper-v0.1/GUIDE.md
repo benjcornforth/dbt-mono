@@ -39,14 +39,15 @@ Everything else is generated.
 7. [HOW-TO: Data Quality Checks](#7-how-to-data-quality-checks)
 8. [HOW-TO: View Pipeline DAG](#8-how-to-view-pipeline-dag)
 9. [HOW-TO: Generate Type-Safe Python SDK](#9-how-to-generate-type-safe-python-sdk)
-10. [HOW-TO: Diff Changes](#10-how-to-diff-changes)
-11. [HOW-TO: Teardown](#11-how-to-teardown)
-12. [Reference: Column Options](#12-reference-column-options)
-13. [Reference: Model Options](#13-reference-model-options)
-14. [Reference: Migration Actions](#14-reference-migration-actions)
-15. [Reference: Project Structure](#15-reference-project-structure)
-16. [Reference: Environment Variables](#16-reference-environment-variables)
-17. [Troubleshooting](#17-troubleshooting)
+10. [HOW-TO: Explain Provenance (Column-Level Lineage)](#10-how-to-explain-provenance-column-level-lineage)
+11. [HOW-TO: Diff Changes](#11-how-to-diff-changes)
+12. [HOW-TO: Teardown](#12-how-to-teardown)
+13. [Reference: Column Options](#13-reference-column-options)
+14. [Reference: Model Options](#14-reference-model-options)
+15. [Reference: Migration Actions](#15-reference-migration-actions)
+16. [Reference: Project Structure](#16-reference-project-structure)
+17. [Reference: Environment Variables](#17-reference-environment-variables)
+18. [Troubleshooting](#18-troubleshooting)
 
 ---
 
@@ -755,19 +756,98 @@ wrapper codegen --check
 
 ---
 
-## 10. HOW-TO: Diff Changes
+## 10. HOW-TO: Explain Provenance (Column-Level Lineage)
 
-After editing and recompiling:
+Trace any column value back to its source — expressions, UDF calls, checks, git commit, version:
 
 ```bash
-wrapper diff
+# Full provenance tree in terminal
+wrapper explain customer_summary.total_revenue
+
+# With upstream checks and UDF descriptions
+wrapper explain customer_summary.total_revenue --full
+
+# As Mermaid diagram (purple UDFs, orange checks)
+wrapper explain customer_summary.total_revenue --mermaid
+
+# As JSON (for scripting / GUI integration)
+wrapper explain customer_summary.total_revenue --json
+
+# Write to file
+wrapper explain customer_summary.total_revenue --mermaid --output docs/explain.mmd
 ```
 
-Shows what changed: tables added/removed, columns modified, quarantine rules updated.
+### Example Output
+
+```
+🔎 Explaining customer_summary.total_revenue
+├─ Expression: sum(line_total)
+├─ Operation: EXPRESSION
+├─ Type: decimal(10,2)
+├─ Version: v1
+├─ From model: customer_orders
+├─ Source columns: line_total
+├─ Git commit: c65af4f
+├─ Generated: 2026-03-22T17:26:02+00:00
+└─ Checks (2):
+     🔴 revenue_non_negative [range] on total_revenue → error
+     🔴 has_customers [row_count] (table) → error
+
+  ⬆ Upstream: customer_orders.line_total
+    ⬆ Upstream: stg_orders.line_total
+       expr: quantity * unit_price  [EXPRESSION]
+```
+
+### UDF Columns
+
+Columns using UDFs show the function call and its metadata:
+
+```
+🔎 Explaining customer_summary.tier
+├─ Expression: loyalty_tier(total_revenue)
+├─ Operation: UDF
+├─ UDF: loyalty_tier() → string  [SQL]
+│    Assigns GOLD/SILVER/BRONZE based on revenue
+└─ Checks (1):
+     🔴 has_customers [row_count] (table) → error
+```
+
+### Mermaid Provenance
+
+The `--mermaid` flag produces a bottom-up flowchart:
+- **Purple nodes** = UDF calls
+- **Orange hexagons** = checks
+- **Arrows** = data flows upstream → downstream
 
 ---
 
-## 11. HOW-TO: Teardown
+## 11. HOW-TO: Diff Changes
+
+See what changed since the last graph snapshot:
+
+```bash
+# Plain English summary
+wrapper diff
+
+# Color-coded Mermaid diagram (green=added, red=removed, orange=modified)
+wrapper diff --mermaid
+
+# Write diff output to file
+wrapper diff --output docs/diff.json
+wrapper diff --mermaid --output docs/diff.mmd
+```
+
+The first time you run `wrapper diff`, it saves a baseline snapshot to `artifacts/graph.json`.
+Subsequent runs compare against that snapshot and show:
+- Assets added/removed
+- Columns added/removed
+- Materialization changes
+- Quality rules changes
+- New/removed lineage edges
+
+---
+
+## 12. HOW-TO: Teardown
 
 Safely destroy everything:
 
@@ -779,7 +859,7 @@ Shows a graph diff of what would be deleted before taking action.
 
 ---
 
-## 12. Reference: Column Options
+## 13. Reference: Column Options
 
 | Option | Type | Example | What it does |
 |--------|------|---------|-------------|
@@ -796,7 +876,7 @@ Shows a graph diff of what would be deleted before taking action.
 
 ---
 
-## 13. Reference: Model Options
+## 14. Reference: Model Options
 
 | Option | Type | Example | What it does |
 |--------|------|---------|-------------|
@@ -813,7 +893,7 @@ Shows a graph diff of what would be deleted before taking action.
 
 ---
 
-## 14. Reference: Migration Actions
+## 15. Reference: Migration Actions
 
 | Action | Format | What it does |
 |--------|--------|-------------|
@@ -827,7 +907,7 @@ Shows a graph diff of what would be deleted before taking action.
 
 ---
 
-## 15. Reference: Project Structure
+## 16. Reference: Project Structure
 
 ```
 dbt-dab-wrapper-v0.1/
@@ -880,7 +960,7 @@ dbt-dab-wrapper-v0.1/
 
 ---
 
-## 16. Reference: Environment Variables
+## 17. Reference: Environment Variables
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
@@ -891,7 +971,7 @@ dbt-dab-wrapper-v0.1/
 
 ---
 
-## 17. Troubleshooting
+## 18. Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
@@ -919,6 +999,12 @@ dbt-dab-wrapper-v0.1/
 | `wrapper deploy` | Builds + deploys to Databricks |
 | `wrapper deploy --env prod` | Deploys to production |
 | `wrapper diff` | Shows what changed since last deploy |
+| `wrapper diff --mermaid` | Color-coded Mermaid diff diagram |
+| `wrapper diff --output diff.json` | Writes full diff JSON to file |
+| `wrapper explain model.col` | Full provenance tree for any column |
+| `wrapper explain model.col --full` | Provenance with upstream checks |
+| `wrapper explain model.col --mermaid` | Provenance as Mermaid diagram |
+| `wrapper explain model.col --json` | Provenance as JSON for scripting |
 | `wrapper migrate` | Applies migration YAMLs to models.yml |
 | `wrapper migrate --dry-run` | Preview migration changes without applying |
 | `wrapper migrate --no-recompile` | Applies migrations without recompiling |
@@ -951,5 +1037,8 @@ These work automatically when enabled in `wrapper.yml` — no setup needed:
 - **Data Quality Checks**: Add inline `checks:` to any model — range, recency, row_count, regex, or custom SQL. View with `wrapper validate`.
 - **Dev Mode**: `wrapper dev-up` → isolated schema, `wrapper dev` → auto-recompile on save, `wrapper dev-down` → teardown. Zero extra dependencies.
 - **Dry-Run Migrations**: `wrapper migrate --dry-run` previews changes without touching files.
+- **Provenance Explain**: `wrapper explain model.column` traces any value through expressions, UDFs, checks, and git commits — all the way to the raw source. Terminal tree, Mermaid, or JSON output.
+- **Graph Diff**: `wrapper diff` compares graph snapshots — shows added/removed/modified assets, columns, and lineage edges. Color-coded Mermaid with `--mermaid`.
+- **Check Nodes in Graph**: Data quality checks appear as orange hexagons in the graph. Diff detects when checks are added or removed.
 - **ODCS Contracts**: Every model is an Open Data Contract Standard node. Every dependency is a lineage edge.
 - **Workflow DAG**: Pipeline automatically splits into INGEST → STAGE → CLEAN → ENRICH → SERVE stages.

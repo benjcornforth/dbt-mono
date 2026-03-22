@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml as _yaml
+
 # =============================================
 # ODCS-ALIGNED NODE TYPES
 # =============================================
@@ -132,6 +134,9 @@ def build_graph(
 
     # ── Inject SQL UDFs from models.yml ──────────────────
     _add_sql_udf_nodes(graph, dbt_project_dir or Path("dbt"), catalog, schema, git_commit, now)
+
+    # ── Inject check nodes from models.yml ───────────────
+    _add_check_nodes(graph, dbt_project_dir or Path("dbt"), git_commit, now)
 
     # ── Compute content hashes for diffing ───────────────
     for contract_id, contract in graph["contracts"].items():
@@ -523,7 +528,6 @@ def _add_sql_udf_nodes(
     if not ddl_path.exists():
         return
 
-    import yaml as _yaml
     raw = _yaml.safe_load(ddl_path.read_text())
     udfs = raw.get("udfs", {})
     models = raw.get("models", {})
@@ -577,6 +581,87 @@ def _add_sql_udf_nodes(
                         "to": model_id,
                         "type": "udf_call",
                         "description": f"UDF {fn_name} used in {model_name}.{col_name}",
+                    })
+
+
+def _add_check_nodes(
+    graph: dict,
+    dbt_dir: Path,
+    git_commit: str,
+    now: str,
+) -> None:
+    """
+    Read checks: blocks from models.yml and add check nodes + edges.
+
+    Orange hexagons in Mermaid. Each check is a node connected to its model.
+    Cross-model checks (reconcile) also connect to the parent model.
+    """
+    ddl_path = dbt_dir / "models.yml"
+    if not ddl_path.exists():
+        return
+
+    raw = _yaml.safe_load(ddl_path.read_text())
+    models = raw.get("models", {})
+    project = graph["metadata"]["project"]
+    schema = graph["metadata"]["schema"]
+
+    for model_name, model_def in models.items():
+        checks = model_def.get("checks", [])
+        if not checks:
+            continue
+
+        model_id = f"model.{project}.{model_name}"
+
+        for check in checks:
+            check_name = check.get("name", f"{model_name}_check")
+            check_type = check.get("type", "custom_sql")
+            severity = check.get("severity", "warn")
+            check_id = f"check.{project}.{model_name}.{check_name}"
+
+            graph["contracts"][check_id] = _make_contract(
+                dataset_name=check_name,
+                dataset_domain=schema,
+                dataset_type="quality",
+                description=f"Check: {check_name} ({check_type}, {severity})",
+                columns=[],
+                quality_rules=[{
+                    "type": check_type,
+                    "description": check_name,
+                    "column": check.get("column", ""),
+                    "dimension": "accuracy",
+                }],
+                catalog=graph["metadata"]["catalog"],
+                schema=schema,
+                git_commit=git_commit,
+                generated_at=now,
+                materialization="check",
+                tags=["check", f"type:{check_type}", f"severity:{severity}"],
+                meta={
+                    "check_type": check_type,
+                    "severity": severity,
+                    "column": check.get("column"),
+                    "model": model_name,
+                },
+            )
+
+            # Edge: model → check (model is validated by this check)
+            graph["edges"].append({
+                "from": model_id,
+                "to": check_id,
+                "type": "check",
+                "description": f"{model_name} validated by {check_name}",
+            })
+
+            # Reconcile checks: also link to parent model
+            if check_type == "reconcile":
+                parent_model = check.get("parent_model", "")
+                if parent_model:
+                    parent_id = f"model.{project}.{parent_model}"
+                    graph["edges"].append({
+                        "from": parent_id,
+                        "to": check_id,
+                        "type": "check",
+                        "description": f"{parent_model} reconciled in {check_name}",
                     })
 
 
@@ -663,6 +748,296 @@ def _short_name(node_id: str) -> str:
     """model.project.customers → customers"""
     parts = node_id.split(".")
     return parts[-1] if parts else node_id
+
+
+# =============================================
+# COLUMN-LEVEL LINEAGE WALKER
+# =============================================
+
+def walk_column_lineage(
+    graph: dict,
+    model_name: str,
+    column_name: str,
+    dbt_dir: Path = Path("dbt"),
+) -> dict:
+    """
+    Walk backwards from a column to its sources: expressions, UDFs, checks, git, version.
+
+    Returns a provenance tree dict:
+      {
+        model, column, expression, op, type, version,
+        source_model, source_columns,
+        udf_calls: [{name, description, language, returns}],
+        checks: [{name, type, severity, column, sql}],
+        git_commit, generated_at,
+        upstream: [recursive tree nodes]
+      }
+    """
+    ddl_path = dbt_dir / "models.yml"
+    if not ddl_path.exists():
+        return {"error": f"{ddl_path} not found"}
+
+    raw = _yaml.safe_load(ddl_path.read_text())
+    models = raw.get("models", {})
+    udfs = raw.get("udfs", {})
+
+    if model_name not in models:
+        return {"error": f"Model '{model_name}' not found in models.yml"}
+
+    model_def = models[model_name]
+    columns = model_def.get("columns", {})
+
+    if column_name not in columns:
+        return {"error": f"Column '{column_name}' not found in model '{model_name}'"}
+
+    col_def = columns[column_name]
+    if not isinstance(col_def, dict):
+        col_def = {}
+
+    # ── Determine expression and operation ───────
+    expression = ""
+    op = "PASSTHROUGH"
+    source_columns: list[str] = []
+    udf_calls: list[dict] = []
+
+    if "udf" in col_def:
+        udf_call_str = col_def["udf"]
+        fn_name = udf_call_str.split("(")[0].strip()
+        expression = udf_call_str
+        op = "UDF"
+        # Extract arg columns from the call
+        import re
+        args = re.findall(r"\(([^)]*)\)", udf_call_str)
+        if args:
+            source_columns = [a.strip() for a in args[0].split(",") if a.strip()]
+        if fn_name in udfs:
+            udf_def = udfs[fn_name]
+            udf_calls.append({
+                "name": fn_name,
+                "description": udf_def.get("description", ""),
+                "language": udf_def.get("language", "sql").upper(),
+                "returns": udf_def.get("returns", "STRING"),
+            })
+    elif "expr" in col_def:
+        expression = col_def["expr"]
+        op = "EXPRESSION"
+        # Try to extract column references from the expression
+        import re
+        source_columns = re.findall(r"\b([a-z_][a-z0-9_]*)\b", expression.lower())
+        # Filter out SQL keywords
+        sql_keywords = {"count", "sum", "min", "max", "avg", "case", "when", "then",
+                        "else", "end", "as", "and", "or", "not", "null", "is", "in",
+                        "between", "like", "cast", "coalesce", "if", "select", "from"}
+        source_columns = [c for c in source_columns if c not in sql_keywords]
+    elif "from" in col_def:
+        op = "JOIN_REF"
+        expression = f"{col_def['from']}.{col_def.get('source_column', column_name)}"
+        source_columns = [col_def.get("source_column", column_name)]
+    elif "cast" in col_def and col_def.get("cast"):
+        op = "CAST"
+        expression = f"CAST({column_name} AS {col_def.get('type', 'string')})"
+        source_columns = [column_name]
+    else:
+        expression = column_name
+        source_columns = [column_name]
+
+    # ── Source model(s) ──────────────────────────
+    source_model = None
+    if "source" in model_def:
+        source_model = model_def["source"]
+    elif "sources" in model_def:
+        # For joins, find which alias this column comes from
+        alias = col_def.get("from")
+        if alias and alias in model_def["sources"]:
+            source_model = model_def["sources"][alias]
+        else:
+            # First source as default
+            source_model = next(iter(model_def["sources"].values()), None)
+
+    # ── Checks on this column or model ───────────
+    checks: list[dict] = []
+    for chk in model_def.get("checks", []):
+        chk_col = chk.get("column")
+        # Include: column-specific checks for this column, or table-scope checks
+        if chk_col == column_name or chk_col is None:
+            checks.append({
+                "name": chk.get("name", "unnamed"),
+                "type": chk.get("type", "custom_sql"),
+                "severity": chk.get("severity", "warn"),
+                "column": chk_col,
+            })
+
+    # ── Git + metadata from graph ────────────────
+    git_commit = graph.get("metadata", {}).get("git_commit", "unknown")
+    generated_at = graph.get("metadata", {}).get("generated_at", "")
+    version = model_def.get("version", "v1")
+
+    # ── Build the provenance node ────────────────
+    node: dict[str, Any] = {
+        "model": model_name,
+        "column": column_name,
+        "expression": expression,
+        "op": op,
+        "type": col_def.get("type", "inferred"),
+        "version": version,
+        "source_model": source_model,
+        "source_columns": source_columns,
+        "udf_calls": udf_calls,
+        "checks": checks,
+        "git_commit": git_commit,
+        "generated_at": generated_at,
+    }
+
+    # ── Recurse upstream ─────────────────────────
+    upstream: list[dict] = []
+    if source_model and source_model in models:
+        source_cols = models[source_model].get("columns", {})
+        for src_col in source_columns:
+            if src_col in source_cols:
+                upstream.append(
+                    walk_column_lineage(graph, source_model, src_col, dbt_dir)
+                )
+    node["upstream"] = upstream
+
+    return node
+
+
+def render_provenance_tree(
+    tree: dict,
+    mermaid: bool = False,
+    full: bool = False,
+) -> str:
+    """
+    Render a provenance tree as terminal text or Mermaid diagram.
+
+    Returns the rendered string.
+    """
+    if "error" in tree:
+        return f"❌ {tree['error']}"
+
+    if mermaid:
+        return _render_provenance_mermaid(tree)
+    return _render_provenance_terminal(tree, full=full)
+
+
+def _render_provenance_terminal(
+    tree: dict,
+    depth: int = 0,
+    full: bool = False,
+) -> str:
+    """Pretty-print provenance tree for terminal output."""
+    lines: list[str] = []
+    indent = "  " * depth
+    prefix = "├─" if depth > 0 else "🔎"
+
+    if depth == 0:
+        lines.append(f"🔎 Explaining {tree['model']}.{tree['column']}")
+        lines.append(f"├─ Expression: {tree['expression']}")
+        lines.append(f"├─ Operation: {tree['op']}")
+        if tree.get("type") and tree["type"] != "inferred":
+            lines.append(f"├─ Type: {tree['type']}")
+        lines.append(f"├─ Version: {tree['version']}")
+        if tree.get("source_model"):
+            lines.append(f"├─ From model: {tree['source_model']}")
+        if tree.get("source_columns"):
+            lines.append(f"├─ Source columns: {', '.join(tree['source_columns'])}")
+
+        # UDFs
+        for udf in tree.get("udf_calls", []):
+            lines.append(f"├─ UDF: {udf['name']}() → {udf['returns']}  [{udf['language']}]")
+            if full and udf.get("description"):
+                lines.append(f"│    {udf['description']}")
+
+        # Git + deploy
+        lines.append(f"├─ Git commit: {tree['git_commit']}")
+        if tree.get("generated_at"):
+            lines.append(f"├─ Generated: {tree['generated_at']}")
+
+        # Checks
+        checks = tree.get("checks", [])
+        if checks:
+            lines.append(f"└─ Checks ({len(checks)}):")
+            for chk in checks:
+                icon = "🔴" if chk["severity"] == "error" else "🟡" if chk["severity"] == "warn" else "⚪"
+                scope = f" on {chk['column']}" if chk.get("column") else " (table)"
+                lines.append(f"     {icon} {chk['name']} [{chk['type']}]{scope} → {chk['severity']}")
+        else:
+            lines.append(f"└─ Checks: (none)")
+    else:
+        lines.append(f"{indent}{prefix} {tree['model']}.{tree['column']}")
+        lines.append(f"{indent}│  expr: {tree['expression']}  [{tree['op']}]")
+        if tree.get("udf_calls"):
+            for udf in tree["udf_calls"]:
+                lines.append(f"{indent}│  UDF: {udf['name']}()")
+        if tree.get("checks") and full:
+            for chk in tree["checks"]:
+                icon = "🔴" if chk["severity"] == "error" else "🟡"
+                lines.append(f"{indent}│  {icon} {chk['name']}")
+
+    # Upstream
+    for child in tree.get("upstream", []):
+        if "error" not in child:
+            lines.append("")
+            lines.append(f"{indent}  ⬆ Upstream: {child['model']}.{child['column']}")
+            lines.append(_render_provenance_terminal(child, depth + 1, full=full))
+
+    return "\n".join(lines)
+
+
+def _render_provenance_mermaid(tree: dict) -> str:
+    """Render provenance tree as a Mermaid flowchart."""
+    lines = ["graph BT"]
+    node_ids: set[str] = set()
+
+    def _add_nodes(t: dict, parent_id: str | None = None) -> None:
+        node_id = f"{t['model']}_{t['column']}".replace(".", "_")
+        if node_id not in node_ids:
+            node_ids.add(node_id)
+            label = f"{t['model']}.{t['column']}"
+            if t["op"] == "UDF":
+                lines.append(f"    {node_id}{{{{{label}}}}}")
+            else:
+                lines.append(f'    {node_id}["{label}<br/>{t["expression"]}"]')
+
+            # Check nodes
+            for chk in t.get("checks", []):
+                chk_id = f"chk_{t['model']}_{chk['name']}".replace(".", "_")
+                if chk_id not in node_ids:
+                    node_ids.add(chk_id)
+                    sev_icon = "🔴" if chk["severity"] == "error" else "🟡"
+                    lines.append(f'    {chk_id}{{{{{{{sev_icon} {chk["name"]}}}}}}}')
+                    lines.append(f"    {node_id} -.->|check| {chk_id}")
+
+            # UDF nodes
+            for udf in t.get("udf_calls", []):
+                udf_id = f"udf_{udf['name']}"
+                if udf_id not in node_ids:
+                    node_ids.add(udf_id)
+                    lines.append(f"    {udf_id}{{{{{udf['name']}()}}}}")
+                lines.append(f"    {udf_id} ==>|udf| {node_id}")
+
+        if parent_id:
+            lines.append(f"    {node_id} --> {parent_id}")
+
+        for child in t.get("upstream", []):
+            if "error" not in child:
+                _add_nodes(child, node_id)
+
+    _add_nodes(tree)
+
+    # Styles
+    lines.append("")
+    lines.append("    classDef udf fill:#e8d5f5,stroke:#7b2d8e,stroke-width:2px")
+    lines.append("    classDef check fill:#ffecd2,stroke:#e67e22,stroke-width:2px")
+
+    udf_nodes = [nid for nid in node_ids if nid.startswith("udf_")]
+    chk_nodes = [nid for nid in node_ids if nid.startswith("chk_")]
+    if udf_nodes:
+        lines.append(f"    class {','.join(udf_nodes)} udf")
+    if chk_nodes:
+        lines.append(f"    class {','.join(chk_nodes)} check")
+
+    return "\n".join(lines)
 
 
 # =============================================
@@ -845,6 +1220,8 @@ def render_mermaid(
             return f'    {safe_id}[("{name}")]'       # stadium / rounded
         elif dtype == "function":
             return f"    {safe_id}{{{{{name}}}}}"      # rhombus
+        elif dtype == "quality":
+            return f"    {safe_id}{{{{{{{name}}}}}}}"  # hexagon
         elif dtype == "table":
             if "quarantine" in name:
                 return f"    {safe_id}[/\"{name}\"/]"  # parallelogram
@@ -880,6 +1257,8 @@ def render_mermaid(
             lines.append(f"    {src} -.->|prior_ver| {tgt}")
         elif etype == "udf_call":
             lines.append(f"    {src} ==>|udf| {tgt}")
+        elif etype == "check":
+            lines.append(f"    {src} -.->|check| {tgt}")
         else:
             lines.append(f"    {src} --> {tgt}")
 
@@ -911,6 +1290,17 @@ def render_mermaid(
         lines.append("")
         lines.append("    classDef udf fill:#e8d5f5,stroke:#7b2d8e,stroke-width:2px")
         lines.append(f"    class {','.join(udf_ids)} udf")
+
+    # Check nodes always get orange styling
+    check_ids = [
+        cid.replace(".", "_").replace("-", "_")
+        for cid, c in contracts.items()
+        if c["dataset"]["type"] == "quality"
+    ]
+    if check_ids:
+        lines.append("")
+        lines.append("    classDef check fill:#ffecd2,stroke:#e67e22,stroke-width:2px")
+        lines.append(f"    class {','.join(check_ids)} check")
 
     return "\n".join(lines)
 

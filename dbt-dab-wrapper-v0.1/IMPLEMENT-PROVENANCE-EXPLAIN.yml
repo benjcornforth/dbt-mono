@@ -1,0 +1,102 @@
+# IMPLEMENT-PROVENANCE-EXPLAIN.yml
+# ────────────────────────────────────────────────────────────────
+#   dbt-dab-wrapper — Implementation Spec for Priority #1
+#   Item: wrapper explain <model>.<column>
+#   Status: Ready to build (foundations 100% there)
+#   Date: 22 March 2026
+#   Owner: Lucas (you — go for it!)
+#   Effort: S (1–2 days max)
+#   Goal: Child types one command → sees full provenance tree + checks
+#   Rule: Zero new files for users. Everything generated. Graph = truth.
+#   Philosophy: "calculation lineage, provenance for every single value"
+# ────────────────────────────────────────────────────────────────
+
+implementation_overview:
+  command: wrapper explain <model_name>.<column_name>
+  examples:
+    - wrapper explain customer_summary.total_revenue
+    - wrapper explain customer_summary.total_revenue --mermaid --output docs/explain.mmd
+    - wrapper explain int_customer_orders.email --full
+  output_formats:
+    - default: beautiful terminal tree (ASCII + colors)
+    - --mermaid: Mermaid flowchart (purple UDF nodes, orange check nodes)
+    - --json: for scripting / GUI
+  auto_wires: true
+    - Also calls diff_graphs() internally so wrapper diff now works
+    - Pulls real git_commit via subprocess("git rev-parse HEAD")
+
+decisions_made_from_your_review:
+  - walk_column_lineage: Yes — add new function in graph.py (~40 lines, BFS backwards from column)
+  - git integration: Yes — thread git_commit into build_graph() (default "unknown" → real SHA)
+  - UDF version-bump scope (for later item #4): Yes — when UDF body changes, graph finds all referencing models and bumps their version:
+    auto_bump: true
+    impacted_models: resolved via graph edges
+  - wrapper diff: Wire it up in this PR (stub → real). diff_graphs() already exists — just call it from CLI.
+  - _challenges table (for item #5): Generate as normal dbt model (dbt/models/challenges.sql) — consistent with everything-is-generated rule. No direct SDK inserts.
+
+yaml_spec_for_cli_py:
+  # Add to src/wrapper/cli.py
+  @app.command("explain")
+  def explain(model_dot_column: str, mermaid: bool = False, full: bool = False, output: str = None):
+      """Show full provenance for any column — lineage, UDFs, checks, git, version"""
+      model, column = model_dot_column.split(".")
+      graph = build_graph()                    # already exists
+      lineage_tree = walk_column_lineage(graph, model, column)  # NEW FUNCTION
+      render_provenance_tree(lineage_tree, mermaid=mermaid, full=full)
+      if output:
+          save_to_file(...)
+
+yaml_spec_for_graph_py_additions:
+  # New functions (copy style from _add_sql_udf_nodes)
+  def walk_column_lineage(graph: dict, model: str, column: str) -> dict:
+      """BFS backwards: column → expression → UDFs → sources → checks"""
+      # ~40 lines: start at model.column, follow edges, collect _lineage + _checks
+      # Return tree: {column, expression, udf_calls: [], checks: [], sources: [], git_commit, version}
+
+  def render_provenance_tree(tree: dict, mermaid: bool = False):
+      """Terminal pretty-print or Mermaid"""
+      # Use rich library (already in deps) for colors:
+      #   total_revenue = sum(line_total) [UDF: loyalty_tier] ✓ checks passed
+
+  def _add_check_nodes(graph):  # for item #3
+      """Orange hexagons — copy-paste from UDF pattern"""
+
+yaml_spec_for_simple_ddl_py:
+  # Tiny hook — already called in compile_all()
+  def inject_git_commit_into_lineage():
+      """subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip()"""
+      # Run once per compile / deploy / explain
+
+test_model_update_in_dbt_models_yml:
+  # Add to your existing customer_summary (for instant demo)
+  customer_summary:
+    ...
+    columns:
+      total_revenue:
+        expr: "sum(line_total)"
+        # explain will now show: expression + checks + UDF if used
+
+expected_terminal_output_example:
+  """
+  🔎 Explaining customer_summary.total_revenue
+  ├─ Expression: sum(line_total)                          [methodology v2]
+  ├─ From model: int_customer_orders
+  ├─ UDF calls: loyalty_tier(total_revenue)
+  ├─ Git commit: a1b2c3d4 (22 Mar 2026)
+  ├─ Deployed: 2026-03-22 17:00 UTC
+  └─ Checks validated:
+       ✓ revenue_non_negative (error) — passed
+       ⚠ data_is_fresh (warn) — passed with 3-day lag
+       ✓ has_customers (error) — passed
+  """
+
+next_steps_for_you_lucas:
+  - Implement walk_column_lineage() + render_provenance_tree() in graph.py
+  - Add CLI command + wire diff_graphs()
+  - Add git_commit injection
+  - Test with `wrapper explain customer_summary.total_revenue`
+  - Run `wrapper guide` → new section auto-appears
+  - Commit → we ship Priority #1 in <2 hours
+
+blockers: none
+ready_to_ship: true

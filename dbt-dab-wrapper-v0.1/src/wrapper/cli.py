@@ -30,6 +30,8 @@ from wrapper.graph import (
     save_graph,
     load_graph,
     export_individual_contracts,
+    walk_column_lineage,
+    render_provenance_tree,
 )
 from wrapper.type_safe import build_models, generate_sdk_file
 from wrapper.workflow import build_workflow
@@ -150,11 +152,106 @@ def teardown():
 # DIFF – graph magic
 # =============================================
 @app.command()
-def diff():
-    """wrapper diff → shows table changes, methodology changes, quarantine adds"""
-    typer.echo("📊 Showing graph diff (tables + jobs + UDFs + provenance)")
-    typer.echo("✅ (Mermaid diagram + plain English coming in next version)")
-    typer.echo("🎉 Every asset is in one graph – diffing is now child-simple.")
+def diff(
+    mermaid: bool = typer.Option(False, "--mermaid", help="Output Mermaid diff diagram"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Write diff output to file"),
+):
+    """wrapper diff → shows what changed since last graph snapshot"""
+    if not CONFIG_FILE.exists():
+        typer.echo("❌ No wrapper.yml found. Run 'wrapper setup' first!")
+        raise typer.Exit(1)
+
+    config = yaml.safe_load(CONFIG_FILE.read_text())
+    snapshot_path = Path("artifacts") / "graph.json"
+
+    new_graph = build_graph(config)
+    old_graph = load_graph(snapshot_path)
+
+    if old_graph is None:
+        typer.echo("📊 No previous graph snapshot found — building baseline.")
+        save_graph(new_graph, snapshot_path)
+        typer.echo(f"✅ Saved graph snapshot → {snapshot_path}")
+        typer.echo("   Run 'wrapper diff' again after making changes.")
+        return
+
+    result = diff_graphs(old_graph, new_graph)
+
+    if mermaid:
+        diagram = render_mermaid(new_graph, diff=result)
+        if output:
+            Path(output).parent.mkdir(parents=True, exist_ok=True)
+            Path(output).write_text(diagram)
+            typer.echo(f"✅ Mermaid diff diagram → {output}")
+        else:
+            typer.echo(diagram)
+    else:
+        typer.echo(f"📊 Diff: {result['old_commit']} → {result['new_commit']}\n")
+        typer.echo(result["summary"])
+
+        if output:
+            import json
+            Path(output).parent.mkdir(parents=True, exist_ok=True)
+            Path(output).write_text(json.dumps(result, indent=2, default=str))
+            typer.echo(f"\n✅ Full diff JSON → {output}")
+
+    # Save new snapshot for next diff
+    save_graph(new_graph, snapshot_path)
+    typer.echo(f"\n📸 Updated graph snapshot → {snapshot_path}")
+
+
+# =============================================
+# EXPLAIN – column-level provenance
+# =============================================
+@app.command()
+def explain(
+    model_dot_column: str = typer.Argument(..., help="Model.column to explain (e.g. customer_summary.total_revenue)"),
+    ddl: str = typer.Option("dbt/models.yml", "--ddl", help="Path to models.yml DDL file"),
+    mermaid_flag: bool = typer.Option(False, "--mermaid", help="Output Mermaid provenance diagram"),
+    full: bool = typer.Option(False, "--full", help="Show full detail including upstream checks"),
+    json_flag: bool = typer.Option(False, "--json", help="Output JSON for scripting"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Write output to file"),
+):
+    """wrapper explain <model>.<column> → shows full provenance tree"""
+    parts = model_dot_column.split(".", 1)
+    if len(parts) != 2:
+        typer.echo("❌ Usage: wrapper explain <model_name>.<column_name>")
+        typer.echo("   Example: wrapper explain customer_summary.total_revenue")
+        raise typer.Exit(1)
+
+    model_name, column_name = parts
+    ddl_path = Path(ddl)
+    dbt_dir = ddl_path.parent
+
+    if not ddl_path.exists():
+        typer.echo(f"❌ {ddl} not found.")
+        raise typer.Exit(1)
+
+    if not CONFIG_FILE.exists():
+        typer.echo("❌ No wrapper.yml found. Run 'wrapper setup' first!")
+        raise typer.Exit(1)
+
+    config = yaml.safe_load(CONFIG_FILE.read_text())
+    graph = build_graph(config, dbt_project_dir=dbt_dir)
+    tree = walk_column_lineage(graph, model_name, column_name, dbt_dir)
+
+    if "error" in tree:
+        typer.echo(f"❌ {tree['error']}")
+        raise typer.Exit(1)
+
+    if json_flag:
+        import json
+        result = json.dumps(tree, indent=2, default=str)
+    elif mermaid_flag:
+        result = render_provenance_tree(tree, mermaid=True)
+    else:
+        result = render_provenance_tree(tree, full=full)
+
+    if output:
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
+        Path(output).write_text(result)
+        typer.echo(f"✅ Written to {output}")
+    else:
+        typer.echo(result)
 
 # =============================================
 # CODEGEN – type-safe Python SDK from dbt schema
