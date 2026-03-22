@@ -11,16 +11,17 @@ This guide teaches you — or an AI agent — exactly how to set up, build, depl
 ## Architecture at a Glance
 
 ```
-forge.yml          ← Project config (YOU edit this)
-dbt/models.yml       ← Table definitions (YOU edit this)
+forge.yml            ← Project config + naming patterns + profiles (YOU edit)
+dbt/models.yml       ← Table definitions (YOU edit)
 dbt/migrations/      ← Schema changes (YOU create YAMLs here)
   ↓
-forge compile      ← Generates all SQL automatically
+forge compile        ← Generates all SQL automatically
   ↓
 dbt/models/*.sql     ← Generated SQL (NEVER edit these directly)
 dbt/models/schema.yml← Generated tests & docs
+sql/*.sql            ← Generated standalone SQL (--pure-sql mode)
   ↓
-forge deploy       ← Deploys to Databricks
+forge deploy         ← Deploys to Databricks
 ```
 
 **You only ever touch two files**: `forge.yml` and `dbt/models.yml`.
@@ -42,12 +43,16 @@ Everything else is generated.
 10. [HOW-TO: Explain Provenance (Column-Level Lineage)](#10-how-to-explain-provenance-column-level-lineage)
 11. [HOW-TO: Diff Changes](#11-how-to-diff-changes)
 12. [HOW-TO: Teardown](#12-how-to-teardown)
-13. [Reference: Column Options](#13-reference-column-options)
-14. [Reference: Model Options](#14-reference-model-options)
-15. [Reference: Migration Actions](#15-reference-migration-actions)
-16. [Reference: Project Structure](#16-reference-project-structure)
-17. [Reference: Environment Variables](#17-reference-environment-variables)
-18. [Troubleshooting](#18-troubleshooting)
+13. [HOW-TO: Multi-Environment Profiles](#13-how-to-multi-environment-profiles)
+14. [HOW-TO: Naming Patterns (Catalogs & Schemas)](#14-how-to-naming-patterns-catalogs--schemas)
+15. [HOW-TO: SQL-Only Mode (No dbt at Runtime)](#15-how-to-sql-only-mode-no-dbt-at-runtime)
+16. [Reference: Column Options](#16-reference-column-options)
+17. [Reference: Model Options](#17-reference-model-options)
+18. [Reference: Migration Actions](#18-reference-migration-actions)
+19. [Reference: forge.yml Options](#19-reference-forgeyml-options)
+20. [Reference: Project Structure](#20-reference-project-structure)
+21. [Reference: Environment Variables & Authentication](#21-reference-environment-variables--authentication)
+22. [Troubleshooting](#22-troubleshooting)
 
 ---
 
@@ -69,13 +74,28 @@ poetry install
 
 This installs: `typer`, `pyyaml`, `databricks-sdk`, `dbt-databricks`, and all dev tools.
 
-### Step 2: Set environment variables
+### Step 2: Connect to Databricks
+
+**Recommended**: Use the Databricks CLI config file (`~/.databrickscfg`):
+
+```bash
+databricks configure --profile DEFAULT
+```
+
+This writes your host and token to `~/.databrickscfg`. Then reference it in `forge.yml`:
+
+```yaml
+profiles:
+  dev:
+    databricks_profile: DEFAULT    # reads ~/.databrickscfg [DEFAULT]
+```
+
+**Alternative**: Set environment variables:
 
 ```bash
 export DBT_DATABRICKS_HOST="your-workspace.cloud.databricks.com"
 export DBT_DATABRICKS_HTTP_PATH="/sql/1.0/warehouses/your-warehouse-id"
 export DBT_DATABRICKS_TOKEN="dapi..."
-export DBT_DATABRICKS_CATALOG="main"   # optional, defaults to 'workspace'
 ```
 
 Find `HTTP_PATH` in: **Databricks → SQL Warehouses → your warehouse → Connection details**.
@@ -87,7 +107,8 @@ forge setup --name my_project
 ```
 
 This creates:
-- `forge.yml` — your project config
+- `forge.yml` — your project config with profiles and naming patterns
+- `profiles.yml` — auto-generated dbt connection config
 - `dbt/models/` — where compiled SQL goes
 - `dbt/seeds/` — CSV seed data files
 - `dbt/sources/` — external source definitions
@@ -99,28 +120,59 @@ Edit `forge.yml` to match your environment:
 
 ```yaml
 name: my_project
-environment: dev
-target_platform: databricks
-catalog: main
-schema: silver
-compute:
-  type: serverless
-  auto_scale: true
+scope: fd                                # project scope (e.g. fd = foundational_data)
+id: myproject                            # project id — used in naming patterns
+active_profile: dev
+
+# Naming patterns — how catalog and schema names are constructed
+catalog_pattern: "{env}_{scope}_{catalog}"   # → dev_fd_bronze, prd_fd_meta
+schema_pattern:  "{env}_{id}"                # → dev_myproject (prd → myproject)
+skip_env_prefix: [prd, prod]                 # schemas drop {env}_ for these envs
+
+# Logical names — actual Databricks names are built via patterns
+catalogs: [bronze, silver, meta, operations]
+schemas:  [bronze, silver, gold]
+
+profiles:
+  dev:
+    platform: databricks
+    databricks_profile: DEFAULT
+    env: dev
+    catalog: bronze
+    compute: { type: serverless, auto_scale: true }
+  prod:
+    databricks_profile: PROD
+    env: prd
+    catalog: bronze
+    schedule: "0 0 6 * * ?"
+  local:
+    platform: postgres
+    connection: { host: localhost, port: 5432, database: dev_warehouse, user: postgres }
+    catalog: public
+    schemas: { bronze: bronze, silver: silver, gold: gold }
+    catalogs: { bronze: public, silver: public, meta: public, operations: public }
+
 dbt:
   version: 1.8.0
 features:
-  graph: true           # lineage graph + ODCS contracts
-  quarantine: true       # auto-quarantine bad rows
+  graph: true
+  quarantine: true
   validation_exceptions: true
-  prior_version: true    # safe rollback snapshots
-  python_udfs: true      # Python UDF support
+  prior_version: true
+  python_udfs: true
 portability:
-  avoid_databricks_only: true
   postgres_compatible: true
-schedule: "0 0 6 * * ?"  # Daily at 06:00 UTC (cron)
 ```
 
-### Step 5: Add seed data (optional)
+### Step 5: Verify profiles
+
+```bash
+forge profiles                  # list all profiles + expanded catalog/schema names
+forge profiles --show-connection # show resolved connection details
+forge profiles --generate       # auto-generate profiles.yml from forge.yml
+```
+
+### Step 6: Add seed data (optional)
 
 Place CSV files in `dbt/seeds/`:
 
@@ -291,14 +343,15 @@ forge deploy
 
 This:
 1. Reads `forge.yml` for configuration
-2. Resolves compute (serverless/dedicated)
+2. Resolves the active profile and connection (databrickscfg or env vars)
 3. Generates the Databricks Asset Bundle
 4. Runs `dbt run` with all models
 
-### Deploy to a specific environment
+### Deploy to a specific profile
 
 ```bash
-forge deploy --env prod
+forge deploy --profile prod     # or -p prod
+forge deploy -p int
 ```
 
 ### Manual dbt commands (if needed)
@@ -324,9 +377,9 @@ The standard workflow is:
 ```
 Edit dbt/models.yml
   ↓
-forge compile        # YAML → SQL
+forge compile        # YAML → SQL (or --pure-sql for standalone SQL)
   ↓
-forge deploy         # SQL → Databricks
+forge deploy -p dev  # SQL → Databricks (dev profile)
   ↓
 forge diff           # See what changed
 ```
@@ -703,11 +756,14 @@ forge workflow --mermaid
 
 Paste the output into any Mermaid renderer to visualize your pipeline.
 
-### Generate Databricks Asset Bundle jobs section
+### Generate Databricks Asset Bundle jobs YAML
 
 ```bash
-forge workflow --dab
+forge workflow --dab              # prints to stdout
+forge workflow --dab -p prod      # for a specific profile
 ```
+
+With `--dab`, the workflow is automatically written to `resources/jobs/<pipeline-name>.yml` for use with Databricks Asset Bundles.
 
 ### Save to a file
 
@@ -859,7 +915,221 @@ Shows a graph diff of what would be deleted before taking action.
 
 ---
 
-## 13. Reference: Column Options
+## 13. HOW-TO: Multi-Environment Profiles
+
+Forge supports multiple deployment environments from a single `forge.yml`. Each profile defines a platform, connection, and compute config.
+
+### Define profiles
+
+```yaml
+profiles:
+  dev:
+    platform: databricks
+    databricks_profile: DEFAULT    # reads ~/.databrickscfg [DEFAULT]
+    env: dev
+    catalog: bronze
+    compute: { type: serverless }
+  prod:
+    databricks_profile: PROD
+    env: prd
+    catalog: bronze
+    schedule: "0 0 6 * * ?"
+  int:
+    databricks_profile: INT
+    env: int
+    catalog: bronze
+  local:
+    platform: postgres
+    connection: { host: localhost, port: 5432, database: dev_warehouse, user: postgres }
+    catalog: public
+    schemas: { bronze: bronze, silver: silver, gold: gold }
+    catalogs: { bronze: public, silver: public, meta: public, operations: public }
+```
+
+### Set the active profile
+
+```yaml
+active_profile: dev
+```
+
+Or override per-command:
+
+```bash
+forge deploy --profile prod
+forge compile --pure-sql -p int
+```
+
+### Connection resolution order
+
+1. `databricks_profile:` → reads `~/.databrickscfg` (recommended)
+2. `connection:` block → inline host/token/http_path
+3. Environment variables → `DBT_DATABRICKS_HOST`, `DBT_DATABRICKS_TOKEN`
+
+### View and manage profiles
+
+```bash
+forge profiles                    # list all profiles + expanded names
+forge profiles -p prod            # show details for one profile
+forge profiles --show-connection  # show resolved host/token for all
+forge profiles --generate         # auto-generate profiles.yml with dbt vars
+```
+
+### Databrickscfg setup
+
+```bash
+# Create profiles in ~/.databrickscfg
+databricks configure --profile DEFAULT    # dev workspace
+databricks configure --profile PROD       # prod workspace
+databricks configure --profile INT        # integration workspace
+```
+
+The config file looks like:
+
+```ini
+[DEFAULT]
+host  = https://dev.cloud.databricks.com
+token = dapiXXX
+
+[PROD]
+host  = https://prod.cloud.databricks.com
+token = dapiYYY
+```
+
+---
+
+## 14. HOW-TO: Naming Patterns (Catalogs & Schemas)
+
+Forge uses configurable patterns to construct Databricks catalog and schema names across environments. Change the pattern once — all environments update automatically.
+
+### Available tokens
+
+| Token | Source | Example |
+|-------|--------|---------|
+| `{env}` | Profile's `env:` key | `dev`, `int`, `prd` |
+| `{id}` | Top-level `id:` | `myproject` |
+| `{scope}` | Top-level `scope:` | `fd` (foundational_data) |
+| `{user}` | Current OS / Databricks user | `ben` |
+| `{catalog}` | Logical catalog name | `bronze`, `meta` |
+| `{schema}` | Logical schema name | `bronze`, `silver` |
+
+### Define patterns
+
+```yaml
+catalog_pattern: "{env}_{scope}_{catalog}"     # → dev_fd_bronze, prd_fd_meta
+schema_pattern:  "{env}_{id}"                  # → dev_myproject
+skip_env_prefix: [prd, prod]                   # schemas drop {env}_ for these envs
+```
+
+### Define logical names
+
+```yaml
+catalogs: [bronze, silver, meta, operations]
+schemas:  [bronze, silver, gold]
+```
+
+### How expansion works
+
+**Catalogs** always keep the `{env}_` prefix across all environments:
+
+| Logical | `env: dev` | `env: int` | `env: prd` |
+|---|---|---|---|
+| bronze | `dev_fd_bronze` | `int_fd_bronze` | `prd_fd_bronze` |
+| silver | `dev_fd_silver` | `int_fd_silver` | `prd_fd_silver` |
+| meta | `dev_fd_meta` | `int_fd_meta` | `prd_fd_meta` |
+| operations | `dev_fd_operations` | `int_fd_operations` | `prd_fd_operations` |
+
+**Schemas** drop `{env}_` for production environments (controlled by `skip_env_prefix`):
+
+| `env: dev` | `env: int` | `env: prd` |
+|---|---|---|
+| `dev_myproject` | `int_myproject` | `myproject` |
+
+### Medallion layer routing
+
+Models auto-route to the correct schema and catalog based on their name prefix:
+
+| Prefix | Layer |
+|---|---|
+| `raw_`, `src_`, `seed_` | bronze |
+| `stg_`, `staging_`, `clean_`, `int_` | silver |
+| `fct_`, `dim_`, `agg_`, `rpt_`, `pub_` | gold |
+
+### dbt variables
+
+Running `forge profiles --generate` injects schema/catalog variables into `profiles.yml`:
+
+```yaml
+vars:
+  schema_bronze: dev_myproject
+  schema_silver: dev_myproject
+  schema_gold:   dev_myproject
+  catalog_bronze: dev_fd_bronze
+  catalog_silver: dev_fd_silver
+  catalog_meta:   dev_fd_meta
+  catalog_operations: dev_fd_operations
+```
+
+Use in dbt Jinja: `{{ var('catalog_silver') }}`, `{{ var('schema_bronze') }}`.
+
+### Explicit overrides
+
+For non-patterned environments (e.g. local Postgres), spell out names explicitly:
+
+```yaml
+  local:
+    platform: postgres
+    schemas: { bronze: bronze, silver: silver, gold: gold }
+    catalogs: { bronze: public, silver: public, meta: public, operations: public }
+```
+
+---
+
+## 15. HOW-TO: SQL-Only Mode (No dbt at Runtime)
+
+Compile your models to standalone SQL that runs directly on a Databricks SQL warehouse — no dbt installation, no Python, no cold starts.
+
+### Compile
+
+```bash
+forge compile --pure-sql           # uses active profile
+forge compile --pure-sql -p prod   # uses prod profile (prd_fd_bronze catalogs)
+forge compile --pure-sql -p dev    # uses dev profile (dev_fd_bronze catalogs)
+```
+
+### Output
+
+Files are written to `sql/`, numbered for execution order (topological sort):
+
+```
+sql/000_udfs.sql              ← CREATE FUNCTION statements
+sql/001_stg_customers.sql     ← CREATE VIEW AS SELECT ...
+sql/002_customer_clean.sql
+sql/002_customer_clean_quarantine.sql  ← quarantine sidecar
+sql/003_stg_orders.sql
+sql/004_customer_orders.sql
+sql/005_customer_summary.sql
+```
+
+Each file is self-contained:
+- Fully qualified table references (`catalog.schema.table`)
+- Inline `_lineage` STRUCT (model name, sources, git commit, deploy timestamp)
+- Quarantine sidecar tables generated automatically
+- UDFs compiled as `CREATE OR REPLACE FUNCTION`
+
+### Execution
+
+Run the files in order on any SQL warehouse:
+
+```bash
+# Databricks SQL warehouse
+for f in sql/*.sql; do databricks sql execute --file "$f"; done
+
+# Or paste into Databricks SQL editor in numbered order
+```
+
+---
+
+## 16. Reference: Column Options
 
 | Option | Type | Example | What it does |
 |--------|------|---------|-------------|
@@ -876,7 +1146,7 @@ Shows a graph diff of what would be deleted before taking action.
 
 ---
 
-## 14. Reference: Model Options
+## 17. Reference: Model Options
 
 | Option | Type | Example | What it does |
 |--------|------|---------|-------------|
@@ -893,7 +1163,7 @@ Shows a graph diff of what would be deleted before taking action.
 
 ---
 
-## 15. Reference: Migration Actions
+## 18. Reference: Migration Actions
 
 | Action | Format | What it does |
 |--------|--------|-------------|
@@ -907,14 +1177,48 @@ Shows a graph diff of what would be deleted before taking action.
 
 ---
 
-## 16. Reference: Project Structure
+## 19. Reference: forge.yml Options
+
+| Key | Type | Example | Description |
+|-----|------|---------|-------------|
+| `name` | string | `my_project` | Project name |
+| `scope` | string | `fd` | Project scope — used as `{scope}` in patterns |
+| `id` | string | `myproject` | Project identifier — used as `{id}` in patterns |
+| `active_profile` | string | `dev` | Default profile when no `--profile` flag |
+| `catalog_pattern` | string | `"{env}_{scope}_{catalog}"` | Pattern for Databricks catalog names |
+| `schema_pattern` | string | `"{env}_{id}"` | Pattern for schema names |
+| `skip_env_prefix` | list | `[prd, prod]` | Envs that drop `{env}_` from schemas |
+| `catalogs` | list | `[bronze, silver, meta, operations]` | Logical catalog names |
+| `schemas` | list | `[bronze, silver, gold]` | Logical schema names |
+| `profiles` | map | See section 13 | Named environment profiles |
+| `dbt.version` | string | `1.8.0` | Required dbt version |
+| `features.*` | bool | `true` | Feature flags (graph, quarantine, prior_version, python_udfs) |
+| `portability.postgres_compatible` | bool | `true` | Avoid Databricks-only SQL |
+
+### Profile options
+
+| Key | Type | Example | Description |
+|-----|------|---------|-------------|
+| `platform` | string | `databricks` | Target platform (`databricks`, `postgres`, `redshift`) |
+| `databricks_profile` | string | `DEFAULT` | `~/.databrickscfg` profile name |
+| `env` | string | `dev` | Environment tag — used as `{env}` in patterns |
+| `catalog` | string | `bronze` | Default logical catalog for this profile |
+| `compute.type` | string | `serverless` | Compute type |
+| `schedule` | string | `"0 0 6 * * ?"` | Cron schedule for DAB workflow |
+| `connection` | map | `{ host, port, database, user }` | Inline connection for non-Databricks |
+| `schemas` | map | `{ bronze: bronze }` | Explicit schema mapping (overrides pattern) |
+| `catalogs` | map | `{ bronze: public }` | Explicit catalog mapping (overrides pattern) |
+
+---
+
+## 20. Reference: Project Structure
 
 ```
 dbt-forge-v0.1/
 │
-├── forge.yml               ← YOU EDIT: project config
+├── forge.yml               ← YOU EDIT: project config + profiles + naming patterns
 ├── pyproject.toml             ← Poetry: dependencies + 'forge' CLI command
-├── profiles.yml               ← Databricks connection (or ~/.dbt/profiles.yml)
+├── profiles.yml               ← Auto-generated dbt connection config
 ├── dbt_project.yml            ← dbt config (auto-managed by forge)
 ├── packages.yml               ← dbt packages (points to dbt-dab-tools)
 │
@@ -935,15 +1239,24 @@ dbt-forge-v0.1/
 │   │   └── 001_add_loyalty_tier.yml
 │   └── sources/               ← External source definitions
 │
+├── sql/                       ← GENERATED: standalone SQL (--pure-sql mode)
+│   ├── 000_udfs.sql
+│   ├── 001_stg_customers.sql
+│   └── ...
+│
+├── resources/
+│   └── jobs/                  ← GENERATED: DAB workflow YAML (--dab mode)
+│
 ├── src/forge/               ← Python engine (don't touch)
 │   ├── cli.py                 ← CLI commands
 │   ├── graph.py               ← Lineage graph engine + ODCS contracts
 │   ├── simple_ddl.py          ← YAML compiler + migration + UDF + checks engine
 │   ├── type_safe.py           ← Pydantic model generator
 │   ├── workflow.py            ← Databricks Workflow DAG generator
-│   └── compute_resolver.py   ← Serverless/dedicated resolver
+│   └── compute_resolver.py   ← Profile + connection + naming-pattern resolver
 │
 ├── artifacts/                 ← Graph exports, contracts
+├── docs/                      ← Guides, roadmap, planning specs
 └── target/                    ← dbt build artifacts
 ```
 
@@ -960,18 +1273,48 @@ dbt-forge-v0.1/
 
 ---
 
-## 17. Reference: Environment Variables
+## 21. Reference: Environment Variables & Authentication
+
+### Authentication priority
+
+Forge resolves connections in this order:
+
+1. **`databricks_profile:`** in `forge.yml` → reads `~/.databrickscfg` (recommended)
+2. **`connection:`** block in `forge.yml` → inline host/token
+3. **Environment variables** → fallback
+
+### Environment variables
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `DBT_DATABRICKS_HOST` | Yes | — | Databricks workspace URL |
-| `DBT_DATABRICKS_HTTP_PATH` | Yes | — | SQL warehouse HTTP path |
-| `DBT_DATABRICKS_TOKEN` | Yes | — | Personal access token or OAuth |
-| `DBT_DATABRICKS_CATALOG` | No | `workspace` | Unity Catalog name |
+| `DBT_DATABRICKS_HOST` | Only if no databrickscfg | — | Databricks workspace URL |
+| `DBT_DATABRICKS_HTTP_PATH` | Only if no databrickscfg | — | SQL warehouse HTTP path |
+| `DBT_DATABRICKS_TOKEN` | Only if no databrickscfg | — | Personal access token or OAuth |
+| `DBT_DATABRICKS_CATALOG` | No | Profile's catalog | Unity Catalog name |
+| `DBT_PG_USER` | For Postgres | `postgres` | Postgres username |
+| `DBT_PG_PASSWORD` | For Postgres | — | Postgres password |
+
+### Recommended setup
+
+```bash
+# One-time setup — creates ~/.databrickscfg
+databricks configure --profile DEFAULT    # dev
+databricks configure --profile PROD       # prod
+```
+
+Then in `forge.yml`:
+
+```yaml
+profiles:
+  dev:
+    databricks_profile: DEFAULT   # zero env vars needed
+  prod:
+    databricks_profile: PROD
+```
 
 ---
 
-## 18. Troubleshooting
+## 22. Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
@@ -980,13 +1323,17 @@ dbt-forge-v0.1/
 | `models.yml not found` | Create `dbt/models.yml` with your model definitions |
 | Models not updating after edit | Run `forge compile` — you must recompile after editing models.yml |
 | `ModuleNotFoundError: typer` | Run `poetry install` to install all dependencies |
-| Connection refused to Databricks | Check `DBT_DATABRICKS_HOST` and `DBT_DATABRICKS_TOKEN` env vars |
+| Connection refused to Databricks | Check `databricks_profile:` in forge.yml, or run `databricks configure --profile DEFAULT` |
+| `Profile [X] not found in ~/.databrickscfg` | Run `databricks configure --profile X` to create it |
+| Wrong catalog/schema names | Check `forge profiles` to see expanded names. Verify `catalog_pattern` / `schema_pattern` in forge.yml |
 | Bad data in table | Add a `quarantine: "condition"` to the model in models.yml |
 | Need to rename a column | Create a migration YAML in `dbt/migrations/` |
 | Want to see the full pipeline | Run `forge workflow --mermaid` |
+| Pure SQL not using right env | Pass `--profile`: `forge compile --pure-sql -p prod` |
 | Python type errors | Run `forge codegen` to regenerate the SDK |
 | Migration ran twice | Check `dbt/migrations/.migrations_applied` — remove the entry to re-run |
 | Schema mismatch after struct change | Run `forge deploy --full-refresh` with `dbt run --full-refresh` |
+| `{user}` token resolves wrong | Check `whoami` — forge uses the OS username, sanitised for catalog names |
 
 ---
 
@@ -996,8 +1343,10 @@ dbt-forge-v0.1/
 |---------|-------------|
 | `forge setup` | Creates project structure + forge.yml |
 | `forge compile` | Compiles models.yml → SQL + schema.yml + UDFs |
-| `forge deploy` | Builds + deploys to Databricks |
-| `forge deploy --env prod` | Deploys to production |
+| `forge compile --pure-sql` | Compiles to standalone SQL (no dbt at runtime) |
+| `forge compile --pure-sql -p prod` | Pure SQL for a specific profile |
+| `forge deploy` | Builds + deploys to Databricks (active profile) |
+| `forge deploy -p prod` | Deploys to a specific profile |
 | `forge diff` | Shows what changed since last deploy |
 | `forge diff --mermaid` | Color-coded Mermaid diff diagram |
 | `forge diff --output diff.json` | Writes full diff JSON to file |
@@ -1018,9 +1367,14 @@ dbt-forge-v0.1/
 | `forge validate --output checks.sql` | Writes check SQL to file |
 | `forge workflow` | Prints the pipeline DAG |
 | `forge workflow --mermaid` | Visual Mermaid diagram |
-| `forge workflow --dab` | Databricks Asset Bundle jobs YAML |
+| `forge workflow --dab` | Databricks Asset Bundle jobs YAML → resources/jobs/ |
+| `forge workflow --dab -p prod` | DAB workflow for a specific profile |
 | `forge codegen` | Generates type-safe Python SDK |
 | `forge codegen --check` | CI mode: fail if SDK is stale |
+| `forge profiles` | List all profiles + expanded catalog/schema names |
+| `forge profiles --generate` | Auto-generate profiles.yml with dbt vars |
+| `forge profiles --show-connection` | Show resolved connection details |
+| `forge profiles -p prod` | Show details for one profile |
 | `forge guide` | Regenerates this guide |
 | `forge teardown` | Safely destroys everything |
 
