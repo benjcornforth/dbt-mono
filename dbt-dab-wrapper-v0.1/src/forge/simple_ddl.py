@@ -589,11 +589,13 @@ def compile_pure_sql_model(
     deploy_ts: str = "",
     compute_type: str = "serverless",
     platform: str = "databricks",
+    source_locations: dict[str, tuple[str, str]] | None = None,
 ) -> str:
     """
     Compile a model to standalone SQL — no Jinja, no dbt.
 
     Emits CREATE OR REPLACE TABLE/VIEW with fully qualified table names.
+    source_locations maps model_name → (catalog, schema) for cross-schema refs.
     """
     if not deploy_ts:
         from datetime import datetime, timezone
@@ -638,6 +640,13 @@ def compile_pure_sql_model(
     lines.append(",\n".join(col_lines))
 
     # FROM clause — fully qualified table names instead of {{ ref() }}
+    # Use source_locations to resolve each source to its correct schema
+    def _fq(source_name: str) -> str:
+        if source_locations and source_name in source_locations:
+            s_cat, s_sch = source_locations[source_name]
+            return f"`{s_cat}`.`{s_sch}`.`{source_name}`"
+        return f"`{catalog}`.`{schema}`.`{source_name}`"
+
     if is_join:
         sources = model_def.get("sources", {})
         join_condition = model_def.get("join", "")
@@ -645,15 +654,15 @@ def compile_pure_sql_model(
 
         source_items = list(sources.items())
         first_alias, first_source = source_items[0]
-        lines.append(f"FROM `{catalog}`.`{schema}`.`{first_source}` {first_alias}")
+        lines.append(f"FROM {_fq(first_source)} {first_alias}")
 
         for alias, source in source_items[1:]:
-            lines.append(f"{join_type} `{catalog}`.`{schema}`.`{source}` {alias}")
+            lines.append(f"{join_type} {_fq(source)} {alias}")
             lines.append(f"    ON {join_condition}")
     else:
         source = model_def.get("source", "")
         if source:
-            lines.append(f"FROM `{catalog}`.`{schema}`.`{source}`")
+            lines.append(f"FROM {_fq(source)}")
 
     # GROUP BY
     if is_agg:
@@ -708,20 +717,36 @@ def compile_all_pure_sql(
     git_commit: str = "unknown",
     compute_type: str = "serverless",
     platform: str = "databricks",
+    profile: dict | None = None,
+    forge_config: dict | None = None,
 ) -> dict[str, Path]:
     """
     Compile models.yml into numbered, standalone SQL files.
 
     No Jinja. No dbt. Runs directly on a SQL warehouse.
     Files are numbered for execution order (topological sort).
+
+    If a profile with schemas: mapping is provided, each model
+    gets its correct schema based on naming convention (stg_ → silver,
+    raw_ → bronze, customer_summary → gold, etc.).
     """
     from datetime import datetime, timezone
+    from forge.compute_resolver import resolve_model_schema
+
     deploy_ts = datetime.now(timezone.utc).isoformat()
+    prof = profile or {"catalog": catalog, "schema": schema}
 
     models = load_ddl(ddl_path)
     udfs = load_udfs(ddl_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     results: dict[str, Path] = {}
+
+    # Build a lookup of resolved (catalog, schema) per model
+    model_locations: dict[str, tuple[str, str]] = {}
+    for model_name, model_def in models.items():
+        model_locations[model_name] = resolve_model_schema(
+            model_name, model_def, prof, forge_config=forge_config,
+        )
 
     seq = 0
 
@@ -741,12 +766,14 @@ def compile_all_pure_sql(
     ordered = topo_sort_models(models)
     for model_name in ordered:
         model_def = models[model_name]
+        m_catalog, m_schema = model_locations[model_name]
 
-        # Model SQL
+        # Model SQL — resolve source refs to their correct schema too
         sql = compile_pure_sql_model(
-            model_name, model_def, catalog, schema,
+            model_name, model_def, m_catalog, m_schema,
             git_commit=git_commit, deploy_ts=deploy_ts,
             compute_type=compute_type, platform=platform,
+            source_locations=model_locations,
         )
         out_path = output_dir / f"{seq:03d}_{model_name}.sql"
         out_path.write_text(sql)
@@ -756,7 +783,7 @@ def compile_all_pure_sql(
         quarantine = model_def.get("quarantine")
         if quarantine:
             q_sql = compile_pure_sql_quarantine(
-                model_name, quarantine, catalog, schema,
+                model_name, quarantine, m_catalog, m_schema,
                 git_commit=git_commit, deploy_ts=deploy_ts,
             )
             q_path = output_dir / f"{seq:03d}_{model_name}_quarantine.sql"

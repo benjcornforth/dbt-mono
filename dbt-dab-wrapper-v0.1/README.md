@@ -41,27 +41,69 @@ That's the core loop. Edit `dbt/models.yml` → `forge compile` → `forge deplo
 
 ```yaml
 # forge.yml — define once, deploy anywhere
+
+id: myproject                              # used in catalog_pattern as {id}
+
+# Naming patterns — control how catalog and schema names are constructed.
+# Tokens: {env}, {id}, {catalog}, {schema}
+# Production envs (prd/prod) skip the {env}_ prefix automatically.
+catalog_pattern: "{env}_{id}_{catalog}"    # → dev_myproject_bronze, int_myproject_meta
+schema_pattern:  "{env}_{schema}"          # → dev_bronze, int_silver
+skip_env_prefix: [prd, prod]
+
+# Logical names — actual names are built via the patterns above.
+catalogs: [bronze, silver, meta, operations]
+schemas:  [bronze, silver, gold]
+
 profiles:
   dev:
     platform: databricks
-    databricks_profile: DEFAULT    # reads ~/.databrickscfg
-    catalog: main
-    schema: dev_silver
+    databricks_profile: DEFAULT
+    env: dev                               # → dev_myproject_bronze, dev_silver, etc.
+    catalog: bronze                        # default catalog for unmatched models
     compute: { type: serverless }
   prod:
     databricks_profile: PROD
-    schema: silver
+    env: prd                               # → myproject_bronze, silver (no env prefix)
+    catalog: bronze
+  int:
+    databricks_profile: INT
+    env: int                               # → int_myproject_bronze, int_silver, etc.
+    catalog: bronze
   local:
     platform: postgres
     connection: { host: localhost, port: 5432, database: analytics }
-    schema: silver
+    schemas: { bronze: bronze, silver: silver, gold: gold }  # explicit — no pattern
+    catalogs: { bronze: public, silver: public, meta: public, operations: public }
 ```
+
+Set `env:` and the patterns auto-construct catalog and schema names. Production environments (`prd` / `prod`) drop the `{env}_` prefix. You can override with explicit `schemas:` / `catalogs:` dicts per profile.
+
+**Catalog expansion** (`{env}_{id}_{catalog}` with `id: myproject`):
+
+| Logical | `env: dev` | `env: int` | `env: prd` |
+|---|---|---|---|
+| bronze | `dev_myproject_bronze` | `int_myproject_bronze` | `myproject_bronze` |
+| silver | `dev_myproject_silver` | `int_myproject_silver` | `myproject_silver` |
+| meta | `dev_myproject_meta` | `int_myproject_meta` | `myproject_meta` |
+| operations | `dev_myproject_operations` | `int_myproject_operations` | `myproject_operations` |
+
+**Schema expansion** (`{env}_{schema}`):
+
+| Prefix | Layer | `env: dev` | `env: prd` |
+|---|---|---|---|
+| `raw_`, `src_`, `seed_` | bronze | `dev_bronze` | `bronze` |
+| `stg_`, `int_`, `clean_` | silver | `dev_silver` | `silver` |
+| `fct_`, `dim_`, `agg_`, `rpt_` | gold | `dev_gold` | `gold` |
+
+Variables (`schema_bronze`, `catalog_bronze`, `catalog_meta`, etc.) are injected into the generated `profiles.yml` for dbt Jinja: `{{ var('catalog_silver') }}`.
 
 ```bash
 forge deploy --profile prod     # deploy to prod
-forge compile --pure-sql -p dev  # compile for dev
-forge profiles                  # list all profiles + connections
-forge profiles --generate       # auto-generate profiles.yml
+forge compile --pure-sql -p dev  # compile for dev (stg_ → dev_myproject_silver.dev_silver)
+forge compile --pure-sql -p prod # compile for prod (stg_ → myproject_silver.silver)
+forge profiles                  # list all profiles + expanded names
+forge profiles --generate       # auto-generate profiles.yml with vars
 ```
 
 ### Dev workflow
@@ -116,6 +158,8 @@ sql/005_customer_summary.sql
 | **Data quality checks** | Inline `checks:` block (range, recency, row_count, regex, custom SQL) — no extra framework |
 | **Reusable UDFs** | SQL-first, Python fallback. Defined in `models.yml`, deployed via `dbt run-operation` |
 | **Multi-platform profiles** | `databricks_profile: PROD` reads `~/.databrickscfg` — zero env vars. Postgres, Redshift profiles too |
+| **Pattern-based naming** | `catalog_pattern: "{env}_{id}_{catalog}"` → `dev_myproject_bronze`. Configurable per-project, auto-expands per env |
+| **Medallion layer routing** | Models auto-route to bronze/silver/gold schemas + catalogs by name prefix. Per-profile `schemas:` / `catalogs:` |
 | **Graph diffs** | Before/after comparison of every asset, column, and lineage edge |
 | **Quarantine** | Add `quarantine: "condition"` → bad rows auto-route to `{model}_quarantine` |
 | **Prior versions** | Every table gets a `_v_previous` snapshot for safe rollback |

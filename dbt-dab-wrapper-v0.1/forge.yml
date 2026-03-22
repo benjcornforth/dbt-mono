@@ -1,5 +1,43 @@
 name: dbt-forge
+scope: fd                            # scope e.g. fd = foundational_data, client = crm data
+id: demo                        # project identifier — used in catalog_pattern
 active_profile: dev
+
+# =============================================
+# NAMING PATTERNS
+# =============================================
+# Patterns control how catalog and schema names are constructed.
+# Available tokens: {env}, {id}, {scope}, {user}, {catalog}, {schema}
+#   {env}     — from the profile's env: key (e.g. dev, int, prd)
+#   {id}      — from the top-level id: key (e.g. myproject)
+#   {scope}   — from the top-level scope: key (e.g. fd)
+#   {user}    — current OS / Databricks user (e.g. ben)
+#   {catalog} — the logical catalog name (e.g. bronze, meta)
+#   {schema}  — the logical schema name  (e.g. bronze, silver)
+#
+# Production environments (prd/prod) skip the {env}_ prefix for schemas only.
+# Catalogs always keep the full {env}_ prefix across all environments.
+# Set skip_env_prefix: [prd, prod] to control which envs get bare schema names.
+
+catalog_pattern: "{env}_{scope}_{catalog}"     # → dev_fd_bronze, prd_fd_meta (always prefixed)
+schema_pattern:  "{env}_{id}"           # → dev_myproject (prd → myproject)
+skip_env_prefix: [prd, prod]               # these envs drop {env}_ from schemas only
+
+# =============================================
+# LOGICAL CATALOGS & SCHEMAS
+# =============================================
+# Define logical names here. Actual names are built via the patterns above.
+
+catalogs:
+  - bronze
+  - silver
+  - meta
+  - operations
+
+schemas:
+  - bronze
+  - silver
+  - gold
 
 # =============================================
 # PROFILES – multi-environment, multi-platform
@@ -15,21 +53,29 @@ active_profile: dev
 profiles:
   dev:
     platform: databricks
-    databricks_profile: DEFAULT    # reads ~/.databrickscfg [DEFAULT]
-    catalog: main
-    schema: dev_silver
+    databricks_profile: DEFAULT
+    env: dev
+    catalog: bronze                  # default catalog for this profile
     compute:
       type: serverless
       auto_scale: true
 
   prod:
     platform: databricks
-    databricks_profile: PROD       # reads ~/.databrickscfg [PROD]
-    catalog: main
-    schema: silver
+    databricks_profile: PROD
+    env: prd
+    catalog: bronze
     compute:
       type: serverless
-    schedule: "0 0 6 * * ?"        # Daily at 06:00 UTC
+    schedule: "0 0 6 * * ?"
+
+  int:
+    platform: databricks
+    databricks_profile: INT
+    env: int
+    catalog: bronze
+    compute:
+      type: serverless
 
   local:
     platform: postgres
@@ -39,7 +85,15 @@ profiles:
       database: dev_warehouse
       user: postgres
     catalog: public
-    schema: silver
+    schemas:                         # explicit — no pattern for local
+      bronze: bronze
+      silver: silver
+      gold:   gold
+    catalogs:                        # explicit — no pattern for local
+      bronze: public
+      silver: public
+      meta: public
+      operations: public
     compute:
       type: local
 

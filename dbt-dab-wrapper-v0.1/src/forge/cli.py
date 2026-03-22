@@ -48,6 +48,9 @@ from forge.simple_ddl import (
 from forge.compute_resolver import (
     resolve_profile,
     resolve_connection,
+    resolve_model_schema,
+    get_schema_variables,
+    _expand_env_prefix,
     generate_profiles_yml,
     read_databrickscfg,
     list_databrickscfg_profiles,
@@ -428,6 +431,7 @@ def compile(
             ddl_path, sql_dir,
             catalog=catalog, schema=schema,
             compute_type=compute_type, platform=platform,
+            profile=prof, forge_config=config,
         )
 
         for name, path in results.items():
@@ -812,15 +816,29 @@ def profiles_cmd(
         is_active = " ← active" if name == active else ""
         platform = prof.get("platform", "databricks")
         dbr_ref = prof.get("databricks_profile", "")
-        catalog = prof.get("catalog", config.get("catalog", "main"))
-        schema = prof.get("schema", config.get("schema", "silver"))
+        env_tag = prof.get("env", "")
+        expanded = _expand_env_prefix(prof, config)
+        catalog = expanded.get("catalog", config.get("catalog", "main"))
+        schema = expanded.get("schema", config.get("schema", "silver"))
         compute = prof.get("compute", {})
         compute_type = compute.get("type", "serverless") if isinstance(compute, dict) else compute
 
         typer.echo(f"  {'▸' if name == active else '·'} {name}{is_active}")
         typer.echo(f"      platform: {platform}  |  catalog: {catalog}  |  schema: {schema}  |  compute: {compute_type}")
+        if env_tag:
+            typer.echo(f"      env: {env_tag}")
         if dbr_ref:
             typer.echo(f"      databricks_profile: {dbr_ref}")
+
+        # Show schemas/catalogs mapping (expanded from env: if needed)
+        schemas_map = expanded.get("schemas", {})
+        catalogs_map = expanded.get("catalogs", {})
+        if schemas_map:
+            schema_parts = [f"{layer}={s}" for layer, s in schemas_map.items()]
+            typer.echo(f"      schemas: {', '.join(schema_parts)}")
+        if catalogs_map:
+            catalog_parts = [f"{layer}={c}" for layer, c in catalogs_map.items()]
+            typer.echo(f"      catalogs: {', '.join(catalog_parts)}")
 
         if (show_connection or profile == name):
             try:
