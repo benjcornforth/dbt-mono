@@ -1,7 +1,7 @@
-# dbt-dab-wrapper — Agentic Project Guide
+# dbt-forge — Agentic Project Guide
 
 > **Auto-generated**: 22 March 2026
-> **Project**: dbt-dab-wrapper-v0.1
+> **Project**: dbt-forge-v0.1
 > **Platform**: Databricks (Unity Catalog) with Serverless Compute
 
 This guide teaches you — or an AI agent — exactly how to set up, build, deploy, and migrate this project. No SQL or Python experience needed. Every action is a single command.
@@ -11,19 +11,19 @@ This guide teaches you — or an AI agent — exactly how to set up, build, depl
 ## Architecture at a Glance
 
 ```
-wrapper.yml          ← Project config (YOU edit this)
+forge.yml          ← Project config (YOU edit this)
 dbt/models.yml       ← Table definitions (YOU edit this)
 dbt/migrations/      ← Schema changes (YOU create YAMLs here)
   ↓
-wrapper compile      ← Generates all SQL automatically
+forge compile      ← Generates all SQL automatically
   ↓
 dbt/models/*.sql     ← Generated SQL (NEVER edit these directly)
 dbt/models/schema.yml← Generated tests & docs
   ↓
-wrapper deploy       ← Deploys to Databricks
+forge deploy       ← Deploys to Databricks
 ```
 
-**You only ever touch two files**: `wrapper.yml` and `dbt/models.yml`.
+**You only ever touch two files**: `forge.yml` and `dbt/models.yml`.
 Everything else is generated.
 
 ---
@@ -63,7 +63,7 @@ Everything else is generated.
 ### Step 1: Install dependencies
 
 ```bash
-cd dbt-dab-wrapper-v0.1
+cd dbt-forge-v0.1
 poetry install
 ```
 
@@ -83,19 +83,19 @@ Find `HTTP_PATH` in: **Databricks → SQL Warehouses → your warehouse → Conn
 ### Step 3: Create project scaffolding
 
 ```bash
-wrapper setup --name my_project
+forge setup --name my_project
 ```
 
 This creates:
-- `wrapper.yml` — your project config
+- `forge.yml` — your project config
 - `dbt/models/` — where compiled SQL goes
 - `dbt/seeds/` — CSV seed data files
 - `dbt/sources/` — external source definitions
 - `artifacts/` — graph exports and contracts
 
-### Step 4: Configure wrapper.yml
+### Step 4: Configure forge.yml
 
-Edit `wrapper.yml` to match your environment:
+Edit `forge.yml` to match your environment:
 
 ```yaml
 name: my_project
@@ -255,7 +255,7 @@ See [HOW-TO: Define UDFs](#6-how-to-define-udfs-reusable-functions) for full det
 ### Compile YAML → SQL
 
 ```bash
-wrapper compile
+forge compile
 ```
 
 Output:
@@ -267,7 +267,7 @@ Output:
   ✅ customer_summary.sql → dbt/models/customer_summary.sql
   📋 schema.yml → dbt/models/schema.yml
   🔧 _udfs.sql → dbt/models/_udfs.sql
-🎉 Compiled 5 models + UDFs from dbt/models.yml. Run 'wrapper deploy' next.
+🎉 Compiled 5 models + UDFs from dbt/models.yml. Run 'forge deploy' next.
 ```
 
 ### What the compiler generates automatically
@@ -286,11 +286,11 @@ For every model, the compiler produces:
 ### Quick deploy
 
 ```bash
-wrapper deploy
+forge deploy
 ```
 
 This:
-1. Reads `wrapper.yml` for configuration
+1. Reads `forge.yml` for configuration
 2. Resolves compute (serverless/dedicated)
 3. Generates the Databricks Asset Bundle
 4. Runs `dbt run` with all models
@@ -298,7 +298,7 @@ This:
 ### Deploy to a specific environment
 
 ```bash
-wrapper deploy --env prod
+forge deploy --env prod
 ```
 
 ### Manual dbt commands (if needed)
@@ -324,11 +324,11 @@ The standard workflow is:
 ```
 Edit dbt/models.yml
   ↓
-wrapper compile        # YAML → SQL
+forge compile        # YAML → SQL
   ↓
-wrapper deploy         # SQL → Databricks
+forge deploy         # SQL → Databricks
   ↓
-wrapper diff           # See what changed
+forge diff           # See what changed
 ```
 
 ---
@@ -358,7 +358,7 @@ changes:
 ### Step 2: Apply the migration
 
 ```bash
-wrapper migrate
+forge migrate
 ```
 
 Output:
@@ -366,7 +366,7 @@ Output:
   📦 001_add_loyalty_tier: Add loyalty tier column to customer summary
     → customer_summary: added column 'loyalty_tier'
 🔄 Recompiled SQL from updated dbt/models.yml
-🎉 Applied 1 migration(s). Run 'wrapper deploy' next.
+🎉 Applied 1 migration(s). Run 'forge deploy' next.
 ```
 
 This does three things:
@@ -377,7 +377,7 @@ This does three things:
 ### Step 3: Deploy the changes
 
 ```bash
-wrapper deploy
+forge deploy
 ```
 
 ### Migration examples
@@ -477,7 +477,7 @@ Applied migrations are tracked in `dbt/migrations/.migrations_applied` — they 
 ### Preview changes without applying (dry run)
 
 ```bash
-wrapper migrate --dry-run
+forge migrate --dry-run
 ```
 
 Shows exactly what would change — without modifying `models.yml` or the applied log.
@@ -487,7 +487,7 @@ Shows exactly what would change — without modifying `models.yml` or the applie
 If you want to apply the migration to `models.yml` without recompiling SQL:
 
 ```bash
-wrapper migrate --no-recompile
+forge migrate --no-recompile
 ```
 
 ---
@@ -499,7 +499,7 @@ Dev mode gives you an isolated schema and auto-recompilation on save.
 ### Step 1: Create dev environment
 
 ```bash
-wrapper dev-up
+forge dev-up
 ```
 
 This:
@@ -510,7 +510,7 @@ This:
 ### Step 2: Start watch mode
 
 ```bash
-wrapper dev
+forge dev
 ```
 
 Watches `dbt/models.yml` for changes — auto-recompiles on save. Press `Ctrl+C` to stop.
@@ -527,7 +527,7 @@ Watches `dbt/models.yml` for changes — auto-recompiles on save. Press `Ctrl+C`
 ### Step 3: Tear down when done
 
 ```bash
-wrapper dev-down
+forge dev-down
 ```
 
 Drops the isolated dev schema.
@@ -535,8 +535,8 @@ Drops the isolated dev schema.
 ### Custom schema name
 
 ```bash
-wrapper dev-up --schema feature_x
-wrapper dev-down --schema feature_x
+forge dev-up --schema feature_x
+forge dev-down --schema feature_x
 ```
 
 ---
@@ -577,7 +577,7 @@ The compiler generates `loyalty_tier(total_revenue) as tier` in the SELECT.
 ### Step 3: View defined UDFs
 
 ```bash
-wrapper udfs
+forge udfs
 ```
 
 Output:
@@ -592,7 +592,7 @@ Output:
 ### Write UDF SQL to a file
 
 ```bash
-wrapper udfs --output udfs.sql
+forge udfs --output udfs.sql
 ```
 
 ### SQL vs Python UDFs
@@ -642,7 +642,7 @@ Define checks inline in `models.yml` to validate data after every build.
 ### View checks
 
 ```bash
-wrapper validate
+forge validate
 ```
 
 Output:
@@ -658,13 +658,13 @@ Output:
 ### Check for one model only
 
 ```bash
-wrapper validate --model customer_summary
+forge validate --model customer_summary
 ```
 
 ### Write check SQL to file
 
 ```bash
-wrapper validate --output checks.sql
+forge validate --output checks.sql
 ```
 
 ### Available check types
@@ -692,13 +692,13 @@ wrapper validate --output checks.sql
 ### Print the task summary
 
 ```bash
-wrapper workflow
+forge workflow
 ```
 
 ### Generate a Mermaid diagram
 
 ```bash
-wrapper workflow --mermaid
+forge workflow --mermaid
 ```
 
 Paste the output into any Mermaid renderer to visualize your pipeline.
@@ -706,13 +706,13 @@ Paste the output into any Mermaid renderer to visualize your pipeline.
 ### Generate Databricks Asset Bundle jobs section
 
 ```bash
-wrapper workflow --dab
+forge workflow --dab
 ```
 
 ### Save to a file
 
 ```bash
-wrapper workflow --mermaid --output docs/pipeline.mmd
+forge workflow --mermaid --output docs/pipeline.mmd
 ```
 
 ### Pipeline stages
@@ -734,7 +734,7 @@ Models are automatically assigned to stages:
 If you need to interact with these tables from Python:
 
 ```bash
-wrapper codegen
+forge codegen
 ```
 
 Generates `sdk/models.py` with Pydantic models for every table. Type-safe inserts — wrong types fail at runtime, never in the database.
@@ -751,7 +751,7 @@ order.to_spark_row()    # → PySpark Row object
 ### CI mode (fail if stale)
 
 ```bash
-wrapper codegen --check
+forge codegen --check
 ```
 
 ---
@@ -762,19 +762,19 @@ Trace any column value back to its source — expressions, UDF calls, checks, gi
 
 ```bash
 # Full provenance tree in terminal
-wrapper explain customer_summary.total_revenue
+forge explain customer_summary.total_revenue
 
 # With upstream checks and UDF descriptions
-wrapper explain customer_summary.total_revenue --full
+forge explain customer_summary.total_revenue --full
 
 # As Mermaid diagram (purple UDFs, orange checks)
-wrapper explain customer_summary.total_revenue --mermaid
+forge explain customer_summary.total_revenue --mermaid
 
 # As JSON (for scripting / GUI integration)
-wrapper explain customer_summary.total_revenue --json
+forge explain customer_summary.total_revenue --json
 
 # Write to file
-wrapper explain customer_summary.total_revenue --mermaid --output docs/explain.mmd
+forge explain customer_summary.total_revenue --mermaid --output docs/explain.mmd
 ```
 
 ### Example Output
@@ -827,17 +827,17 @@ See what changed since the last graph snapshot:
 
 ```bash
 # Plain English summary
-wrapper diff
+forge diff
 
 # Color-coded Mermaid diagram (green=added, red=removed, orange=modified)
-wrapper diff --mermaid
+forge diff --mermaid
 
 # Write diff output to file
-wrapper diff --output docs/diff.json
-wrapper diff --mermaid --output docs/diff.mmd
+forge diff --output docs/diff.json
+forge diff --mermaid --output docs/diff.mmd
 ```
 
-The first time you run `wrapper diff`, it saves a baseline snapshot to `artifacts/graph.json`.
+The first time you run `forge diff`, it saves a baseline snapshot to `artifacts/graph.json`.
 Subsequent runs compare against that snapshot and show:
 - Assets added/removed
 - Columns added/removed
@@ -852,7 +852,7 @@ Subsequent runs compare against that snapshot and show:
 Safely destroy everything:
 
 ```bash
-wrapper teardown
+forge teardown
 ```
 
 Shows a graph diff of what would be deleted before taking action.
@@ -910,12 +910,12 @@ Shows a graph diff of what would be deleted before taking action.
 ## 16. Reference: Project Structure
 
 ```
-dbt-dab-wrapper-v0.1/
+dbt-forge-v0.1/
 │
-├── wrapper.yml               ← YOU EDIT: project config
-├── pyproject.toml             ← Poetry: dependencies + 'wrapper' CLI command
+├── forge.yml               ← YOU EDIT: project config
+├── pyproject.toml             ← Poetry: dependencies + 'forge' CLI command
 ├── profiles.yml               ← Databricks connection (or ~/.dbt/profiles.yml)
-├── dbt_project.yml            ← dbt config (auto-managed by wrapper)
+├── dbt_project.yml            ← dbt config (auto-managed by forge)
 ├── packages.yml               ← dbt packages (points to dbt-dab-tools)
 │
 ├── dbt/
@@ -935,7 +935,7 @@ dbt-dab-wrapper-v0.1/
 │   │   └── 001_add_loyalty_tier.yml
 │   └── sources/               ← External source definitions
 │
-├── src/wrapper/               ← Python wrapper (don't touch)
+├── src/forge/               ← Python engine (don't touch)
 │   ├── cli.py                 ← CLI commands
 │   ├── graph.py               ← Lineage graph engine + ODCS contracts
 │   ├── simple_ddl.py          ← YAML compiler + migration + UDF + checks engine
@@ -975,18 +975,18 @@ dbt-dab-wrapper-v0.1/
 
 | Problem | Solution |
 |---------|----------|
-| `wrapper: command not found` | Run `poetry install` then `poetry shell` or prefix commands with `poetry run wrapper` |
-| `wrapper.yml not found` | Run `wrapper setup` from the project root directory |
+| `forge: command not found` | Run `poetry install` then `poetry shell` or prefix commands with `poetry run forge` |
+| `forge.yml not found` | Run `forge setup` from the project root directory |
 | `models.yml not found` | Create `dbt/models.yml` with your model definitions |
-| Models not updating after edit | Run `wrapper compile` — you must recompile after editing models.yml |
+| Models not updating after edit | Run `forge compile` — you must recompile after editing models.yml |
 | `ModuleNotFoundError: typer` | Run `poetry install` to install all dependencies |
 | Connection refused to Databricks | Check `DBT_DATABRICKS_HOST` and `DBT_DATABRICKS_TOKEN` env vars |
 | Bad data in table | Add a `quarantine: "condition"` to the model in models.yml |
 | Need to rename a column | Create a migration YAML in `dbt/migrations/` |
-| Want to see the full pipeline | Run `wrapper workflow --mermaid` |
-| Python type errors | Run `wrapper codegen` to regenerate the SDK |
+| Want to see the full pipeline | Run `forge workflow --mermaid` |
+| Python type errors | Run `forge codegen` to regenerate the SDK |
 | Migration ran twice | Check `dbt/migrations/.migrations_applied` — remove the entry to re-run |
-| Schema mismatch after struct change | Run `wrapper deploy --full-refresh` with `dbt run --full-refresh` |
+| Schema mismatch after struct change | Run `forge deploy --full-refresh` with `dbt run --full-refresh` |
 
 ---
 
@@ -994,51 +994,51 @@ dbt-dab-wrapper-v0.1/
 
 | Command | What it does |
 |---------|-------------|
-| `wrapper setup` | Creates project structure + wrapper.yml |
-| `wrapper compile` | Compiles models.yml → SQL + schema.yml + UDFs |
-| `wrapper deploy` | Builds + deploys to Databricks |
-| `wrapper deploy --env prod` | Deploys to production |
-| `wrapper diff` | Shows what changed since last deploy |
-| `wrapper diff --mermaid` | Color-coded Mermaid diff diagram |
-| `wrapper diff --output diff.json` | Writes full diff JSON to file |
-| `wrapper explain model.col` | Full provenance tree for any column |
-| `wrapper explain model.col --full` | Provenance with upstream checks |
-| `wrapper explain model.col --mermaid` | Provenance as Mermaid diagram |
-| `wrapper explain model.col --json` | Provenance as JSON for scripting |
-| `wrapper migrate` | Applies migration YAMLs to models.yml |
-| `wrapper migrate --dry-run` | Preview migration changes without applying |
-| `wrapper migrate --no-recompile` | Applies migrations without recompiling |
-| `wrapper dev-up` | Creates isolated dev schema + seeds data |
-| `wrapper dev` | Watch mode: auto-recompile on save |
-| `wrapper dev-down` | Tears down isolated dev schema |
-| `wrapper udfs` | Shows defined UDFs |
-| `wrapper udfs --output udfs.sql` | Writes CREATE FUNCTION SQL to file |
-| `wrapper validate` | Shows data quality checks for all models |
-| `wrapper validate --model X` | Shows checks for one model |
-| `wrapper validate --output checks.sql` | Writes check SQL to file |
-| `wrapper workflow` | Prints the pipeline DAG |
-| `wrapper workflow --mermaid` | Visual Mermaid diagram |
-| `wrapper workflow --dab` | Databricks Asset Bundle jobs YAML |
-| `wrapper codegen` | Generates type-safe Python SDK |
-| `wrapper codegen --check` | CI mode: fail if SDK is stale |
-| `wrapper guide` | Regenerates this guide |
-| `wrapper teardown` | Safely destroys everything |
+| `forge setup` | Creates project structure + forge.yml |
+| `forge compile` | Compiles models.yml → SQL + schema.yml + UDFs |
+| `forge deploy` | Builds + deploys to Databricks |
+| `forge deploy --env prod` | Deploys to production |
+| `forge diff` | Shows what changed since last deploy |
+| `forge diff --mermaid` | Color-coded Mermaid diff diagram |
+| `forge diff --output diff.json` | Writes full diff JSON to file |
+| `forge explain model.col` | Full provenance tree for any column |
+| `forge explain model.col --full` | Provenance with upstream checks |
+| `forge explain model.col --mermaid` | Provenance as Mermaid diagram |
+| `forge explain model.col --json` | Provenance as JSON for scripting |
+| `forge migrate` | Applies migration YAMLs to models.yml |
+| `forge migrate --dry-run` | Preview migration changes without applying |
+| `forge migrate --no-recompile` | Applies migrations without recompiling |
+| `forge dev-up` | Creates isolated dev schema + seeds data |
+| `forge dev` | Watch mode: auto-recompile on save |
+| `forge dev-down` | Tears down isolated dev schema |
+| `forge udfs` | Shows defined UDFs |
+| `forge udfs --output udfs.sql` | Writes CREATE FUNCTION SQL to file |
+| `forge validate` | Shows data quality checks for all models |
+| `forge validate --model X` | Shows checks for one model |
+| `forge validate --output checks.sql` | Writes check SQL to file |
+| `forge workflow` | Prints the pipeline DAG |
+| `forge workflow --mermaid` | Visual Mermaid diagram |
+| `forge workflow --dab` | Databricks Asset Bundle jobs YAML |
+| `forge codegen` | Generates type-safe Python SDK |
+| `forge codegen --check` | CI mode: fail if SDK is stale |
+| `forge guide` | Regenerates this guide |
+| `forge teardown` | Safely destroys everything |
 
 ---
 
 ## Built-In Features (Automatic)
 
-These work automatically when enabled in `wrapper.yml` — no setup needed:
+These work automatically when enabled in `forge.yml` — no setup needed:
 
 - **Lineage tracking**: Every row carries `_lineage` metadata (model, sources, git commit, deploy timestamp, methodology version). Column-level tracking for expressions, casts, UDFs, and aggregations.
 - **Quarantine**: Add `quarantine: "condition"` to a model → bad rows move to `{model}_quarantine` table.
 - **Prior Version**: Every table gets a `_v_previous` snapshot for safe rollback.
 - **SQL & Python UDFs**: Define reusable functions in the `udfs:` block of `models.yml`. SQL-first, Python when needed. UDFs appear as purple nodes in the lineage graph.
-- **Data Quality Checks**: Add inline `checks:` to any model — range, recency, row_count, regex, or custom SQL. View with `wrapper validate`.
-- **Dev Mode**: `wrapper dev-up` → isolated schema, `wrapper dev` → auto-recompile on save, `wrapper dev-down` → teardown. Zero extra dependencies.
-- **Dry-Run Migrations**: `wrapper migrate --dry-run` previews changes without touching files.
-- **Provenance Explain**: `wrapper explain model.column` traces any value through expressions, UDFs, checks, and git commits — all the way to the raw source. Terminal tree, Mermaid, or JSON output.
-- **Graph Diff**: `wrapper diff` compares graph snapshots — shows added/removed/modified assets, columns, and lineage edges. Color-coded Mermaid with `--mermaid`.
+- **Data Quality Checks**: Add inline `checks:` to any model — range, recency, row_count, regex, or custom SQL. View with `forge validate`.
+- **Dev Mode**: `forge dev-up` → isolated schema, `forge dev` → auto-recompile on save, `forge dev-down` → teardown. Zero extra dependencies.
+- **Dry-Run Migrations**: `forge migrate --dry-run` previews changes without touching files.
+- **Provenance Explain**: `forge explain model.column` traces any value through expressions, UDFs, checks, and git commits — all the way to the raw source. Terminal tree, Mermaid, or JSON output.
+- **Graph Diff**: `forge diff` compares graph snapshots — shows added/removed/modified assets, columns, and lineage edges. Color-coded Mermaid with `--mermaid`.
 - **Check Nodes in Graph**: Data quality checks appear as orange hexagons in the graph. Diff detects when checks are added or removed.
 - **ODCS Contracts**: Every model is an Open Data Contract Standard node. Every dependency is a lineage edge.
 - **Workflow DAG**: Pipeline automatically splits into INGEST → STAGE → CLEAN → ENRICH → SERVE stages.

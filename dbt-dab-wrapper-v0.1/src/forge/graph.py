@@ -1,20 +1,20 @@
 # =============================================
-# src/wrapper/graph.py
+# src/forge/graph.py
 # =============================================
 # THE CODE IS THE DOCUMENTATION
 #
 # The lineage graph engine. Reads dbt manifest.json,
-# enriches with wrapper-specific nodes (quarantine,
+# enriches with forge-specific nodes (quarantine,
 # prior_version, Python UDFs), and produces an
 # ODCS-aligned contract graph.
 #
-# ODCS = Open Data Contract Standard (https://bitol.io/open-data-contract-standard/)
+# ODCS = Open Data Contract Standard (https://github.com/bitol-io/open-data-contract-standard)
 # Every node in the graph IS a data contract.
 # Every edge IS a lineage relationship.
 # Every diff IS an auditable change record.
 #
 # Usage:
-#   graph = build_graph(wrapper_config, manifest_path)
+#   graph = build_graph(forge_config, manifest_path)
 #   diff  = diff_graphs(old_graph, new_graph)
 #   text  = render_mermaid(graph, diff=diff)
 
@@ -42,8 +42,8 @@ RESOURCE_TYPE_MAP = {
     "exposure": "application",
 }
 
-# Wrapper-injected asset types (not in dbt manifest)
-WRAPPER_ASSET_TYPES = {
+# Forge-injected asset types (not in dbt manifest)
+FORGE_ASSET_TYPES = {
     "quarantine": "table",
     "prior_version": "table",
     "python_udf": "function",
@@ -77,12 +77,12 @@ def _content_hash(data: dict) -> str:
 # =============================================
 
 def build_graph(
-    wrapper_config: dict,
+    forge_config: dict,
     manifest_path: Path | None = None,
     dbt_project_dir: Path | None = None,
 ) -> dict:
     """
-    Build the full lineage graph from dbt manifest + wrapper config.
+    Build the full lineage graph from dbt manifest + forge config.
 
     Returns an ODCS-aligned graph dict with:
       - metadata (version, timestamps, provenance)
@@ -90,21 +90,21 @@ def build_graph(
       - edges (lineage relationships)
 
     If no manifest exists yet (pre-first-deploy), builds a
-    stub graph from wrapper.yml features alone.
+    stub graph from forge.yml features alone.
     """
     now = datetime.now(timezone.utc).isoformat()
     git_commit = _git_sha()
-    project_name = wrapper_config.get("name", "unnamed")
-    catalog = wrapper_config.get("catalog", "main")
-    schema = wrapper_config.get("schema", "default")
-    compute_type = wrapper_config.get("compute", {}).get("type", "serverless")
-    features = wrapper_config.get("features", {})
+    project_name = forge_config.get("name", "unnamed")
+    catalog = forge_config.get("catalog", "main")
+    schema = forge_config.get("schema", "default")
+    compute_type = forge_config.get("compute", {}).get("type", "serverless")
+    features = forge_config.get("features", {})
 
     graph: dict[str, Any] = {
         "apiVersion": "odcs/v3.0.0",
         "kind": "DataContractGraph",
         "metadata": {
-            "wrapper_version": "0.2.0",
+            "forge_version": "0.2.0",
             "project": project_name,
             "generated_at": now,
             "git_commit": git_commit,
@@ -124,7 +124,7 @@ def build_graph(
         # No manifest yet — scan SQL files for a best-effort graph
         _add_sql_scan_nodes(graph, dbt_project_dir or Path("dbt"), catalog, schema, features, git_commit, now)
 
-    # ── Inject wrapper-specific assets ───────────────────
+    # ── Inject forge-specific assets ───────────────────
     if features.get("quarantine"):
         _add_quarantine_nodes(graph, git_commit, now)
     if features.get("prior_version"):
@@ -385,7 +385,7 @@ def _add_sql_scan_nodes(
 
 
 # =============================================
-# WRAPPER-SPECIFIC NODE INJECTION
+# FORGE-SPECIFIC NODE INJECTION
 # =============================================
 
 def _add_quarantine_nodes(graph: dict, git_commit: str, now: str) -> None:
@@ -693,7 +693,7 @@ def _make_contract(
 
     Follows: https://bitol.io/open-data-contract-standard/
     Fields map directly to the ODCS spec where possible.
-    Wrapper-specific extensions live under `_meta`.
+    Forge-specific extensions live under `_meta`.
     """
     contract: dict[str, Any] = {
         "apiVersion": "odcs/v3.0.0",

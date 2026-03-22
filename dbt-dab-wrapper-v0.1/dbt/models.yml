@@ -2,7 +2,7 @@
 # dbt/models.yml – THE ONLY FILE YOU EDIT
 # =============================================
 # No SQL needed. Just describe your tables in plain YAML.
-# Run: wrapper compile → generates all SQL automatically.
+# Run: forge compile → generates all SQL automatically.
 #
 # Column options:
 #   type:       int, string, date, decimal(10,2), etc.

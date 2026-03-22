@@ -1,7 +1,7 @@
 # IMPLEMENT-PROVENANCE-EXPLAIN.yml
 # ────────────────────────────────────────────────────────────────
-#   dbt-dab-wrapper — Implementation Spec for Priority #1
-#   Item: wrapper explain <model>.<column>
+#   dbt-forge — Implementation Spec for Priority #1
+#   Item: forge explain <model>.<column>
 #   Status: Ready to build (foundations 100% there)
 #   Date: 22 March 2026
 #   Owner: Lucas (you — go for it!)
@@ -12,17 +12,17 @@
 # ────────────────────────────────────────────────────────────────
 
 implementation_overview:
-  command: wrapper explain <model_name>.<column_name>
+  command: forge explain <model_name>.<column_name>
   examples:
-    - wrapper explain customer_summary.total_revenue
-    - wrapper explain customer_summary.total_revenue --mermaid --output docs/explain.mmd
-    - wrapper explain int_customer_orders.email --full
+    - forge explain customer_summary.total_revenue
+    - forge explain customer_summary.total_revenue --mermaid --output docs/explain.mmd
+    - forge explain int_customer_orders.email --full
   output_formats:
     - default: beautiful terminal tree (ASCII + colors)
     - --mermaid: Mermaid flowchart (purple UDF nodes, orange check nodes)
     - --json: for scripting / GUI
   auto_wires: true
-    - Also calls diff_graphs() internally so wrapper diff now works
+    - Also calls diff_graphs() internally so forge diff now works
     - Pulls real git_commit via subprocess("git rev-parse HEAD")
 
 decisions_made_from_your_review:
@@ -31,11 +31,11 @@ decisions_made_from_your_review:
   - UDF version-bump scope (for later item #4): Yes — when UDF body changes, graph finds all referencing models and bumps their version:
     auto_bump: true
     impacted_models: resolved via graph edges
-  - wrapper diff: Wire it up in this PR (stub → real). diff_graphs() already exists — just call it from CLI.
+  - forge diff: Wire it up in this PR (stub → real). diff_graphs() already exists — just call it from CLI.
   - _challenges table (for item #5): Generate as normal dbt model (dbt/models/challenges.sql) — consistent with everything-is-generated rule. No direct SDK inserts.
 
 yaml_spec_for_cli_py:
-  # Add to src/wrapper/cli.py
+  # Add to src/forge/cli.py
   @app.command("explain")
   def explain(model_dot_column: str, mermaid: bool = False, full: bool = False, output: str = None):
       """Show full provenance for any column — lineage, UDFs, checks, git, version"""
@@ -94,8 +94,8 @@ next_steps_for_you_lucas:
   - Implement walk_column_lineage() + render_provenance_tree() in graph.py
   - Add CLI command + wire diff_graphs()
   - Add git_commit injection
-  - Test with `wrapper explain customer_summary.total_revenue`
-  - Run `wrapper guide` → new section auto-appears
+  - Test with `forge explain customer_summary.total_revenue`
+  - Run `forge guide` → new section auto-appears
   - Commit → we ship Priority #1 in <2 hours
 
 blockers: none

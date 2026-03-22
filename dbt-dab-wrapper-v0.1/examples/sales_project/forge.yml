@@ -1,8 +1,8 @@
-# wrapper.yml - the ONLY config file you ever edit
+# forge.yml - the ONLY config file you ever edit
 # A child can change 3 lines and redeploy everything.
 name: sales_data
 environment: prod
-target_platform: databricks        # databricks | postgres | redshift - change this and wrapper handles it
+target_platform: databricks        # databricks | postgres | redshift - change this and forge handles it
 catalog: main
 schema: silver
 

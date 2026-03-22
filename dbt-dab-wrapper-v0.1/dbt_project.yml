@@ -3,15 +3,15 @@
 # =============================================
 # THE CODE IS THE DOCUMENTATION
 #
-# This is the dbt project config for the wrapper.
-# The wrapper reads wrapper.yml, but dbt needs this file.
+# This is the dbt project config for forge.
+# Forge reads forge.yml, but dbt needs this file.
 # External macros live in dbt-tools/ (macro-paths below).
 
-name: 'dbt_dab_wrapper'
+name: 'dbt_forge'
 version: '0.2.0'
 config-version: 2
 
-profile: 'dbt_dab_wrapper'
+profile: 'dbt_forge'
 
 # =============================================
 # PATHS - business logic in dbt/, tooling in dbt-tools/
@@ -31,7 +31,7 @@ clean-targets:
 # =============================================
 # VARS - lineage provenance injected at deploy time
 # =============================================
-# The wrapper CLI sets these via --vars at runtime.
+# The forge CLI sets these via --vars at runtime.
 # Defaults here for local development.
 vars:
   git_commit: "local"
@@ -42,5 +42,5 @@ vars:
 # MODEL DEFAULTS - Unity Catalog aware
 # =============================================
 models:
-  dbt_dab_wrapper:
+  dbt_forge:
     +materialized: view

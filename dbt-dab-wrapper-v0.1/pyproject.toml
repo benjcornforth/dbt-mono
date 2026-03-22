@@ -12,21 +12,21 @@
 # Now it’s included. 
 # A child can still do this:
 #     poetry install
-#     wrapper --help
-#     wrapper setup
-#     wrapper deploy
+#     forge --help
+#     forge setup
+#     forge deploy
 # 
 # Everything else (graph diffs, quarantine, Python UDFs, compute resolver, portability, serverless/dedicated)
 # stays exactly as we designed. No changes to any other file needed.
 
 [tool.poetry]
-name = "dbt-dab-wrapper"
+name = "dbt-forge"
 version = "0.1.2"
-description = "Databricks Asset Bundles + dbt wrapper so simple a child could use it. One wrapper.yml. External dbt-tools folder. Graph diffs. Quarantine + provenance built-in."
+description = "Databricks Asset Bundles + dbt, so simple a child could use it. One forge.yml. External dbt-dab-tools package. Graph diffs. Quarantine + provenance built-in."
 authors = ["Your Team <data@yourcompany.com>"]
 license = "MIT"
 readme = "README.md"
-packages = [{ include = "wrapper", from = "src" }]
+packages = [{ include = "forge", from = "src" }]
 
 # =============================================
 # Python version – matches Databricks runtime
@@ -35,7 +35,7 @@ packages = [{ include = "wrapper", from = "src" }]
 python = "^3.10"          # works on Databricks 13.3+ and local
 typer = "^0.12.0"         # ← FIXED: clean CLI (setup/deploy/teardown/diff)
 click = "^8.1.7"          # kept for compatibility (Typer uses it underneath)
-pyyaml = "^6.0.2"         # reads the single wrapper.yml file
+pyyaml = "^6.0.2"         # reads the single forge.yml file
 databricks-sdk = "^0.30"  # auto-generates perfect databricks.yml bundles
 
 # =============================================
@@ -47,10 +47,10 @@ ruff = "^0.4"             # keeps every file legible (we enforce this)
 black = "^24.0"           # auto-formats so code always looks beautiful
 
 # =============================================
-# Scripts – child just types "wrapper" 
+# Scripts – child just types "forge" 
 # =============================================
 [tool.poetry.scripts]
-wrapper = "wrapper.cli:main"   # ← magic command (now works)
+forge = "forge.cli:main"   # ← magic command (now works)
 
 # =============================================
 # Poetry settings – makes install lightning fast
@@ -65,23 +65,23 @@ build-backend = "poetry.core.masonry.api"
 # =============================================
 # Why this file is perfect for us
 # =============================================
-# • Install = poetry install → wrapper command appears instantly
+# • Install = poetry install → forge command appears instantly
 # • Typer gives beautiful help text and zero-config commands
-# • All dbt-tools stay EXTERNAL (never in this repo)
-# • Compute resolver, graph, quarantine, provenance macros live in dbt-tools/
-# • Zero Databricks lock-in (portability flags in wrapper.yml still work)
+# • All macros stay EXTERNAL in dbt-dab-tools (pulled via packages.yml)
+# • Compute resolver, graph, quarantine, provenance macros live in dbt-dab-tools
+# • Zero Databricks lock-in (portability flags in forge.yml still work)
 # • Every line above has a comment so the code IS the documentation
 
 # AFTER YOU SAVE THIS FILE:
 #     poetry install
 # You should now see:
 #     “Installing dependencies… done!”
-#     “Installing dbt-dab-wrapper 0.1.2”
-# Then type: wrapper --help
+#     "Installing dbt-forge 0.1.2"
+# Then type: forge --help
 # It will work perfectly.
 
 # Next step? Just say:
-# “now give me the full src/wrapper/cli.py” (so we can make it even better)
+# "now give me the full src/forge/cli.py" (so we can make it even better)
 # or “add the compute_resolver”
 # or “show me the quarantine macro”
 # We ship it instantly. Child-level simple. Engineer-level transparent.

@@ -1,5 +1,5 @@
 # =============================================
-# src/wrapper/workflow.py
+# src/forge/workflow.py
 # =============================================
 # THE CODE IS THE DOCUMENTATION
 #
@@ -17,16 +17,16 @@
 # mirrors the logical data flow.
 #
 # Usage:
-#   from wrapper.workflow import build_workflow
-#   wf = build_workflow(wrapper_config, graph)
+#   from forge.workflow import build_workflow
+#   wf = build_workflow(forge_config, graph)
 #   wf.to_databricks_yml()   # → databricks.yml jobs section
 #   wf.to_mermaid()          # → visual DAG
 #   wf.to_dict()             # → serialisable dict
 #
-# The wrapper CLI command:
-#   wrapper workflow            # prints the DAG
-#   wrapper workflow --deploy   # deploys via DAB
-#   wrapper workflow --mermaid  # emits Mermaid diagram
+# The forge CLI command:
+#   forge workflow            # prints the DAG
+#   forge workflow --deploy   # deploys via DAB
+#   forge workflow --mermaid  # emits Mermaid diagram
 #
 # Stage assignment rules (in priority order):
 #   1. Explicit: model meta `stage: "clean"` in schema.yml
@@ -308,7 +308,7 @@ def _compute_depths(graph: dict) -> dict[str, int]:
 
 
 def build_workflow(
-    wrapper_config: dict,
+    forge_config: dict,
     graph: dict,
 ) -> Workflow:
     """
@@ -318,12 +318,12 @@ def build_workflow(
     assigned to that stage. Dependencies between tasks
     mirror the stage ordering.
     """
-    project_name = wrapper_config.get("name", "unnamed")
-    environment = wrapper_config.get("environment", "dev")
-    catalog = wrapper_config.get("catalog", "main")
-    schema = wrapper_config.get("schema", "default")
-    compute_type = wrapper_config.get("compute", {}).get("type", "serverless")
-    schedule = wrapper_config.get("schedule", None)
+    project_name = forge_config.get("name", "unnamed")
+    environment = forge_config.get("environment", "dev")
+    catalog = forge_config.get("catalog", "main")
+    schema = forge_config.get("schema", "default")
+    compute_type = forge_config.get("compute", {}).get("type", "serverless")
+    schedule = forge_config.get("schedule", None)
 
     depths = _compute_depths(graph)
 

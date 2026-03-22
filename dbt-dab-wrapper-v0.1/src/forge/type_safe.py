@@ -1,5 +1,5 @@
 # =============================================
-# src/wrapper/type_safe.py
+# src/forge/type_safe.py
 # =============================================
 # THE CODE IS THE DOCUMENTATION
 #
@@ -12,7 +12,7 @@
 #   2. CODEGEN — emit a .py file so the types live in source.
 #
 # Usage (runtime — zero codegen):
-#   from wrapper.type_safe import build_models
+#   from forge.type_safe import build_models
 #   models = build_models("target/manifest.json")
 #   row = models.StgOrders(
 #       order_id=1001,
@@ -29,8 +29,8 @@
 #   row.to_sql_values()  # → SQL VALUES clause
 #
 # Usage (codegen):
-#   wrapper codegen            # emits sdk/models.py
-#   wrapper codegen --check    # CI: fails if stale
+#   forge codegen            # emits sdk/models.py
+#   forge codegen --check    # CI: fails if stale
 #
 # Wrong types? Pydantic raises immediately:
 #   row = models.StgOrders(order_id="not_a_number")
@@ -634,7 +634,7 @@ def generate_sdk_file(
         "Auto-generated type-safe models for dbt tables.",
         f"Schema version: {LINEAGE_SCHEMA_VERSION}",
         "",
-        "DO NOT EDIT — regenerate with:  wrapper codegen",
+        "DO NOT EDIT — regenerate with:  forge codegen",
         '"""',
         "from __future__ import annotations",
         "",

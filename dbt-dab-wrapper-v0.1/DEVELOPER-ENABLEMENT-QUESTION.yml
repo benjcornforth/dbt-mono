@@ -1,7 +1,7 @@
 # DEVELOPER-ENABLEMENT-QUESTIONS.yml
 # ────────────────────────────────────────────────────────────────
-#   dbt-dab-wrapper — Developer Enablement Validation
-#   Purpose: Make sure the wrapper is SO simple a complete beginner
+#   dbt-forge — Developer Enablement Validation
+#   Purpose: Make sure forge is SO simple a complete beginner
 #            can succeed in <30 minutes.
 #   Key focus: 
 #     • Poetry separability (dbt-dab-tools stays external forever)
@@ -9,12 +9,12 @@
 #   Rule: Answer honestly. Add "rebuttal" or "idea" if something feels off.
 #   Goal: "A child could use it" + "Code is the documentation"
 #   How to use: Share with the new developer. They fill in answers.
-#   Run `wrapper guide` after they reply — it will update automatically.
+#   Run `forge guide` after they reply — it will update automatically.
 # ────────────────────────────────────────────────────────────────
 
 project_vision_reminder: >
   One command for everything. 
-  Users edit ONLY wrapper.yml + dbt/models.yml. 
+  Users edit ONLY forge.yml + dbt/models.yml. 
   All macros live in external ../dbt-dab-tools. 
   Graph shows every change. Provenance for every value.
 
@@ -24,7 +24,7 @@ questions:
   - id: poetry-1
     section: Poetry Separability
     question: >
-      Was it crystal clear that `poetry install` only installs the wrapper CLI 
+      Was it crystal clear that `poetry install` only installs forge CLI 
       and that all real dbt magic (macros for quarantine, checks, lineage, UDFs) 
       lives in the external ../dbt-dab-tools directory — never inside your project?
     answer: >
@@ -40,7 +40,7 @@ questions:
       early development. All macros should come exclusively from dbt_packages/ (via
       `dbt deps` pulling ../dbt-dab-tools). One copy, one truth. Also add a one-liner
       to README.md: "Macros live in ../dbt-dab-tools — never edit anything in this project
-      except wrapper.yml and dbt/models.yml."
+      except forge.yml and dbt/models.yml."
 
   - id: poetry-2
     section: Poetry Separability
@@ -50,15 +50,15 @@ questions:
     answer: >
       Yes. The macro code lives in ../dbt-dab-tools/macros/. Editing lineage.sql,
       quarantine.sql, or adding a new checks/reconcile.sql there requires zero changes
-      in the wrapper project. Running `dbt deps` pulls the updated macros into
-      dbt_packages/dbt_dab_tools automatically. The wrapper's compile/validate/explain
+      in forge project. Running `dbt deps` pulls the updated macros into
+      dbt_packages/dbt_dab_tools automatically. Forge's compile/validate/explain
       commands don't reference macro internals — they only read models.yml.
     rebuttal_or_idea: >
       One gap: adding a brand-new check TYPE (e.g. "reconcile") currently requires
-      changes in both ../dbt-dab-tools (new macro) AND src/wrapper/simple_ddl.py
+      changes in both ../dbt-dab-tools (new macro) AND src/forge/simple_ddl.py
       (new entry in _CHECK_SCOPE + _compile_single_check). This breaks the separability
       promise for check primitives. Consider making check types fully data-driven:
-      load check definitions from a primitives.yml in dbt-dab-tools so the wrapper
+      load check definitions from a primitives.yml in dbt-dab-tools so forge
       doesn't need code changes for new check types.
 
   - id: poetry-3
@@ -66,7 +66,7 @@ questions:
     question: >
       Did Poetry feel simple (one command, no dependency hell) or confusing for a total beginner?
     answer: >
-      For someone who knows Python: simple. `poetry install` → `wrapper --help` works.
+      For someone who knows Python: simple. `poetry install` → `forge --help` works.
       For a total beginner who has never used Python: Poetry itself is a hurdle.
       They need to install Python 3.10+, then install Poetry, then know to run
       `poetry install` NOT `pip install`. The README says `pip install -e .` which
@@ -83,44 +83,44 @@ questions:
   - id: newbie-1
     section: First 5 Minutes
     question: >
-      From cloning the repo to running `wrapper setup`, how many minutes did it take?
+      From cloning the repo to running `forge setup`, how many minutes did it take?
       (Goal: <10 minutes for someone who has never seen Databricks or dbt)
     answer: >
-      Assuming Python + Poetry pre-installed: ~3 minutes (clone, poetry install, wrapper setup).
+      Assuming Python + Poetry pre-installed: ~3 minutes (clone, poetry install, forge setup).
       From absolute zero (no Python, no Poetry): ~15-20 minutes. The main time sinks
       are installing Python (brew install python@3.11), installing Poetry
-      (curl ... | python3), and figuring out venv activation. Once `wrapper` is
-      available, `wrapper setup` is instant (<2 seconds). The 10-minute goal is met
+      (curl ... | python3), and figuring out venv activation. Once `forge` is
+      available, `forge setup` is instant (<2 seconds). The 10-minute goal is met
       if the developer has ANY Python experience. Not met for true zero-knowledge.
     rebuttal_or_idea: >
       A Docker-based alternative would guarantee <5 minutes for anyone:
-      `docker run -it dbt-dab-wrapper` with everything pre-installed. Or a
+      `docker run -it dbt-forge` with everything pre-installed. Or a
       GitHub Codespace devcontainer.json. Either removes 100% of local setup friction.
 
   - id: newbie-2
     section: First 5 Minutes
     question: >
       Could you create your first model in dbt/models.yml (copy-paste example), 
-      run `wrapper compile`, then `wrapper dev-up` without asking anyone for help?
+      run `forge compile`, then `forge dev-up` without asking anyone for help?
     answer: >
       Yes for compile, partially for dev-up. The models.yml file has 5 working
-      examples right there — copy-pasting a new staging model and running `wrapper compile`
+      examples right there — copy-pasting a new staging model and running `forge compile`
       works immediately with clear output ("✅ model.sql → dbt/models/model.sql").
-      `wrapper dev-up` prints helpful output but requires a working dbt + Databricks
+      `forge dev-up` prints helpful output but requires a working dbt + Databricks
       connection (profiles.yml with valid token). A beginner without Databricks credentials
       would hit a wall at this point. The compile→inspect loop works fully offline though.
     rebuttal_or_idea: >
-      Add a `--local` flag to `wrapper dev-up` that skips the Databricks seed step
+      Add a `--local` flag to `forge dev-up` that skips the Databricks seed step
       and just compiles SQL locally. This lets a new dev see the full workflow
       (edit → compile → inspect SQL) without needing credentials on day 1.
 
   - id: newbie-3
     section: First 5 Minutes
     question: >
-      Did the auto-generated GUIDE.md (created by `wrapper guide`) feel like enough 
+      Did the auto-generated GUIDE.md (created by `forge guide`) feel like enough 
       to get started, or did you need extra explanations?
     answer: >
-      The auto-generated guide (.instructions.md from `wrapper guide`) is solid for
+      The auto-generated guide (.instructions.md from `forge guide`) is solid for
       someone who already understands what a data pipeline is. It includes: quick start
       commands, model patterns (staging, join, aggregation, quarantine), column options
       reference, UDF examples, migration actions, provenance explain, and a current
@@ -138,7 +138,7 @@ questions:
   - id: workflow-1
     section: Daily Workflow
     question: >
-      How easy was `wrapper dev` (watch mode) to use? Did saving dbt/models.yml 
+      How easy was `forge dev` (watch mode) to use? Did saving dbt/models.yml 
       feel magical (auto-recompile + deploy to your isolated dev schema)?
     answer: >
       The watch mode works and feels responsive — save models.yml, see "🔄 Change
@@ -158,7 +158,7 @@ questions:
   - id: workflow-2
     section: Daily Workflow
     question: >
-      Could you explain a column with `wrapper explain customer_summary.total_revenue` 
+      Could you explain a column with `forge explain customer_summary.total_revenue` 
       and understand the full provenance (expression, UDF, checks, git commit) without help?
     answer: >
       Yes. The output is immediately readable:
@@ -175,7 +175,7 @@ questions:
       exist. This is correct for a compile-time tool but might confuse someone who
       expects runtime results.
     rebuttal_or_idea: >
-      Add a note to the output: "Run `wrapper validate` to execute these checks
+      Add a note to the output: "Run `forge validate` to execute these checks
       against live data." This bridges the gap between "what checks exist" (explain)
       and "did they pass" (validate).
 
@@ -183,20 +183,20 @@ questions:
   - id: overall-1
     section: Success Metric
     question: >
-      On a scale of 1–10, how close are we to “a child could use this wrapper” 
+      On a scale of 1–10, how close are we to “a child could use forge” 
       for someone who has never used Python, SQL, or Databricks?
     answer: >
-      7/10. The wrapper itself is genuinely simple — models.yml is readable YAML,
+      7/10. Forge itself is genuinely simple — models.yml is readable YAML,
       commands are one-word verbs, output has emoji + clear messages. What pulls it
       down from 10: (1) Python/Poetry installation is a prerequisite with no escape
       hatch (2 points lost), (2) Databricks credentials needed for anything beyond
       compile (1 point lost). For someone who HAS Python installed, it's a 9/10.
-      The two-file contract (wrapper.yml + models.yml) is real — no one touches
-      src/wrapper/ or macros. The 16 CLI commands all work. The explain/diff/validate
+      The two-file contract (forge.yml + models.yml) is real — no one touches
+      src/forge/ or macros. The 16 CLI commands all work. The explain/diff/validate
       trio gives immediate feedback. The gap is purely "getting to the starting line."
     rebuttal_or_idea: >
       To reach 9/10 for true beginners: (1) devcontainer.json or Docker image
-      (eliminates Python/Poetry setup), (2) `wrapper compile --preview` that shows
+      (eliminates Python/Poetry setup), (2) `forge compile --preview` that shows
       a sample of what the output table would look like (eliminates Databricks
       dependency for learning). These two changes would make the <30 minute goal
       achievable for literally anyone with a laptop.
@@ -208,9 +208,9 @@ questions:
       for a brand-new developer tomorrow?
     answer: >
       A devcontainer.json (VS Code Dev Container / GitHub Codespace). One click →
-      Python, Poetry, dbt, wrapper CLI all pre-installed, venv activated, models.yml
-      open. The developer types `wrapper compile`, sees SQL generated, types
-      `wrapper explain customer_summary.total_revenue`, sees the provenance tree.
+      Python, Poetry, dbt, forge CLI all pre-installed, venv activated, models.yml
+      open. The developer types `forge compile`, sees SQL generated, types
+      `forge explain customer_summary.total_revenue`, sees the provenance tree.
       Zero setup. Zero confusion about Python versions, Poetry vs pip, or venv.
       This is the single change that turns "15-20 minutes with possible dead ends"
       into "60 seconds to first compile." Everything else (the YAML DSL, the CLI,
@@ -218,14 +218,14 @@ questions:
     rebuttal_or_idea: >
       Runner-up: clean up the README.md to be a true 5-step quickstart with
       exact shell commands and expected output at each step. Current README is
-      4 lines and doesn't mention Poetry, `wrapper compile`, or models.yml.
+      4 lines and doesn't mention Poetry, `forge compile`, or models.yml.
 
 success_criteria:
   - All answers >= 8/10 on simplicity
   - Poetry separability rated “very clear”
   - New dev can finish first model + dev mode in <20 minutes
-  - No one needs to touch src/wrapper/ or dbt-dab-tools to do real work
+  - No one needs to touch src/forge/ or dbt-dab-tools to do real work
 
 next_action: >
-  After the developer replies, run `wrapper guide` — the GUIDE.md will 
+  After the developer replies, run `forge guide` — the GUIDE.md will 
   automatically include their feedback as a new “Developer Stories” section.

@@ -1,4 +1,4 @@
-name: dbt-dab-wrapper-v0.1
+name: dbt-forge
 environment: dev
 target_platform: databricks
 catalog: main

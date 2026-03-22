@@ -1,17 +1,17 @@
 # NEXT-IMMEDIATE.yml
 # ────────────────────────────────────────────────────────────────
-#   dbt-dab-wrapper — Immediate Next Changes (Post-UDF Complete)
+#   dbt-forge — Immediate Next Changes (Post-UDF Complete)
 #   Date: 22 March 2026
 #   Phase: Hardening the "child can use it" promise
 #   Goal: Ship the last 10% that makes provenance, checks, and DX feel magical
-#   Rule: Every change keeps users editing ONLY wrapper.yml + models.yml
+#   Rule: Every change keeps users editing ONLY forge.yml + models.yml
 #         Everything else = external macros + generated code
 #         Graph = single source of truth for diffs
 #         One command = deploy / teardown / dev / validate / explain
 # ────────────────────────────────────────────────────────────────
 
 project:
-  name: dbt-dab-wrapper
+  name: dbt-forge
   vision: >
     Every value traceable. Every check visible. Every change obvious in the graph.
     UDFs are done — now make provenance and rollup checks feel like magic.
@@ -20,7 +20,7 @@ next_immediate_todos:
 
   - id: provenance-explain-cli
     category: Telemetry • Provenance & Lineage
-    title: Add `wrapper explain <model>.<column>` CLI command
+    title: Add `forge explain <model>.<column>` CLI command
     priority: 1
     status: Pending
     owner: You
@@ -28,7 +28,7 @@ next_immediate_todos:
     justification: >
       Provenance already lives in _lineage struct. 
       This turns it into one child-level command: 
-      "wrapper explain customer_summary.total_revenue" 
+      "forge explain customer_summary.total_revenue" 
       → beautiful terminal tree (or --mermaid) showing expression, UDF calls, 
       methodology version, git commit, and every check that validated it.
       Enables "data challenge at any stage" instantly. 
@@ -57,7 +57,7 @@ next_immediate_todos:
             parent_model: customer_orders
             parent_expr: "sum(line_total)"
             tolerance: 0.0001
-      Runs safely in `wrapper validate` (separate step).
+      Runs safely in `forge validate` (separate step).
       Adds green/red node to graph. Full result in _checks struct.
       Completes the "rock-solid" promise without any transaction headaches.
     rebuttals:
@@ -78,7 +78,7 @@ next_immediate_todos:
     effort: S (1 day)
     justification: >
       Graph already shows UDFs (purple). Checks must be visible too.
-      `wrapper diff` should say: "added reconcile check → impacts 2 models".
+      `forge diff` should say: "added reconcile check → impacts 2 models".
       SDK models now include .checks_passed, .check_results[] for type-safe apps.
       Code = documentation: SDK reflects checks automatically.
     rebuttals: []
@@ -103,9 +103,9 @@ next_immediate_todos:
       - Add detection logic in simple_ddl.py
       - Test with existing migration engine
 
-  - id: wrapper-challenge-prototype
+  - id: forge-challenge-prototype
     category: DX • Data Challenges
-    title: Add `wrapper challenge` interactive mode
+    title: Add `forge challenge` interactive mode
     priority: 5
     status: Pending
     owner: You
@@ -130,18 +130,18 @@ next_immediate_todos:
     owner: Anyone
     effort: XS (1 hour)
     justification: >
-      wrapper guide already exists. Just add the new explain, reconcile, and challenge sections.
+      forge guide already exists. Just add the new explain, reconcile, and challenge sections.
       One new model in dbt/models.yml showing reconcile + UDF together.
       Keeps "THE CODE IS THE DOCUMENTATION" true.
     rebuttals: []
     next_steps:
       - Extend generate_agent_guide() in simple_ddl.py
-      - Run `wrapper guide` to refresh
+      - Run `forge guide` to refresh
 
 backlog_for_next_sprint:
   - Full patterns.yml + methodologies (extends:)
   - Alerting hooks for failed checks (Slack/email)
-  - wrapper validate --model X --fix (auto-quarantine)
+  - forge validate --model X --fix (auto-quarantine)
   - Windows path handling polish for dev watch mode
 
 last_updated: 2026-03-22

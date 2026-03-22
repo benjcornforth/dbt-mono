@@ -1,20 +1,20 @@
 # =============================================
-# src/wrapper/cli.py
+# src/forge/cli.py
 # =============================================
 # THE CODE IS THE DOCUMENTATION
 # 
 # This is the ONLY Python file the child ever sees.
 # 
 # Commands:
-#   wrapper setup      ← creates everything in 2 seconds
-#   wrapper deploy     ← builds graph + DAB + runs dbt
-#   wrapper teardown   ← safely destroys
-#   wrapper diff       ← shows graph changes
+#   forge setup      ← creates everything in 2 seconds
+#   forge deploy     ← builds graph + DAB + runs dbt
+#   forge teardown   ← safely destroys
+#   forge diff       ← shows graph changes
 # 
 # Everything else (quarantine, Python UDFs, compute resolver, portability)
-# lives in the EXTERNAL dbt-tools/ folder – never here.
+# lives in the EXTERNAL dbt-dab-tools package (pulled via packages.yml).
 # 
-# A child types: wrapper setup → wrapper deploy → done.
+# A child types: forge setup → forge deploy → done.
 # An engineer sees every line explained.
 
 import typer
@@ -23,7 +23,7 @@ from pathlib import Path
 import subprocess
 from typing import Optional
 
-from wrapper.graph import (
+from forge.graph import (
     build_graph,
     diff_graphs,
     render_mermaid,
@@ -33,9 +33,9 @@ from wrapper.graph import (
     walk_column_lineage,
     render_provenance_tree,
 )
-from wrapper.type_safe import build_models, generate_sdk_file
-from wrapper.workflow import build_workflow
-from wrapper.simple_ddl import (
+from forge.type_safe import build_models, generate_sdk_file
+from forge.workflow import build_workflow
+from forge.simple_ddl import (
     compile_all,
     apply_all_migrations,
     apply_all_migrations_dry_run,
@@ -46,15 +46,15 @@ from wrapper.simple_ddl import (
 )
 
 app = typer.Typer(
-    help="dbt-dab-wrapper – so simple a child could use it. "
-         "One wrapper.yml. External dbt-tools. Graph diffs. "
+    help="forge – dbt pipelines on Databricks, so simple a child could use it. "
+         "One forge.yml. External dbt-dab-tools package. Graph diffs. "
          "Quarantine + provenance + Python UDFs built-in."
 )
 
 # =============================================
 # CONFIG FILE – the ONLY thing a child ever edits
 # =============================================
-CONFIG_FILE = Path("wrapper.yml")
+CONFIG_FILE = Path("forge.yml")
 DEFAULT_CONFIG = {
     "name": "my_project",
     "environment": "dev",
@@ -83,8 +83,8 @@ DEFAULT_CONFIG = {
 def setup(
     project_name: Optional[str] = typer.Option(None, "--name", help="Project name (defaults to folder name)")
 ):
-    """wrapper setup → creates wrapper.yml + folders in 2 seconds"""
-    typer.echo("🚀 Running wrapper setup... (child-level simple)")
+    """forge setup → creates forge.yml + folders in 2 seconds"""
+    typer.echo("🚀 Running forge setup... (child-level simple)")
 
     project_root = Path.cwd()
     if not CONFIG_FILE.exists():
@@ -103,21 +103,20 @@ def setup(
     (project_root / "dbt" / "sources").mkdir(parents=True, exist_ok=True)
     (project_root / "artifacts").mkdir(parents=True, exist_ok=True)
 
-    # Remind user about external dbt-tools (never touches business logic)
     typer.echo("✅ Created dbt/models/, seeds/, sources/ – pure business logic only")
-    typer.echo("🔗 All macros (quarantine, python_udf, prior_version) live in EXTERNAL dbt-tools/")
-    typer.echo("🎉 Setup complete! Now run:  wrapper deploy")
+    typer.echo("🔗 All macros (quarantine, python_udf, prior_version) live in dbt-dab-tools (via packages.yml)")
+    typer.echo("🎉 Setup complete! Now run:  forge deploy")
 
 # =============================================
 # DEPLOY – builds graph + DAB + runs dbt
 # =============================================
 @app.command()
 def deploy(env: str = typer.Option("dev", "--env", help="Environment to deploy")):
-    """wrapper deploy → reads wrapper.yml → auto-generates DAB → runs dbt"""
+    """forge deploy → reads forge.yml → auto-generates DAB → runs dbt"""
     typer.echo(f"🚀 Deploying to {env}...")
 
     if not CONFIG_FILE.exists():
-        typer.echo("❌ No wrapper.yml found. Run 'wrapper setup' first!")
+        typer.echo("❌ No forge.yml found. Run 'forge setup' first!")
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
@@ -135,14 +134,14 @@ def deploy(env: str = typer.Option("dev", "--env", help="Environment to deploy")
     except FileNotFoundError:
         typer.echo("💡 Tip: install dbt-databricks with poetry if needed")
 
-    typer.echo("🎉 Deploy complete! Run 'wrapper diff' to see graph changes.")
+    typer.echo("🎉 Deploy complete! Run 'forge diff' to see graph changes.")
 
 # =============================================
 # TEARDOWN – safe destroy
 # =============================================
 @app.command()
 def teardown():
-    """wrapper teardown → safely destroys everything"""
+    """forge teardown → safely destroys everything"""
     typer.echo("🛑 Teardown in progress...")
     typer.echo("✅ (Graph diff shows what would be deleted – safe by design)")
     # TODO: databricks bundle destroy (next iteration)
@@ -156,9 +155,9 @@ def diff(
     mermaid: bool = typer.Option(False, "--mermaid", help="Output Mermaid diff diagram"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Write diff output to file"),
 ):
-    """wrapper diff → shows what changed since last graph snapshot"""
+    """forge diff → shows what changed since last graph snapshot"""
     if not CONFIG_FILE.exists():
-        typer.echo("❌ No wrapper.yml found. Run 'wrapper setup' first!")
+        typer.echo("❌ No forge.yml found. Run 'forge setup' first!")
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
@@ -171,7 +170,7 @@ def diff(
         typer.echo("📊 No previous graph snapshot found — building baseline.")
         save_graph(new_graph, snapshot_path)
         typer.echo(f"✅ Saved graph snapshot → {snapshot_path}")
-        typer.echo("   Run 'wrapper diff' again after making changes.")
+        typer.echo("   Run 'forge diff' again after making changes.")
         return
 
     result = diff_graphs(old_graph, new_graph)
@@ -211,11 +210,11 @@ def explain(
     json_flag: bool = typer.Option(False, "--json", help="Output JSON for scripting"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Write output to file"),
 ):
-    """wrapper explain <model>.<column> → shows full provenance tree"""
+    """forge explain <model>.<column> → shows full provenance tree"""
     parts = model_dot_column.split(".", 1)
     if len(parts) != 2:
-        typer.echo("❌ Usage: wrapper explain <model_name>.<column_name>")
-        typer.echo("   Example: wrapper explain customer_summary.total_revenue")
+        typer.echo("❌ Usage: forge explain <model_name>.<column_name>")
+        typer.echo("   Example: forge explain customer_summary.total_revenue")
         raise typer.Exit(1)
 
     model_name, column_name = parts
@@ -227,7 +226,7 @@ def explain(
         raise typer.Exit(1)
 
     if not CONFIG_FILE.exists():
-        typer.echo("❌ No wrapper.yml found. Run 'wrapper setup' first!")
+        typer.echo("\u274c No forge.yml found. Run 'forge setup' first!")
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
@@ -261,9 +260,9 @@ def codegen(
     output: str = typer.Option("sdk/models.py", "--output", "-o", help="Output file path"),
     check: bool = typer.Option(False, "--check", help="CI mode: fail if generated file is stale"),
 ):
-    """wrapper codegen → generates type-safe Pydantic models from dbt schema"""
+    """forge codegen → generates type-safe Pydantic models from dbt schema"""
     if not CONFIG_FILE.exists():
-        typer.echo("❌ No wrapper.yml found. Run 'wrapper setup' first!")
+        typer.echo("❌ No forge.yml found. Run 'forge setup' first!")
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
@@ -278,12 +277,12 @@ def codegen(
 
     if check:
         if old_content is None:
-            typer.echo(f"❌ {output} does not exist. Run 'wrapper codegen' to create it.")
+            typer.echo(f"❌ {output} does not exist. Run 'forge codegen' to create it.")
             raise typer.Exit(1)
         if old_content != new_content:
             # Restore old content since this is check-only
             out.write_text(old_content)
-            typer.echo(f"❌ {output} is stale. Run 'wrapper codegen' to update.")
+            typer.echo(f"❌ {output} is stale. Run 'forge codegen' to update.")
             raise typer.Exit(1)
         typer.echo(f"✅ {output} is up to date.")
     else:
@@ -300,9 +299,9 @@ def workflow(
     dab: bool = typer.Option(False, "--dab", help="Output databricks.yml jobs section"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Write output to file"),
 ):
-    """wrapper workflow → generates stage-based Databricks Workflow DAG"""
+    """forge workflow → generates stage-based Databricks Workflow DAG"""
     if not CONFIG_FILE.exists():
-        typer.echo("❌ No wrapper.yml found. Run 'wrapper setup' first!")
+        typer.echo("❌ No forge.yml found. Run 'forge setup' first!")
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
@@ -336,10 +335,10 @@ def compile(
     ddl: str = typer.Option("dbt/models.yml", "--ddl", help="Path to models.yml DDL file"),
     output: str = typer.Option("dbt/models", "--output", "-o", help="Output directory for SQL files"),
 ):
-    """wrapper compile → turns models.yml into SQL + schema.yml (no SQL needed)"""
+    """forge compile → turns models.yml into SQL + schema.yml (no SQL needed)"""
     ddl_path = Path(ddl)
     if not ddl_path.exists():
-        typer.echo(f"❌ {ddl} not found. Create it or run 'wrapper setup' first!")
+        typer.echo(f"❌ {ddl} not found. Create it or run 'forge setup' first!")
         raise typer.Exit(1)
 
     output_dir = Path(output)
@@ -355,7 +354,7 @@ def compile(
 
     model_count = len([k for k in results if not k.startswith("_")])
     udf_note = " + UDFs" if "_udfs" in results else ""
-    typer.echo(f"🎉 Compiled {model_count} models{udf_note} from {ddl}. Run 'wrapper deploy' next.")
+    typer.echo(f"🎉 Compiled {model_count} models{udf_note} from {ddl}. Run 'forge deploy' next.")
 
 
 # =============================================
@@ -368,7 +367,7 @@ def migrate(
     recompile: bool = typer.Option(True, "--recompile/--no-recompile", help="Recompile SQL after migrating"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without applying"),
 ):
-    """wrapper migrate → applies migration YAMLs to models.yml + recompiles"""
+    """forge migrate → applies migration YAMLs to models.yml + recompiles"""
     ddl_path = Path(ddl)
     mig_dir = Path(migrations)
 
@@ -411,7 +410,7 @@ def migrate(
         compile_all(ddl_path, output_dir)
         typer.echo(f"🔄 Recompiled SQL from updated {ddl}")
 
-    typer.echo(f"🎉 Applied {len(results)} migration(s). Run 'wrapper deploy' next.")
+    typer.echo(f"🎉 Applied {len(results)} migration(s). Run 'forge deploy' next.")
 
 
 # =============================================
@@ -422,9 +421,9 @@ def guide(
     output: str = typer.Option(".instructions.md", "--output", "-o", help="Output file path"),
     ddl: str = typer.Option("dbt/models.yml", "--ddl", help="Path to models.yml DDL file"),
 ):
-    """wrapper guide → generates a project-specific agent guide / onboarding doc"""
+    """forge guide → generates a project-specific agent guide / onboarding doc"""
     if not CONFIG_FILE.exists():
-        typer.echo("❌ No wrapper.yml found. Run 'wrapper setup' first!")
+        typer.echo("❌ No forge.yml found. Run 'forge setup' first!")
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
@@ -444,7 +443,7 @@ def udfs(
     ddl: str = typer.Option("dbt/models.yml", "--ddl", help="Path to models.yml DDL file"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Write UDF SQL to file"),
 ):
-    """wrapper udfs → shows and compiles UDFs defined in models.yml"""
+    """forge udfs → shows and compiles UDFs defined in models.yml"""
     ddl_path = Path(ddl)
     if not ddl_path.exists():
         typer.echo(f"❌ {ddl} not found.")
@@ -494,7 +493,7 @@ def validate(
     model: Optional[str] = typer.Option(None, "--model", "-m", help="Validate one model only"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Write check SQL to file"),
 ):
-    """wrapper validate → shows checks defined for each model"""
+    """forge validate → shows checks defined for each model"""
     ddl_path = Path(ddl)
     if not ddl_path.exists():
         typer.echo(f"❌ {ddl} not found.")
@@ -538,9 +537,9 @@ def dev_up(
     schema_suffix: Optional[str] = typer.Option(None, "--schema", "-s", help="Dev schema suffix (default: username)"),
     seed: bool = typer.Option(True, "--seed/--no-seed", help="Seed sample data after setup"),
 ):
-    """wrapper dev-up → creates isolated dev schema + seeds sample data"""
+    """forge dev-up → creates isolated dev schema + seeds sample data"""
     if not CONFIG_FILE.exists():
-        typer.echo("❌ No wrapper.yml found. Run 'wrapper setup' first!")
+        typer.echo("❌ No forge.yml found. Run 'forge setup' first!")
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
@@ -579,8 +578,8 @@ def dev_up(
             typer.echo(f"  ⚠️  Seed failed (non-fatal): {e}")
 
     typer.echo(f"🎉 Dev environment ready! Schema: {dev_schema}")
-    typer.echo(f"   Run 'wrapper dev' to start watch mode.")
-    typer.echo(f"   Run 'wrapper dev-down' to tear down.")
+    typer.echo(f"   Run 'forge dev' to start watch mode.")
+    typer.echo(f"   Run 'forge dev-down' to tear down.")
 
 
 @app.command(name="dev")
@@ -589,7 +588,7 @@ def dev(
     output: str = typer.Option("dbt/models", "--output", "-o", help="Output directory for SQL files"),
     poll_interval: float = typer.Option(1.0, "--poll", help="Seconds between file change polls"),
 ):
-    """wrapper dev → watches models.yml, auto-compiles on save"""
+    """forge dev → watches models.yml, auto-compiles on save"""
     ddl_path = Path(ddl)
     if not ddl_path.exists():
         typer.echo(f"❌ {ddl} not found. Create models.yml first!")
@@ -632,9 +631,9 @@ def dev(
 def dev_down(
     schema_suffix: Optional[str] = typer.Option(None, "--schema", "-s", help="Dev schema suffix (default: username)"),
 ):
-    """wrapper dev-down → tears down isolated dev schema"""
+    """forge dev-down → tears down isolated dev schema"""
     if not CONFIG_FILE.exists():
-        typer.echo("❌ No wrapper.yml found.")
+        typer.echo("❌ No forge.yml found.")
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
@@ -669,7 +668,7 @@ def dev_down(
 # MAIN ENTRY POINT – matches pyproject.toml
 # =============================================
 def main():
-    """This is what Poetry calls when you type 'wrapper'"""
+    """This is what Poetry calls when you type 'forge'"""
     app()
 
 if __name__ == "__main__":
@@ -680,7 +679,7 @@ if __name__ == "__main__":
 # =============================================
 # • Typer = beautiful help text, zero flags needed
 # • setup/deploy/teardown/diff = exactly the 3 commands we promised
-# • All heavy lifting (compute, graph, macros) stays in EXTERNAL dbt-tools/
+# • All heavy lifting (compute, graph, macros) stays in EXTERNAL dbt-dab-tools package
 # • SQL preferred, Python UDFs allowed via macros
 # • Portability baked in (target_platform switch works later)
 # • Every single line has a comment → THE CODE IS THE DOCUMENTATION

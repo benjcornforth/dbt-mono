@@ -2,7 +2,7 @@
 # Migration: Add loyalty tier to customer_summary
 # =============================================
 # No SQL needed. Just describe what changes.
-# Run: wrapper migrate → applies this automatically.
+# Run: forge migrate → applies this automatically.
 
 migration: "001_add_loyalty_tier"
 description: "Add loyalty tier column to customer summary"
