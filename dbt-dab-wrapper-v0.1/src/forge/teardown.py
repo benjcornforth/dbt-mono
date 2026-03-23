@@ -420,6 +420,18 @@ def build_teardown_plan(
             doubled_sch = f"{resolved_sch}_{resolved_sch}"
             schema_drop_targets.append(f"{resolved_cat}.{doubled_sch}")
 
+        # Domain schemas: each catalog × base_schema + domain suffix
+        domains = forge_config.get("domains", {})
+        domain_layers = set(forge_config.get("domain_layers", []))
+        if domains and domain_layers:
+            for cat_name in catalogs_list:
+                if cat_name in domain_layers:
+                    resolved_cat = _resolve_catalog(catalog_pattern, env, scope, cat_name)
+                    resolved_sch = _resolve_schema(schema_pattern, env, project_id, scope)
+                    for domain_name, domain_cfg in domains.items():
+                        suffix = domain_cfg.get("schema_suffix", f"_{domain_name}")
+                        schema_drop_targets.append(f"{resolved_cat}.{resolved_sch}{suffix}")
+
         removes.extend([
             TeardownAsset(
                 asset_type="schema",

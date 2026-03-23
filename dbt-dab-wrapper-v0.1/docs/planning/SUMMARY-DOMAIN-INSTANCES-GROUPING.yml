@@ -1,8 +1,8 @@
 # SUMMARY-DOMAIN-INSTANCES-GROUPING.yml
 # ────────────────────────────────────────────────────────────────
-#   dbt-dab-wrapper — Domain-Based Model Instances (Corrected Summary)
+#   dbt-dab-wrapper — Domain-Based Model Instances
 #   Date: 23 March 2026
-#   Status: Phase 1 COMPLETE ✅ (flat suffix files) | Grouping is a proposal
+#   Status: Phase 1 COMPLETE ✅ | Subfolder grouping DONE ✅ | Deploy DONE ✅
 #   Goal: Same model runs in many domains (EU, US, APAC) in different schemas
 #         with different source files — no code duplication.
 #   Rule: Users edit ONLY forge.yml + dbt/ddl/. Everything else generated.
@@ -13,36 +13,43 @@
 current_state:
   how_instances_work_today:
     - forge.yml has a domains: block (schema_suffix per domain)
-    - forge compile creates flat files with suffix: silver/customer_clean_eu.sql
+    - forge compile creates per-domain subfolders with suffixed files
     - Each instance is a real dbt model (customer_clean_eu, customer_clean_us)
     - Schema is hardcoded in the .sql file (ben_demo_eu)
-    - No subfolders yet — all files sit flat in the layer folder
-    - domain_layers configurable in forge.yml (bronze/silver/gold bifurcation works)
+    - domain_layers configurable in forge.yml (bronze/silver/gold bifurcation)
       - e.g. domain_layers: [silver, gold] = only silver+ get domain instances
-      - bronze stays shared (raw ingestion)
-  why_flat_files_were_chosen:
-    - Avoids dbt naming conflict (model name derived from filename)
-    - Keeps dbt happy (filename = model name)
-    - Graph, workflow, tests, and teardown work automatically
+      - e.g. domain_layers: [bronze, silver, gold] = all layers bifurcated
+    - Bifurcated layers skip the default instance (no stg_customers.sql when bronze is bifurcated)
+    - Default instances only generated for non-bifurcated layers
+    - forge deploy prepends CREATE SCHEMA IF NOT EXISTS for UDF target schema
+    - Verified: 15/15 models deployed successfully to Databricks
 
-proposed_grouping:
-  name: "Per-domain subfolders (future enhancement after Phase 2)"
-  structure_we_want:
-    dbt/models/silver/
-    ├── eu/
-    │   └── customer_summary_eu.sql     # filename keeps suffix to avoid collision
-    ├── us/
-    │   └── customer_summary_us.sql
-    └── apac/
-        └── customer_summary_apac.sql
-  current_blocker:
-    - dbt derives model name from filename only
-    - Subfolders would create 3 models all named "customer_summary" → collision
-  solution_options:
-    - Option A (recommended): Keep filename as customer_summary_eu.sql inside silver/eu/ folder
-    - Option B: Use dbt alias config inside the file (more complex)
-  effort: S (1 day, after Phase 2)
-  benefit: "File explorer becomes self-documenting — open silver/eu/ to see EU logic"
+  folder_structure: |
+    dbt/models/demo/
+    ├── bronze/
+    │   ├── eu/
+    │   │   ├── stg_customers_eu.sql
+    │   │   └── stg_orders_eu.sql
+    │   ├── us/
+    │   │   ├── stg_customers_us.sql
+    │   │   └── stg_orders_us.sql
+    │   └── apac/
+    │       ├── stg_customers_apac.sql
+    │       └── stg_orders_apac.sql
+    └── silver/
+        ├── eu/
+        │   ├── customer_clean_eu.sql
+        │   ├── customer_orders_eu.sql
+        │   └── customer_summary_eu.sql
+        ├── us/
+        │   └── ...
+        └── apac/
+            └── ...
+
+  naming_approach:
+    - Suffixed filenames in domain subfolders (customer_summary_eu.sql in silver/eu/)
+    - Avoids dbt naming conflict (dbt derives model name from filename)
+    - File explorer is self-documenting — open silver/eu/ to see EU logic
 
 backup_and_teardown_impact:
   backups:
@@ -58,21 +65,33 @@ backup_and_teardown_impact:
     - Ends with "♻️ Re-instate any instance: forge deploy"
     - --domain eu flag can scope teardown to one domain (future)
 
+bugs_fixed:
+  - issue: "UDF deploy failed — SCHEMA_NOT_FOUND when bronze is fully bifurcated"
+    cause: "DROP FUNCTION IF EXISTS targets dev_fd_bronze.ben_demo, but that schema was never created"
+    fix: "Prepend CREATE SCHEMA IF NOT EXISTS to UDF SQL batch in cli.py deploy"
+  - issue: "Bifurcated layers still produced default .sql files"
+    cause: "compile_all() wrote default instance before checking domain_layers"
+    fix: "Skip default .sql + schema.yml entry when layer is in domain_layers"
+  - issue: "Teardown --wipe-all dropped base schema but left domain schemas alive"
+    cause: "build_teardown_plan() only iterated base schemas, not domain-suffixed ones"
+    fix: "Added domain schema loop in teardown.py — crosses catalogs × domain_layers × domains"
+
 success_criteria:
-  - Current flat approach works today (customer_clean_eu.sql)                     # Phase 1 — DONE
-  - forge explain customer_summary_eu works (shows domain + source)               # Phase 2+
-  - forge deploy creates domain schemas + tables automatically                    # Phase 2
-  - Graph shows each instance as its own node with domain badge                   # Phase 2
-  - forge teardown is safe (archives only, clear re-instate path)                 # Phase 1 — DONE
+  - Domain subfolders with suffixed files (silver/eu/customer_clean_eu.sql)       # DONE
+  - Bifurcated layers skip default instances                                     # DONE
+  - forge deploy creates domain schemas + tables automatically                   # DONE (15/15 models)
+  - forge explain customer_summary_eu works (shows domain + source)              # Phase 2+
+  - Graph shows each instance as its own node with domain badge                  # Phase 2
+  - forge teardown is safe (archives only, clear re-instate path)                # DONE
 
 auto_documentation:
   - After every change: run `forge guide`
-  - New section appears automatically: "## HOW-TO: Multiple Instances per Domain"
+  - forge guide has been run — domain section available
 
 next_action:
-  - Phase 1 is already complete (flat suffix files + domain_layers support)
-  - Start Phase 2 (deploy + graph + workflow integration)
-  - After Phase 2, evaluate subfolder grouping as a nice-to-have
-  - Run `forge guide` now — the corrected grouping section appears instantly
+  - Phase 1 is complete (subfolder grouping + domain_layers + deploy)
+  - Remaining Phase 2 work: graph domain tags, workflow domain tasks, teardown --domain flag
+  - Phase 3: domain source routing
+  - Phase 4: migration tooling
 
 last_updated: 2026-03-23

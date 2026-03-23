@@ -770,17 +770,19 @@ def compile_all(
     domain_models: dict[str, dict] = {}
 
     # Pre-compute which models are in domain layers (for ref rewriting)
+    # Models with domain: false are excluded — they stay shared
     domain_model_names: set[str] = set()
     if domains:
         for name, mdef in models.items():
-            if mdef.get("layer", "default") in domain_layers:
+            if mdef.get("layer", "default") in domain_layers and mdef.get("domain", True) is not False:
                 domain_model_names.add(name)
 
     for model_name, model_def in models.items():
         layer = model_def.get("layer", "default")
         sub_dir = output_dir / origin / layer
         sub_dir.mkdir(parents=True, exist_ok=True)
-        is_bifurcated = domains and layer in domain_layers
+        model_domain_enabled = model_def.get("domain", True) is not False
+        is_bifurcated = domains and layer in domain_layers and model_domain_enabled
 
         # Default instance: skip if this layer is fully bifurcated into domains
         if not is_bifurcated:
@@ -792,7 +794,7 @@ def compile_all(
             results[model_name] = out_path
 
         # Domain instances: generate one .sql per (model x domain)
-        if domains and layer in domain_layers:
+        if is_bifurcated:
             base_schema = _resolve_base_schema(forge_config, layer) if forge_config else None
             for domain_name, domain_cfg in domains.items():
                 suffix = domain_cfg.get("schema_suffix", f"_{domain_name}")
@@ -813,9 +815,10 @@ def compile_all(
                 domain_models[instance_name] = domain_def
 
     # Merge domain instances into models for schema.yml generation
-    # Exclude default instances of fully bifurcated layers
+    # Exclude default instances of fully bifurcated layers (but keep domain: false models)
     base_models = {k: v for k, v in models.items()
-                   if not (domains and v.get("layer", "default") in domain_layers)}
+                   if not (domains and v.get("layer", "default") in domain_layers
+                           and v.get("domain", True) is not False)}
     all_models = {**base_models, **domain_models}
 
     # Generate schema.yml (includes domain instances)

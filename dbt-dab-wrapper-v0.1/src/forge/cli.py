@@ -234,6 +234,12 @@ def deploy(
             target_catalog = expanded_prof.get("catalog", "main")
             target_schema = expanded_prof.get("schema", "default")
 
+            # Ensure the UDF target schema exists (may not if the layer is fully
+            # bifurcated into domain instances and dbt hasn't created it yet)
+            _ensure_schema_sql = (
+                f"CREATE SCHEMA IF NOT EXISTS `{target_catalog}`.`{target_schema}`"
+            )
+
             # Separate SQL UDFs from Python/Pandas UDFs — warehouses that don't
             # support LANGUAGE PYTHON would otherwise block all UDF deployment
             sql_files = [f for f in udf_files if "LANGUAGE PYTHON" not in f.read_text().upper()]
@@ -243,6 +249,9 @@ def deploy(
                 sql = "\n".join(f.read_text() for f in files)
                 sql = sql.replace("{{ target.catalog }}", target_catalog)
                 sql = sql.replace("{{ target.schema }}", target_schema)
+                # Prepend schema creation so UDFs can be deployed even when the
+                # target schema doesn't exist yet (e.g. fully bifurcated layers)
+                sql = f"{_ensure_schema_sql};\n{sql}"
                 try:
                     subprocess.run(
                         ["dbt", "run-operation", "deploy_udfs",

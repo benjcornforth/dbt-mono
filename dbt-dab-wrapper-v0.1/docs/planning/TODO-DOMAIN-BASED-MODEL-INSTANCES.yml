@@ -294,7 +294,7 @@ approaches:
     cons:
       - "NxM generated .sql files (N models x M domains) -- but all gitignored"
       - "dbt partial_parse cache invalidated when domains are added/removed"
-      - "Domain schemas need CREATE SCHEMA IF NOT EXISTS (add to deploy)"
+      - "Domain schemas need CREATE SCHEMA IF NOT EXISTS (add to deploy) -- RESOLVED"
 
   # ------------------------------------------------
   # OPTION B: Runtime vars -- multiple dbt runs
@@ -714,24 +714,37 @@ implementation_plan:
 
   phase_2:
     name: "Deploy + graph + workflow integration"
-    status: NOT STARTED
+    status: PARTIAL
     effort: "1 day"
     files_changed:
       - src/forge/cli.py (deploy -- add CREATE SCHEMA for domain schemas)
+      - src/forge/simple_ddl.py (subfolder grouping in compile_all)
       - src/forge/graph.py (tag domain in contract metadata)
       - src/forge/workflow.py (domain tasks)
       - src/forge/teardown.py (domain schema drops in --wipe-all)
     delivers:
-      - "CREATE SCHEMA IF NOT EXISTS for each domain schema during deploy"
-      - "Each domain instance = distinct graph contract with domain tag"
-      - "Workflow DAG has per-domain tasks"
-      - "Teardown --wipe-all includes domain schemas"
-      - "forge diff shows per-domain changes"
+      - "CREATE SCHEMA IF NOT EXISTS for UDF target schema during deploy"     # DONE
+      - "Domain instances in per-domain subfolders (silver/eu/)"              # DONE
+      - "Bifurcated layers skip default instances"                            # DONE
+      - "forge deploy 15/15 models — verified on Databricks"                  # DONE
+      - "Each domain instance = distinct graph contract with domain tag"      # NOT STARTED
+      - "Workflow DAG has per-domain tasks"                                   # NOT STARTED
+      - "Teardown --wipe-all includes domain schemas"                         # DONE
+      - "forge diff shows per-domain changes"                                 # NOT STARTED
+    bugs_fixed:
+      - issue: "UDF deploy SCHEMA_NOT_FOUND when bronze fully bifurcated"
+        fix: "Prepend CREATE SCHEMA IF NOT EXISTS to UDF batch SQL in cli.py"
+      - issue: "Default .sql still generated for bifurcated layers"
+        fix: "Skip default instance + schema.yml entry when layer in domain_layers"
+      - issue: "Teardown --wipe-all dropped base schema but left domain schemas alive"
+        fix: "Added domain schema iteration to build_teardown_plan() in teardown.py"
+        detail: "Loops catalogs × domain_layers × domains to build full drop list"
     validation: |
       forge deploy
-      # -> creates ben_demo_eu, ben_demo_us schemas
+      # -> creates ben_demo_eu, ben_demo_us, ben_demo_apac schemas
+      # -> 15/15 models PASS=15 ERROR=0
       forge diff
-      # -> shows eu/us/apac instances separately
+      # -> shows eu/us/apac instances separately (Phase 2 remaining)
 
   phase_3:
     name: "Domain source routing"
@@ -766,12 +779,13 @@ implementation_plan:
       #   SELECT * FROM silver.ben_demo.customer_summary WHERE region = 'EU'
 
   total_effort: "4-6 days"
-  completed_effort: "Phase 1 done (~1.5 days)"
-  remaining_effort: "~2.5-4 days (Phases 2-4)"
+  completed_effort: "Phase 1 done + Phase 2 partial (~2 days)"
+  remaining_effort: "~2-3.5 days (Phase 2 remainder + Phases 3-4)"
   risk: Low
   notes: >
-    Phase 1 delivers 80% of the value and is COMPLETE. Phases 2-4 are incremental.
-    Each phase is independently deployable and testable.
+    Phase 1 is COMPLETE. Phase 2 is PARTIAL — deploy + subfolder grouping done,
+    graph tags / workflow tasks / teardown scoping still needed.
+    Phases 3-4 are incremental and independently deployable.
 
 
 # ====================================================================
@@ -781,10 +795,10 @@ implementation_plan:
 success_criteria:
   - "User adds domains: block to forge.yml (3 lines per domain)"               # DONE
   - "forge compile generates N .sql files per model per domain"                 # DONE
-  - "forge deploy creates domain schemas + tables automatically"                # Phase 2
+  - "forge deploy creates domain schemas + tables automatically"                # DONE (15/15 deployed)
   - "Graph shows each domain instance as its own contract node"                 # Phase 2 (auto via manifest)
   - "dbt test runs per-domain automatically"                                    # DONE (schema.yml includes domain instances)
-  - "forge teardown --wipe-all drops all domain schemas cleanly"                # Phase 2
+  - "forge teardown --wipe-all drops all domain schemas cleanly"                # DONE
   - "forge diff shows per-domain contract changes"                              # Phase 2
   - "forge migrate splits data from shared -> domain schemas"                   # Phase 4
   - "No DDL model changes required -- domains are infrastructure config only"   # DONE
