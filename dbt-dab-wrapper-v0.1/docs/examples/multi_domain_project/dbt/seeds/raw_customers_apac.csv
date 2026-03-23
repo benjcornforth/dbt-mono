@@ -1,0 +1,8 @@
+customer_id,email,country,revenue
+301,yuki@example.jp,JP,1900.00
+302,wei@example.cn,CN,2600.50
+303,,AU,750.00
+304,priya@example.in,IN,1350.75
+305,soo-jin@example.kr,KR,3400.00
+306,mei@example.sg,SG,0.00
+307,hiro@example.jp,JP,-10.00

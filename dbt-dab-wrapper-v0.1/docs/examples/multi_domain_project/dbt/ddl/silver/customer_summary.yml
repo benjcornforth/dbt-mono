@@ -1,0 +1,20 @@
+# ── Customer summary per domain ──────────
+models:
+  customer_summary:
+    description: "Aggregated customer metrics — runs per domain"
+    source: customer_orders
+    materialized: table
+    group_by: [customer_id, email, country]
+    columns:
+      customer_id:      { type: int, required: true, unique: true }
+      email:            { type: string }
+      country:          { type: string }
+      total_orders:     { expr: "count(order_id)", type: int }
+      total_revenue:    { expr: "sum(line_total)", type: "decimal(10,2)" }
+      last_order_date:  { expr: "max(order_date)", type: date }
+    checks:
+      - name: revenue_non_negative
+        type: range
+        column: total_revenue
+        min: 0
+        severity: error

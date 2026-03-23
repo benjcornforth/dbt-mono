@@ -1,0 +1,28 @@
+# ── Reusable UDFs ──────────
+udfs:
+  loyalty_tier:
+    description: "Assigns GOLD/SILVER/BRONZE based on revenue"
+    language: sql
+    returns: string
+    params:
+      - { name: revenue, type: "decimal(18,2)" }
+    body: |
+      CASE
+        WHEN revenue >= 1000 THEN 'GOLD'
+        WHEN revenue >=  500 THEN 'SILVER'
+        ELSE 'BRONZE'
+      END
+
+  clean_email:
+    description: "Lowercase and trim email addresses"
+    language: python
+    returns: string
+    runtime_version: "3.11"
+    handler: clean
+    params:
+      - { name: raw_email, type: string }
+    body: |
+      def clean(raw_email):
+          if raw_email is None:
+              return None
+          return raw_email.strip().lower()

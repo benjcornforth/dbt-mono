@@ -1,0 +1,17 @@
+# ── Staged orders (domain instances auto-generated) ──────────
+models:
+  stg_orders:
+    description: "Staged orders with computed line_total"
+    source: raw_orders
+    domain_sources:
+      eu: raw_orders_eu
+      us: raw_orders_us
+      apac: raw_orders_apac
+    columns:
+      order_id:     { type: int, required: true, unique: true }
+      customer_id:  { type: int, required: true }
+      product:      { type: string }
+      quantity:     { type: int }
+      unit_price:   { type: "decimal(10,2)", cast: true }
+      line_total:   { expr: "quantity * unit_price" }
+      order_date:   { type: date, cast: true }

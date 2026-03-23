@@ -1,0 +1,16 @@
+# ── Raw customer data from CSV ──────────
+seeds:
+  raw_customers:
+    description: "Raw customer data loaded from CSV seed"
+    origin:
+      type: seed
+      path: dbt/seeds/raw_customers.csv
+      format: csv
+    columns:
+      customer_id:  { type: int, description: "Unique customer identifier" }
+      first_name:   { type: string }
+      last_name:    { type: string }
+      email:        { type: string }
+      signup_date:  { type: date }
+      country:      { type: string }
+      revenue:      { type: "decimal(10,2)" }

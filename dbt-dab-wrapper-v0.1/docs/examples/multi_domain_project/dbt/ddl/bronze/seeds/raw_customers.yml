@@ -1,0 +1,13 @@
+# ── Raw customer data (shared default) ──────────
+seeds:
+  raw_customers:
+    description: "Default raw customer data (fallback when no domain source is defined)"
+    origin:
+      type: seed
+      path: dbt/seeds/raw_customers.csv
+      format: csv
+    columns:
+      customer_id:  { type: int, description: "Unique customer identifier" }
+      email:        { type: string }
+      country:      { type: string }
+      revenue:      { type: "decimal(10,2)" }

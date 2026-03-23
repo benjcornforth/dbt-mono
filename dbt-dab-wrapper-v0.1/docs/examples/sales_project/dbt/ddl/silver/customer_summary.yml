@@ -1,0 +1,33 @@
+# ── Customer summary: aggregated metrics ──────────
+models:
+  customer_summary:
+    description: "Aggregated customer metrics — gold layer"
+    source: customer_orders
+    materialized: table
+    group_by: [customer_id, first_name, last_name, email, country]
+    columns:
+      customer_id:      { type: int, required: true, unique: true }
+      first_name:       { type: string }
+      last_name:        { type: string }
+      email:            { type: string }
+      country:          { type: string }
+      total_orders:     { expr: "count(order_id)", type: int, description: "Number of orders" }
+      total_revenue:    { expr: "sum(line_total)", type: "decimal(10,2)", description: "Lifetime spend" }
+      first_order_date: { expr: "min(order_date)", type: date }
+      last_order_date:  { expr: "max(order_date)", type: date }
+      tier:             { udf: "loyalty_tier(total_revenue)", type: string, description: "GOLD/SILVER/BRONZE" }
+    checks:
+      - name: revenue_non_negative
+        type: range
+        column: total_revenue
+        min: 0
+        severity: error
+      - name: data_is_fresh
+        type: recency
+        column: last_order_date
+        max_age: "7 days"
+        severity: warn
+      - name: has_customers
+        type: row_count
+        min: 1
+        severity: error

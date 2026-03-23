@@ -1,0 +1,9 @@
+customer_id,email,country,revenue
+101,anna@example.de,DE,2300.50
+102,luca@example.it,IT,1800.00
+103,,FR,950.75
+104,elena@example.es,ES,3100.00
+105,james@example.co.uk,UK,-20.00
+106,sophie@example.fr,FR,1400.25
+107,max@example.de,DE,0.00
+108,olivia@example.nl,NL,2750.00

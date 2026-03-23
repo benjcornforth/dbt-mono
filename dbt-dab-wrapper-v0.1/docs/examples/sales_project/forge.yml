@@ -1,42 +1,59 @@
-# forge.yml - the ONLY config file you ever edit
+# forge.yml — Sales Data Pipeline
+# The ONLY config file you ever edit (alongside dbt/ddl/ model definitions).
 # A child can change 3 lines and redeploy everything.
-name: sales_data
-active_profile: prod
 
+name: sales_data
+scope: sales
+id: sales
+active_profile: dev
+
+# ── Naming Patterns ──
+# Tokens: {env}, {id}, {scope}, {user}, {catalog}, {schema}
+catalog_pattern: "{env}_{scope}_{catalog}"     # → dev_sales_bronze
+schema_pattern:  "{user}_{id}"                 # → ben_sales
+skip_env_prefix: [prd, prod]
+
+catalogs: [bronze, silver]
+schemas:  [bronze, silver, gold]
+
+# ── Profiles ──
 profiles:
   dev:
     platform: databricks
-    databricks_profile: DEFAULT       # reads ~/.databrickscfg [DEFAULT]
-    catalog: main
-    schema: dev_silver
+    databricks_profile: DEFAULT
+    env: dev
+    catalog: bronze
     compute:
       type: serverless
       auto_scale: true
 
   prod:
     platform: databricks
-    databricks_profile: PROD          # reads ~/.databrickscfg [PROD]
-    catalog: main
-    schema: silver
+    databricks_profile: PROD
+    env: prd
+    catalog: bronze
     compute:
       type: serverless
-    schedule: "0 0 6 * * ?"
+    schedule: "0 0 6 * * ?"           # daily at 6 AM UTC
 
   local:
-    platform: postgres                # databricks | postgres | redshift
+    platform: postgres
     connection:
       host: localhost
       port: 5432
       database: sales_db
     catalog: public
-    schema: silver
+    schemas:
+      bronze: bronze
+      silver: silver
+      gold: gold
+    catalogs:
+      bronze: public
+      silver: public
     compute:
       type: local
 
-dbt:
-  version: "1.8.0"
-  adapter: databricks
-
+# ── Features ──
 features:
   graph: true
   quarantine: true
@@ -44,6 +61,10 @@ features:
   prior_version: true
   python_udfs: true
 
+# ── Lineage ──
+lineage:
+  mode: full
+  origin_tracking: true
+
 portability:
-  avoid_databricks_only: true      # forces clean SQL
   postgres_compatible: true

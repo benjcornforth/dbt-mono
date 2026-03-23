@@ -1,0 +1,14 @@
+# ── APAC raw customer data ──────────
+seeds:
+  raw_customers_apac:
+    description: "Raw customer data for the APAC region"
+    domain: false
+    origin:
+      type: seed
+      path: dbt/seeds/raw_customers_apac.csv
+      format: csv
+    columns:
+      customer_id:  { type: int, description: "Unique customer identifier" }
+      email:        { type: string }
+      country:      { type: string }
+      revenue:      { type: "decimal(10,2)" }

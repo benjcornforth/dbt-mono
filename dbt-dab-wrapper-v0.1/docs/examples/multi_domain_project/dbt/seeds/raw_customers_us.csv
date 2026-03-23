@@ -1,0 +1,7 @@
+customer_id,email,country,revenue
+201,mike@example.com,US,1500.00
+202,,US,920.50
+203,sarah@example.com,US,4200.75
+204,david@example.com,US,-30.00
+205,jen@example.com,US,1100.00
+206,carlos@example.com,US,3800.25
