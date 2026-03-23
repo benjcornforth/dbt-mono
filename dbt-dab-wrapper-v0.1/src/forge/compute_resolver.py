@@ -461,6 +461,25 @@ def get_schema_variables(
         variables[f"schema_{layer}"] = schema_name
     for layer, catalog_name in profile.get("catalogs", {}).items():
         variables[f"catalog_{layer}"] = catalog_name
+
+    # Auto-inject archive_table when operations catalog exists
+    if "catalog_operations" in variables:
+        fc = forge_config or {}
+        user = re.sub(r"[^a-z0-9]+", "_", getpass.getuser().lower()).strip("_")
+        backups_schema = _apply_pattern(
+            fc.get("schema_pattern", "{user}_{id}"),
+            env=profile.get("env", "dev"),
+            project_id="backups",
+            logical_name="backups",
+            skip_envs=set(fc.get("skip_env_prefix", ["prd", "prod"])),
+            scope=fc.get("scope", ""),
+            user=user,
+        )
+        variables["schema_backups"] = backups_schema
+        variables["archive_table"] = (
+            f"{variables['catalog_operations']}.{backups_schema}._backup_archive"
+        )
+
     return variables
 
 def generate_profiles_yml(

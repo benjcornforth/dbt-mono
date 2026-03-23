@@ -1,5 +1,5 @@
 {{ config(
-    materialized='table', schema='{{ var("schema_silver") }}', database='{{ var("catalog_silver") }}', meta={'version': 'v1'}
+    materialized='table', meta={'version': 'v1'}
 ) }}
 
 select /*+ BROADCAST(c) */

@@ -8,8 +8,8 @@
 # Every step is reversible. Re-instate = forge deploy / forge restore.
 #
 # Asset handling:
-#   📦 ARCHIVE — All table data saved to _teardown_archive (JSON rows)
-#   📦 SNAPSHOT — UDF source, workflow YAML, forge.yml, graph JSON
+#   📦 ARCHIVE — Each asset = one row in _backup_archive (data + definitions)
+#   📦 SNAPSHOT — UDF source, workflow YAML, forge.yml, graph JSON (local)
 #   ✅ REMOVE  — DAB job definitions (orchestration only)
 #   ✅ REMOVE  — UDFs (functions are code, always redeployable)
 #   🔒 PRESERVE — Tables, views, schemas, data (NEVER touched)
@@ -130,7 +130,7 @@ class TeardownPlan:
 
     # ── Serialisation ─────────────────────────────────
 
-    archive_table: str | None = None   # fully qualified _teardown_archive table
+    archive_table: str | None = None   # fully qualified _backup_archive table
     snapshot_dir: str | None = None    # timestamped snapshot directory
 
     def to_dict(self) -> dict[str, Any]:
@@ -390,7 +390,7 @@ def build_teardown_plan(
     # ── Build archive table name ─────────────────────
     ops_catalog = _resolve_catalog(catalog_pattern, env, scope, "operations")
     ops_schema = _resolve_schema(schema_pattern, env, "backups", scope)
-    archive_table = f"{ops_catalog}.{ops_schema}._teardown_archive"
+    archive_table = f"{ops_catalog}.{ops_schema}._backup_archive"
 
     # Collect qualified table names for archive
     default_catalog = _resolve_catalog(catalog_pattern, env, scope, profile.get("catalog", "bronze"))
@@ -434,7 +434,8 @@ def build_teardown_plan(
         statements=[
             f"CREATE SCHEMA IF NOT EXISTS {archive_catalog_schema}",
             f"CREATE TABLE IF NOT EXISTS {archive_table} ("
-            f"  table_name STRING,"
+            f"  asset_name STRING,"
+            f"  asset_type STRING,"
             f"  project STRING,"
             f"  environment STRING,"
             f"  archived_at TIMESTAMP,"
@@ -442,32 +443,64 @@ def build_teardown_plan(
             f"  git_sha STRING,"
             f"  git_branch STRING,"
             f"  dab_name STRING,"
-            f"  row_data STRING"
+            f"  row_count BIGINT,"
+            f"  snapshot_data STRING"
             f") USING DELTA",
         ],
     ))
 
-    # Step: Archive all table data as JSON rows
+    # Step: Archive each asset as a single row
+    archive_stmts: list[str] = []
+    meta_vals = (
+        f"'{project_name}' AS project, "
+        f"'{env}' AS environment, "
+        f"current_timestamp() AS archived_at, "
+        f"'{user}' AS performed_by, "
+        f"'{git['sha']}' AS git_sha, "
+        f"'{git['branch']}' AS git_branch, "
+        f"'{wf_name}' AS dab_name"
+    )
+    # Tables — one row per table with collect_list
     if table_names_qualified:
-        archive_stmts: list[str] = []
         for short_name, qualified_name in table_names_qualified:
             archive_stmts.append(
                 f"INSERT INTO {archive_table} "
-                f"SELECT '{short_name}' AS table_name, "
-                f"'{project_name}' AS project, "
-                f"'{env}' AS environment, "
-                f"current_timestamp() AS archived_at, "
-                f"'{user}' AS performed_by, "
-                f"'{git['sha']}' AS git_sha, "
-                f"'{git['branch']}' AS git_branch, "
-                f"'{wf_name}' AS dab_name, "
-                f"to_json(struct(*)) AS row_data "
+                f"SELECT '{short_name}' AS asset_name, "
+                f"'table' AS asset_type, "
+                f"{meta_vals}, "
+                f"COUNT(*) AS row_count, "
+                f"to_json(collect_list(to_json(struct(*)))) AS snapshot_data "
                 f"FROM {qualified_name}"
             )
+    # Definitions — models, functions, configs from snapshot files
+    for sf in snapshot_files:
+        src_path = Path(sf['src'])
+        if not src_path.exists():
+            continue
+        content = src_path.read_text()
+        dst = sf['dst']
+        if dst.startswith('functions/'):
+            a_type = 'function'
+        elif dst.startswith('dbt_models/'):
+            a_type = 'model'
+        elif dst.endswith('.yml') and 'PROCESS_' in dst:
+            a_type = 'workflow'
+        else:
+            a_type = 'config'
+        safe_content = content.replace("'", "''")  # SQL-escape single quotes
+        archive_stmts.append(
+            f"INSERT INTO {archive_table} VALUES ("
+            f"'{dst}', '{a_type}', "
+            f"'{project_name}', '{env}', "
+            f"current_timestamp(), "
+            f"'{user}', '{git['sha']}', '{git['branch']}', '{wf_name}', "
+            f"NULL, '{safe_content}')"
+        )
+    if archive_stmts:
         step_num += 1
         steps.append(TeardownStep(
             step=step_num,
-            name="archive_table_data",
+            name="archive_assets",
             action="sql",
             statements=archive_stmts,
         ))
@@ -671,7 +704,7 @@ def build_backup(
     if include_data:
         ops_catalog = _resolve_catalog(catalog_pattern, env, scope, "operations")
         ops_schema = _resolve_schema(schema_pattern, env, "backups", scope)
-        archive_table = f"{ops_catalog}.{ops_schema}._teardown_archive"
+        archive_table = f"{ops_catalog}.{ops_schema}._backup_archive"
 
         archive_catalog_schema = archive_table.rsplit('.', 1)[0]
         archive_stmts.append(
@@ -679,7 +712,8 @@ def build_backup(
         )
         archive_stmts.append(
             f"CREATE TABLE IF NOT EXISTS {archive_table} ("
-            f"  table_name STRING,"
+            f"  asset_name STRING,"
+            f"  asset_type STRING,"
             f"  project STRING,"
             f"  environment STRING,"
             f"  archived_at TIMESTAMP,"
@@ -687,11 +721,22 @@ def build_backup(
             f"  git_sha STRING,"
             f"  git_branch STRING,"
             f"  dab_name STRING,"
-            f"  row_data STRING"
+            f"  row_count BIGINT,"
+            f"  snapshot_data STRING"
             f") USING DELTA"
         )
 
-        # Find tables from graph
+        meta_vals = (
+            f"'{project_name}' AS project, "
+            f"'{env}' AS environment, "
+            f"current_timestamp() AS archived_at, "
+            f"'{user}' AS performed_by, "
+            f"'{git['sha']}' AS git_sha, "
+            f"'{git['branch']}' AS git_branch, "
+            f"'{wf_name}' AS dab_name"
+        )
+
+        # Tables — one row per table with collect_list
         contracts = graph.get("contracts", {})
         default_catalog = _resolve_catalog(catalog_pattern, env, scope, profile.get("catalog", "bronze"))
         default_schema = _resolve_schema(schema_pattern, env, project_id, scope)
@@ -702,17 +747,39 @@ def build_backup(
                 qualified = f"{default_catalog}.{default_schema}.{ds['name']}"
                 archive_stmts.append(
                     f"INSERT INTO {archive_table} "
-                    f"SELECT '{ds['name']}' AS table_name, "
-                    f"'{project_name}' AS project, "
-                    f"'{env}' AS environment, "
-                    f"current_timestamp() AS archived_at, "
-                    f"'{user}' AS performed_by, "
-                    f"'{git['sha']}' AS git_sha, "
-                    f"'{git['branch']}' AS git_branch, "
-                    f"'{wf_name}' AS dab_name, "
-                    f"to_json(struct(*)) AS row_data "
+                    f"SELECT '{ds['name']}' AS asset_name, "
+                    f"'table' AS asset_type, "
+                    f"{meta_vals}, "
+                    f"COUNT(*) AS row_count, "
+                    f"to_json(collect_list(to_json(struct(*)))) AS snapshot_data "
                     f"FROM {qualified}"
                 )
+
+        # Definitions — models, functions, configs from snapshot files
+        snapshot_files = collect_snapshot_files(forge_config)
+        for sf in snapshot_files:
+            src_path = Path(sf['src'])
+            if not src_path.exists():
+                continue
+            content = src_path.read_text()
+            dst = sf['dst']
+            if dst.startswith('functions/'):
+                a_type = 'function'
+            elif dst.startswith('dbt_models/'):
+                a_type = 'model'
+            elif dst.endswith('.yml') and 'PROCESS_' in dst:
+                a_type = 'workflow'
+            else:
+                a_type = 'config'
+            safe_content = content.replace("'", "''")
+            archive_stmts.append(
+                f"INSERT INTO {archive_table} VALUES ("
+                f"'{dst}', '{a_type}', "
+                f"'{project_name}', '{env}', "
+                f"current_timestamp(), "
+                f"'{user}', '{git['sha']}', '{git['branch']}', '{wf_name}', "
+                f"NULL, '{safe_content}')"
+            )
 
     # ── Write manifest ────────────────────────────────
     manifest = {
@@ -867,16 +934,15 @@ def restore_snapshot(
 # =============================================
 
 def _get_archive_table_name(forge_config: dict) -> str:
-    """Resolve the fully-qualified _teardown_archive table name from forge.yml."""
+    """Resolve the fully-qualified _backup_archive table name from forge.yml."""
     profile = resolve_active_profile(forge_config)
     env = profile.get("env", forge_config.get("environment", "dev"))
     scope = forge_config.get("scope", "")
-    project_id = forge_config.get("id", forge_config.get("name", ""))
     catalog_pattern = forge_config.get("catalog_pattern", "{catalog}")
     schema_pattern = forge_config.get("schema_pattern", "{schema}")
     ops_catalog = _resolve_catalog(catalog_pattern, env, scope, "operations")
     ops_schema = _resolve_schema(schema_pattern, env, "backups", scope)
-    return f"{ops_catalog}.{ops_schema}._teardown_archive"
+    return f"{ops_catalog}.{ops_schema}._backup_archive"
 
 
 def _connect(forge_config: dict):
@@ -947,28 +1013,23 @@ def query_archive(
     table_name: str | None = None,
 ) -> list[dict]:
     """
-    Query the _teardown_archive table on Databricks.
+    Query the _backup_archive table on Databricks.
 
-    Returns a list of dicts with: table_name, project, environment,
-    archived_at, row_count.
+    Returns a list of dicts with: asset_name, asset_type, project,
+    environment, archived_at, row_count, etc.
 
-    If table_name is given, filters to that table only.
+    If table_name is given, filters to that asset only.
     """
     archive_table = _get_archive_table_name(forge_config)
 
     sql = (
-        f"SELECT table_name, project, environment, archived_at, "
-        f"performed_by, git_sha, git_branch, dab_name, "
-        f"COUNT(*) AS row_count "
+        f"SELECT asset_name, asset_type, project, environment, archived_at, "
+        f"performed_by, git_sha, git_branch, dab_name, row_count "
         f"FROM {archive_table} "
     )
     if table_name:
-        sql += f"WHERE table_name = '{table_name}' "
-    sql += (
-        "GROUP BY table_name, project, environment, archived_at, "
-        "performed_by, git_sha, git_branch, dab_name "
-        "ORDER BY archived_at DESC"
-    )
+        sql += f"WHERE asset_name = '{table_name}' "
+    sql += "ORDER BY archived_at DESC, asset_type, asset_name"
 
     conn = _connect(forge_config)
     try:
@@ -989,11 +1050,11 @@ def restore_table_data(
     archived_at: str | None = None,
 ) -> list[str]:
     """
-    Restore table data from the _teardown_archive table.
+    Restore table data from the _backup_archive table.
 
-    Generates and runs INSERT statements that parse the JSON row_data
-    back into the target table. Uses the most recent archive if
-    archived_at is not specified.
+    Reads the snapshot_data JSON array from the single archive row,
+    explodes it back into individual rows, and INSERTs into the target
+    table. Uses the most recent archive if archived_at is not specified.
 
     Returns list of log messages.
     """
@@ -1004,21 +1065,15 @@ def restore_table_data(
     try:
         cursor = conn.cursor()
         try:
-            # Find the target table's qualified name from the archive metadata
+            # Find the archive row for this table
             meta_sql = (
-                f"SELECT DISTINCT table_name, project, environment, archived_at "
+                f"SELECT asset_name, project, environment, archived_at, row_count "
                 f"FROM {archive_table} "
-                f"WHERE table_name = '{table_name}' "
-                f"ORDER BY archived_at DESC LIMIT 1"
+                f"WHERE asset_name = '{table_name}' AND asset_type = 'table' "
             )
             if archived_at:
-                meta_sql = (
-                    f"SELECT DISTINCT table_name, project, environment, archived_at "
-                    f"FROM {archive_table} "
-                    f"WHERE table_name = '{table_name}' "
-                    f"AND archived_at = '{archived_at}' "
-                    f"LIMIT 1"
-                )
+                meta_sql += f"AND archived_at = '{archived_at}' "
+            meta_sql += "ORDER BY archived_at DESC LIMIT 1"
 
             cursor.execute(meta_sql)
             meta_rows = cursor.fetchall()
@@ -1028,16 +1083,8 @@ def restore_table_data(
 
             meta = meta_rows[0]
             ts = meta[3]  # archived_at
+            row_count = meta[4] or 0
             log.append(f"Found archive for '{table_name}' from {ts}")
-
-            # Count rows
-            count_sql = (
-                f"SELECT COUNT(*) FROM {archive_table} "
-                f"WHERE table_name = '{table_name}' "
-                f"AND archived_at = '{ts}'"
-            )
-            cursor.execute(count_sql)
-            row_count = cursor.fetchone()[0]
             log.append(f"  {row_count} rows to restore")
 
             # Resolve the target table's qualified name
@@ -1067,16 +1114,18 @@ def restore_table_data(
                 log.append(f"  Run 'forge deploy' first to recreate the table, then restore data")
                 return log
 
-            # Build INSERT from JSON: parse row_data back into columns
+            # Explode JSON array back into rows and INSERT
             col_extracts = ", ".join(
-                f"row_data:{col}::STRING" for col in columns
+                f"get_json_object(row_json, '$.{col}')" for col in columns
             )
             restore_sql = (
                 f"INSERT INTO {qualified_target} "
                 f"SELECT {col_extracts} "
+                f"FROM (SELECT explode(from_json(snapshot_data, "
+                f"'ARRAY<STRING>')) AS row_json "
                 f"FROM {archive_table} "
-                f"WHERE table_name = '{table_name}' "
-                f"AND archived_at = '{ts}'"
+                f"WHERE asset_name = '{table_name}' AND asset_type = 'table' "
+                f"AND archived_at = '{ts}')"
             )
 
             log.append(f"  Restoring into {qualified_target}...")

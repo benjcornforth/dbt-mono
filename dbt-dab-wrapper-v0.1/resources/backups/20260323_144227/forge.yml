@@ -1,4 +1,4 @@
-name: dbt-poc
+name: dbt-forge
 scope: fd                            # scope e.g. fd = foundational_data, client = crm data
 id: demo                        # project identifier — used in catalog_pattern
 active_profile: dev

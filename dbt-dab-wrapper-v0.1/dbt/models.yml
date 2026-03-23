@@ -29,6 +29,10 @@ udfs:
         ELSE 'BRONZE'
       END
 
+# NOTE: diff_backup_history() and fetch_last_deployments() are managed by the
+# forge wrapper (dbt-dab-tools package). Deploy them with:
+#   dbt run-operation deploy_forge_udfs
+
 models:
 
   # ── Staging: customers ──────────────────────

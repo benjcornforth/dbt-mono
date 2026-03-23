@@ -1,5 +1,5 @@
 {{ config(
-    materialized='table', meta={'version': 'v2'}, post_hook="{{ dbt_dab_tools.quarantine('email IS NULL OR revenue < 0') }}"
+    materialized='table', schema='{{ var("schema_silver") }}', database='{{ var("catalog_silver") }}', meta={'version': 'v2'}, post_hook="{{ dbt_dab_tools.quarantine('email IS NULL OR revenue < 0') }}"
 ) }}
 
 select

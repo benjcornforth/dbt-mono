@@ -1,5 +1,5 @@
 {{ config(
-    materialized='table', schema='{{ var("schema_gold") }}', database='{{ var("catalog_gold") }}', meta={'version': 'v1'}
+    materialized='table', meta={'version': 'v1'}
 ) }}
 
 select

@@ -305,6 +305,78 @@ class Workflow:
 
 
 # =============================================
+# DATABRICKS BUNDLE CONFIG (databricks.yml)
+# =============================================
+
+def generate_bundle_config(forge_config: dict, job_yaml_paths: list[str] | None = None) -> str:
+    """
+    Generate a root databricks.yml that ties the DAB bundle together.
+
+    This is the entry point file that `databricks bundle deploy` reads.
+    It references the generated job YAMLs via include paths.
+    """
+    project_name = forge_config.get("name", "unnamed")
+    project_id = forge_config.get("id", project_name)
+    profile = forge_config.get("active_profile", "dev")
+
+    # Resolve the workspace host from the active profile
+    profiles = forge_config.get("profiles", {})
+    active_prof = profiles.get(profile, {})
+    databricks_profile = active_prof.get("databricks_profile", "DEFAULT")
+
+    bundle: dict[str, Any] = {
+        "bundle": {
+            "name": f"{project_name}_{project_id}",
+        },
+        "workspace": {
+            "profile": databricks_profile,
+        },
+        "include": job_yaml_paths or ["resources/jobs/*.yml"],
+    }
+
+    return yaml.dump(bundle, sort_keys=False, default_flow_style=False)
+
+
+def run_bundle_command(command: str, target: str | None = None) -> dict:
+    """
+    Run `databricks bundle <command>` (deploy, destroy, validate).
+
+    Returns {"success": bool, "output": str, "error": str | None}.
+    """
+    import subprocess
+
+    cmd = ["databricks", "bundle", command]
+    if target:
+        cmd += ["--target", target]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return {"success": True, "output": result.stdout, "error": None}
+    except FileNotFoundError:
+        return {
+            "success": False,
+            "output": "",
+            "error": (
+                "Databricks CLI not found or too old. Install v0.200+:\n"
+                "  brew install databricks/tap/databricks\n"
+                "Or: curl -fsSL https://raw.githubusercontent.com/"
+                "databricks/setup-cli/main/install.sh | sh"
+            ),
+        }
+    except subprocess.CalledProcessError as e:
+        return {
+            "success": False,
+            "output": e.stdout or "",
+            "error": (e.stderr or "").strip(),
+        }
+
+
+# =============================================
 # CUSTOM TASKS – user-defined sql/notebook/python tasks
 # =============================================
 
@@ -497,6 +569,21 @@ def build_workflow(
     custom_by_stage: dict[str, list[dict]] = {s: [] for s in STAGES}
     for ct in custom_tasks:
         custom_by_stage.get(ct["stage"], custom_by_stage["enrich"]).append(ct)
+
+    # ── Validate all referenced asset files exist ─────
+    missing: list[str] = []
+    for pt in python_tasks:
+        if pt.get("file") and not Path(pt["file"]).exists():
+            missing.append(f"python_task '{pt['name']}': {pt['file']}")
+    for ct in custom_tasks:
+        if ct.get("file") and not Path(ct["file"]).exists():
+            missing.append(f"custom_task '{ct['task_key']}': {ct['file']}")
+    if missing:
+        raise FileNotFoundError(
+            "Referenced task assets not found:\n"
+            + "\n".join(f"  - {m}" for m in missing)
+            + "\nCreate these files or remove the tasks from forge.yml."
+        )
 
     # ── Build tasks ───────────────────────────────────
     tasks: list[WorkflowTask] = []

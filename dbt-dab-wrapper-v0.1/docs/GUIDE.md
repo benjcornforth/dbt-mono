@@ -42,18 +42,19 @@ Everything else is generated.
 9. [HOW-TO: Generate Type-Safe Python SDK](#9-how-to-generate-type-safe-python-sdk)
 10. [HOW-TO: Explain Provenance (Column-Level Lineage)](#10-how-to-explain-provenance-column-level-lineage)
 11. [HOW-TO: Diff Changes](#11-how-to-diff-changes)
-12. [HOW-TO: Teardown](#12-how-to-teardown)
-13. [HOW-TO: Multi-Environment Profiles](#13-how-to-multi-environment-profiles)
-14. [HOW-TO: Naming Patterns (Catalogs & Schemas)](#14-how-to-naming-patterns-catalogs--schemas)
-15. [HOW-TO: SQL-Only Mode (No dbt at Runtime)](#15-how-to-sql-only-mode-no-dbt-at-runtime)
-16. [HOW-TO: Python Tasks (Read/Write Tables from Python)](#16-how-to-python-tasks-readwrite-tables-from-python)
-17. [Reference: Column Options](#17-reference-column-options)
-18. [Reference: Model Options](#18-reference-model-options)
-19. [Reference: Migration Actions](#19-reference-migration-actions)
-20. [Reference: forge.yml Options](#20-reference-forgeyml-options)
-21. [Reference: Project Structure](#21-reference-project-structure)
-22. [Reference: Environment Variables & Authentication](#22-reference-environment-variables--authentication)
-23. [Troubleshooting](#23-troubleshooting)
+12. [HOW-TO: Backup & Restore](#12-how-to-backup--restore)
+13. [HOW-TO: Teardown](#13-how-to-teardown)
+14. [HOW-TO: Multi-Environment Profiles](#14-how-to-multi-environment-profiles)
+15. [HOW-TO: Naming Patterns (Catalogs & Schemas)](#15-how-to-naming-patterns-catalogs--schemas)
+16. [HOW-TO: SQL-Only Mode (No dbt at Runtime)](#16-how-to-sql-only-mode-no-dbt-at-runtime)
+17. [HOW-TO: Python Tasks (Read/Write Tables from Python)](#17-how-to-python-tasks-readwrite-tables-from-python)
+18. [Reference: Column Options](#18-reference-column-options)
+19. [Reference: Model Options](#19-reference-model-options)
+20. [Reference: Migration Actions](#20-reference-migration-actions)
+21. [Reference: forge.yml Options](#21-reference-forgeyml-options)
+22. [Reference: Project Structure](#22-reference-project-structure)
+23. [Reference: Environment Variables & Authentication](#23-reference-environment-variables--authentication)
+24. [Troubleshooting](#24-troubleshooting)
 
 ---
 
@@ -345,8 +346,10 @@ forge deploy
 This:
 1. Reads `forge.yml` for configuration
 2. Resolves the active profile and connection (databrickscfg or env vars)
-3. Generates the Databricks Asset Bundle
-4. Runs `dbt run` with all models
+3. Runs `dbt run` with all models
+4. Generates the DAB workflow YAML (`resources/jobs/PROCESS_<id>.yml`)
+5. Generates root `databricks.yml` (bundle config)
+6. Runs `databricks bundle deploy` to push the workflow to Databricks
 
 ### Deploy to a specific profile
 
@@ -354,6 +357,42 @@ This:
 forge deploy --profile prod     # or -p prod
 forge deploy -p int
 ```
+
+### What gets deployed
+
+After `forge deploy`, your Databricks workspace will have:
+- **Tables/views** created by dbt in Unity Catalog
+- **A Databricks Workflow** with per-model tasks, proper dependency chains, and serverless compute
+- You can view and run the workflow in the Databricks UI (see below)
+
+### Viewing your pipeline in Databricks
+
+After deploying, your workflow appears in the Databricks UI:
+
+1. Go to **Workflows** in the left sidebar
+2. Find the workflow named `PROCESS_<id>` (e.g. `PROCESS_demo`)
+3. Click to see the full DAG with per-model tasks and dependencies
+4. Click **Run now** to execute the pipeline on serverless compute
+
+The workflow includes:
+- One task per dbt model (ingest → stage → transform → aggregate)
+- Proper dependency chains matching your dbt lineage
+- Custom SQL tasks and notebook tasks (if defined in `wrapper.yml`)
+- Serverless compute — no clusters to manage
+
+### Databricks CLI requirement
+
+`forge deploy` calls `databricks bundle deploy` under the hood. This requires the **Databricks CLI v0.200+** (the new "Databricks Asset Bundles" CLI):
+
+```bash
+# Install (macOS)
+brew tap databricks/tap && brew install databricks
+
+# Verify
+databricks --version   # Should be 0.200 or higher
+```
+
+If the CLI is missing or too old, forge will still complete the deploy (tables + SQL) but print a warning. You can then run `databricks bundle deploy` manually.
 
 ### Manual dbt commands (if needed)
 
@@ -380,7 +419,7 @@ Edit dbt/models.yml
   ↓
 forge compile        # YAML → SQL (or --pure-sql for standalone SQL)
   ↓
-forge deploy -p dev  # SQL → Databricks (dev profile)
+forge deploy -p dev  # SQL → Databricks → Bundle deploy
   ↓
 forge diff           # See what changed
 ```
@@ -904,19 +943,107 @@ Subsequent runs compare against that snapshot and show:
 
 ---
 
-## 12. HOW-TO: Teardown
+## 12. HOW-TO: Backup & Restore
 
-Safely destroy everything:
+Forge backup creates a point-in-time snapshot of your entire project — locally and optionally on Databricks.
+
+### Local backup (files only)
+
+```bash
+forge backup
+```
+
+Snapshots forked to `resources/backups/{timestamp}/`:
+- `forge.yml` — project config
+- Workflow YAML — DAB job definition
+- UDF source files (SQL + Python)
+- dbt model source files + schema.yml
+- `graph.json` — pipeline graph
+- `BACKUP_manifest.yml` — metadata (who, when, git sha, branch, DAB name)
+
+### Full backup (files + data to Databricks)
+
+```bash
+forge backup --data
+```
+
+Everything above, plus each asset is archived as **one row** in the `_backup_archive` Delta table:
+
+| asset_type | What's stored in `snapshot_data` |
+|---|---|
+| `table` | JSON array of all rows via `collect_list(to_json(struct(*)))` |
+| `model` | Full SQL source file content |
+| `function` | Full UDF source file content |
+| `workflow` | Full workflow YAML content |
+| `config` | Full config file content |
+
+The archive table lives at `{ops_catalog}.{user}_backups._backup_archive` in dev, or `{ops_catalog}.backups._backup_archive` in production.
+
+Each row carries identity metadata: `performed_by`, `git_sha`, `git_branch`, `dab_name`.
+
+### List backups
+
+```bash
+forge backup --list
+```
+
+### Query archive on Databricks
+
+```bash
+forge restore --data
+```
+
+Shows all archived assets with type, row count (for tables), timestamp, who performed it, and git context.
+
+### Restore from local snapshot
+
+```bash
+forge restore --snapshot 20260323_143626
+```
+
+Copies all snapshotted files back to their original locations.
+
+### Restore table data from Databricks archive
+
+```bash
+forge restore --table stg_customers
+```
+
+Explodes the JSON array from `_backup_archive` back into individual rows and INSERTs into the target table. Uses the most recent archive by default.
+
+---
+
+## 13. HOW-TO: Teardown
+
+Safe teardown generates a reversible destruction plan. **Never deletes data.**
+
+### Dry-run (default)
 
 ```bash
 forge teardown
 ```
 
-Shows a graph diff of what would be deleted before taking action.
+Writes a teardown plan to `resources/teardown/` showing exactly what would happen. Archives all assets to `_backup_archive` on Databricks.
+
+### Execute teardown
+
+```bash
+forge teardown --execute
+```
+
+Runs the plan: snapshots files, archives data, removes workflow YAML, drops UDFs. Tables and schemas are **preserved**. If a `databricks.yml` exists, also runs `databricks bundle destroy` to remove the workflow from Databricks.
+
+### Reinstate after teardown
+
+```bash
+forge deploy                              # redeploy everything
+forge restore --snapshot {timestamp}      # restore files from snapshot
+forge restore --table {name}              # restore data from archive
+```
 
 ---
 
-## 13. HOW-TO: Multi-Environment Profiles
+## 14. HOW-TO: Multi-Environment Profiles
 
 Forge supports multiple deployment environments from a single `forge.yml`. Each profile defines a platform, connection, and compute config.
 
@@ -998,7 +1125,7 @@ token = dapiYYY
 
 ---
 
-## 14. HOW-TO: Naming Patterns (Catalogs & Schemas)
+## 15. HOW-TO: Naming Patterns (Catalogs & Schemas)
 
 Forge uses configurable patterns to construct Databricks catalog and schema names across environments. Change the pattern once — all environments update automatically.
 
@@ -1085,7 +1212,7 @@ For non-patterned environments (e.g. local Postgres), spell out names explicitly
 
 ---
 
-## 15. HOW-TO: SQL-Only Mode (No dbt at Runtime)
+## 16. HOW-TO: SQL-Only Mode (No dbt at Runtime)
 
 Compile your models to standalone SQL that runs directly on a Databricks SQL warehouse — no dbt installation, no Python, no cold starts.
 
@@ -1130,7 +1257,7 @@ for f in sql/*.sql; do databricks sql execute --file "$f"; done
 
 ---
 
-## 16. HOW-TO: Python Tasks (Read/Write Tables from Python)
+## 17. HOW-TO: Python Tasks (Read/Write Tables from Python)
 
 Python tasks run alongside dbt models in the same workflow. They use the same naming patterns (catalogs, schemas) so Python code reads/writes the same tables dbt manages.
 
@@ -1255,7 +1382,7 @@ The generated DAB YAML uses `spark_python_task`:
 
 ---
 
-## 17. Reference: Column Options
+## 18. Reference: Column Options
 
 | Option | Type | Example | What it does |
 |--------|------|---------|-------------|
@@ -1272,7 +1399,7 @@ The generated DAB YAML uses `spark_python_task`:
 
 ---
 
-## 18. Reference: Model Options
+## 19. Reference: Model Options
 
 | Option | Type | Example | What it does |
 |--------|------|---------|-------------|
@@ -1289,7 +1416,7 @@ The generated DAB YAML uses `spark_python_task`:
 
 ---
 
-## 19. Reference: Migration Actions
+## 20. Reference: Migration Actions
 
 | Action | Format | What it does |
 |--------|--------|-------------|
@@ -1303,7 +1430,7 @@ The generated DAB YAML uses `spark_python_task`:
 
 ---
 
-## 20. Reference: forge.yml Options
+## 21. Reference: forge.yml Options
 
 | Key | Type | Example | Description |
 |-----|------|---------|-------------|
@@ -1347,7 +1474,7 @@ The generated DAB YAML uses `spark_python_task`:
 
 ---
 
-## 21. Reference: Project Structure
+## 22. Reference: Project Structure
 
 ```
 dbt-forge-v0.1/
@@ -1414,7 +1541,7 @@ dbt-forge-v0.1/
 
 ---
 
-## 22. Reference: Environment Variables & Authentication
+## 23. Reference: Environment Variables & Authentication
 
 ### Authentication priority
 
@@ -1455,7 +1582,7 @@ profiles:
 
 ---
 
-## 23. Troubleshooting
+## 24. Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
@@ -1519,7 +1646,14 @@ profiles:
 | `forge profiles --show-connection` | Show resolved connection details |
 | `forge profiles -p prod` | Show details for one profile |
 | `forge guide` | Regenerates this guide |
-| `forge teardown` | Safely destroys everything |
+| `forge teardown` | Dry-run teardown plan (safe, reversible) |
+| `forge teardown --execute` | Execute teardown (removes orchestration, preserves data) |
+| `forge backup` | Local file snapshot → resources/backups/ |
+| `forge backup --data` | File snapshot + archive all assets to Databricks |
+| `forge backup --list` | List available backup snapshots |
+| `forge restore --snapshot {ts}` | Restore files from a local snapshot |
+| `forge restore --data` | Query archive table on Databricks |
+| `forge restore --table {name}` | Restore table data from Databricks archive |
 
 ---
 
@@ -1533,6 +1667,7 @@ These work automatically when enabled in `forge.yml` — no setup needed:
 - **SQL & Python UDFs**: Define reusable functions in the `udfs:` block of `models.yml`. SQL-first, Python when needed. UDFs appear as purple nodes in the lineage graph.
 - **Data Quality Checks**: Add inline `checks:` to any model — range, recency, row_count, regex, or custom SQL. View with `forge validate`.
 - **Dev Mode**: `forge dev-up` → isolated schema, `forge dev` → auto-recompile on save, `forge dev-down` → teardown. Zero extra dependencies.
+- **Backup & Restore**: `forge backup --data` archives every asset (tables, models, functions, configs) as one row each in a Delta table on Databricks. `forge restore --table` brings data back. Per-user schemas in dev, shared in prod.
 - **Dry-Run Migrations**: `forge migrate --dry-run` previews changes without touching files.
 - **Provenance Explain**: `forge explain model.column` traces any value through expressions, UDFs, checks, and git commits — all the way to the raw source. Terminal tree, Mermaid, or JSON output.
 - **Graph Diff**: `forge diff` compares graph snapshots — shows added/removed/modified assets, columns, and lineage edges. Color-coded Mermaid with `--mermaid`.

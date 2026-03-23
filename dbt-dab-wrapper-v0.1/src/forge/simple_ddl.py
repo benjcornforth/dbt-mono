@@ -245,13 +245,20 @@ def compile_model(model_name: str, model_def: dict, forge_config: dict | None = 
 
     config_parts = [f"materialized='{materialized}'"]
 
-    # Schema routing: explicit model-level overrides or layer-based vars
+    # Schema routing: layer-based (from DDL folder) or explicit model-level overrides
     model_schema = model_def.get("schema")
     model_catalog = model_def.get("catalog")
+    layer = model_def.get("layer")
+
     if model_schema:
         config_parts.append(f"schema='{model_schema}'")
+    elif layer:
+        config_parts.append(f"""schema='{{{{ var("schema_{layer}") }}}}'""")
+
     if model_catalog:
         config_parts.append(f"database='{model_catalog}'")
+    elif layer:
+        config_parts.append(f"""database='{{{{ var("catalog_{layer}") }}}}'""")
 
     if version:
         config_parts.append(f"meta={{'version': '{version}'}}")

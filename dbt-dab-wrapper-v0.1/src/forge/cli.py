@@ -35,7 +35,7 @@ from forge.graph import (
     render_provenance_tree,
 )
 from forge.type_safe import build_models, generate_sdk_file
-from forge.workflow import build_workflow
+from forge.workflow import build_workflow, generate_bundle_config, run_bundle_command
 from forge.teardown import (
     build_teardown_plan,
     build_backup,
@@ -289,15 +289,41 @@ def deploy(
         typer.echo("💡 Tip: install dbt-databricks with poetry if needed")
 
     # Auto-generate DAB workflow YAML (always up-to-date with latest graph)
+    job_yaml_paths = []
     try:
         graph = build_graph(config)
         wf = build_workflow(config, graph)
         wf_path = Path(f"resources/jobs/{wf.name}.yml")
         wf_path.parent.mkdir(parents=True, exist_ok=True)
         wf_path.write_text(wf.to_databricks_yml())
+        job_yaml_paths.append(str(wf_path))
         typer.echo(f"📋 DAB workflow → {wf_path}")
+    except FileNotFoundError as exc:
+        typer.echo(f"❌ {exc}")
+        raise typer.Exit(code=1)
     except Exception as exc:
         typer.echo(f"  ⚠️  Workflow YAML skipped: {exc}")
+
+    # Generate root databricks.yml and run bundle deploy
+    if job_yaml_paths:
+        try:
+            bundle_yml = generate_bundle_config(config, job_yaml_paths)
+            bundle_path = Path("databricks.yml")
+            bundle_path.write_text(bundle_yml)
+            typer.echo(f"📦 DAB bundle config → {bundle_path}")
+
+            typer.echo("🚀 Running databricks bundle deploy...")
+            result = run_bundle_command("deploy")
+            if result["success"]:
+                typer.echo("✅ Bundle deployed to Databricks.")
+                if result["output"]:
+                    for line in result["output"].strip().splitlines():
+                        typer.echo(f"  {line}")
+            else:
+                typer.echo(f"  ⚠️  Bundle deploy failed: {result['error']}")
+                typer.echo("  You can run manually: databricks bundle deploy")
+        except Exception as exc:
+            typer.echo(f"  ⚠️  Bundle deploy skipped: {exc}")
 
     typer.echo("🎉 Deploy complete! Run 'forge diff' to see graph changes.")
 
@@ -432,6 +458,16 @@ def teardown(
             for stmt in all_sql_stmts:
                 typer.echo(f"     {stmt}")
 
+    # Destroy DAB bundle (removes workflows from Databricks)
+    if Path("databricks.yml").exists():
+        typer.echo("🗑️  Running databricks bundle destroy...")
+        result = run_bundle_command("destroy")
+        if result["success"]:
+            typer.echo("✅ Bundle destroyed on Databricks.")
+        else:
+            typer.echo(f"  ⚠️  Bundle destroy failed: {result['error']}")
+            typer.echo("  You can run manually: databricks bundle destroy")
+
     typer.echo("")
     typer.echo("🎉 Teardown complete.")
     typer.echo(f"♻️  To re-instate everything: forge deploy")
@@ -487,11 +523,12 @@ def restore(
                     git_tag = ""
                     if r.get("git_sha"):
                         git_tag = f"  {r['git_branch']}@{r['git_sha']}"
+                    row_info = f"{r['row_count']:>8,} rows" if r.get("row_count") else "        —   "
                     typer.echo(
-                        f"  {r['table_name']:30s}  {r['row_count']:>8,} rows  "
+                        f"  [{r['asset_type']:8s}]  {r['asset_name']:30s}  {row_info}  "
                         f"{r['archived_at']}  ({r['environment']})")
                     typer.echo(
-                        f"    by: {r.get('performed_by', '?'):12s}  "
+                        f"             by: {r.get('performed_by', '?'):12s}  "
                         f"dab: {r.get('dab_name', '?')}{git_tag}")
                 typer.echo("")
                 typer.echo("To restore a table: forge restore --table <name>")
@@ -738,7 +775,11 @@ def workflow(
         typer.echo(result)
 
     stages_used = [t.stage for t in wf.tasks]
-    typer.echo(f"📊 Pipeline: {' → '.join(stages_used)} ({len(wf.tasks)} tasks)")
+    stage_summary = " → ".join(dict.fromkeys(stages_used))  # unique, ordered
+    typer.echo(f"\n📊 Pipeline: {stage_summary} ({len(wf.tasks)} tasks)")
+    for task in wf.tasks:
+        deps = f" ← {', '.join(task.depends_on)}" if task.depends_on else ""
+        typer.echo(f"  [{task.stage}] {task.name}{deps}")
 
 
 # =============================================
