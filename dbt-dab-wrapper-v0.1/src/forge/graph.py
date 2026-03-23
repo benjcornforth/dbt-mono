@@ -597,14 +597,32 @@ def _add_sql_udf_nodes(
                 udf_call = col_def["udf"]
                 # Parse function name (everything before the first parenthesis)
                 fn_name = udf_call.split("(")[0].strip()
-                if fn_name in udfs:
-                    udf_id = f"udf.{project}.{fn_name}"
-                    graph["edges"].append({
-                        "from": udf_id,
-                        "to": model_id,
-                        "type": "udf_call",
-                        "description": f"UDF {fn_name} used in {model_name}.{col_name}",
-                    })
+                udf_id = f"udf.{project}.{fn_name}"
+
+                # If not a locally-defined UDF, create an external node
+                if fn_name not in udfs and udf_id not in graph["contracts"]:
+                    graph["contracts"][udf_id] = _make_contract(
+                        dataset_name=fn_name,
+                        dataset_domain=schema,
+                        dataset_type="function",
+                        description=f"External UDF: {fn_name}",
+                        columns=[],
+                        quality_rules=[],
+                        catalog=catalog,
+                        schema=schema,
+                        git_commit=git_commit,
+                        generated_at=now,
+                        materialization="function",
+                        tags=["external_udf"],
+                        meta={"external": True},
+                    )
+
+                graph["edges"].append({
+                    "from": udf_id,
+                    "to": model_id,
+                    "type": "udf_call",
+                    "description": f"UDF {fn_name} used in {model_name}.{col_name}",
+                })
 
 
 def _add_check_nodes(
@@ -1308,11 +1326,22 @@ def render_mermaid(
         cid.replace(".", "_").replace("-", "_")
         for cid, c in contracts.items()
         if c["dataset"]["type"] == "function"
+        and "external_udf" not in c.get("tags", [])
+    ]
+    ext_udf_ids = [
+        cid.replace(".", "_").replace("-", "_")
+        for cid, c in contracts.items()
+        if c["dataset"]["type"] == "function"
+        and "external_udf" in c.get("tags", [])
     ]
     if udf_ids:
         lines.append("")
         lines.append("    classDef udf fill:#e8d5f5,stroke:#7b2d8e,stroke-width:2px")
         lines.append(f"    class {','.join(udf_ids)} udf")
+    if ext_udf_ids:
+        lines.append("")
+        lines.append("    classDef extudf fill:#e8d5f5,stroke:#7b2d8e,stroke-width:2px,stroke-dasharray: 5 5")
+        lines.append(f"    class {','.join(ext_udf_ids)} extudf")
 
     # Check nodes always get orange styling
     check_ids = [
