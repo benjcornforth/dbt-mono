@@ -1,0 +1,64 @@
+teardown:
+  name: TEARDOWN_demo
+  environment: dev
+  generated_at: '2026-03-23T13:28:01.043139+00:00'
+  project: dbt-forge
+  scope: fd
+  id: demo
+  removes:
+  - type: dab_job
+    name: PROCESS_demo
+    action: delete workflow YAML + databricks bundle destroy
+    path: resources/jobs/PROCESS_demo.yml
+  - type: udf
+    name: dev_fd_meta.ben_demo.loyalty_tier
+    action: DROP FUNCTION IF EXISTS dev_fd_meta.ben_demo.loyalty_tier
+    note: "Functions are code, not data \u2014 safe to remove"
+  - type: udf
+    name: dev_fd_meta.ben_demo.clean_email
+    action: DROP FUNCTION IF EXISTS dev_fd_meta.ben_demo.clean_email
+    note: "Functions are code, not data \u2014 safe to remove"
+  - type: udf
+    name: dev_fd_meta.ben_demo.average_score
+    action: DROP FUNCTION IF EXISTS dev_fd_meta.ben_demo.average_score
+    note: "Functions are code, not data \u2014 safe to remove"
+  preserves:
+    tables:
+    - stg_customers
+    - stg_orders
+    - customer_clean
+    - customer_orders
+    - customer_summary
+    schemas:
+    - dev schemas
+    note: All tables and data are preserved. Nothing is dropped.
+  backup:
+    directory: resources/teardown/_backup
+    note: Workflow YAML is copied before removal
+  steps:
+  - step: 1
+    name: backup_workflow
+    action: copy
+    source: resources/jobs/PROCESS_demo.yml
+    target: resources/teardown/_backup/PROCESS_demo_20260323_132801.yml
+  - step: 2
+    name: remove_workflow_yaml
+    action: delete_file
+    target: resources/jobs/PROCESS_demo.yml
+  - step: 3
+    name: drop_udfs
+    action: sql
+    statements:
+    - DROP FUNCTION IF EXISTS dev_fd_meta.ben_demo.loyalty_tier
+    - DROP FUNCTION IF EXISTS dev_fd_meta.ben_demo.clean_email
+    - DROP FUNCTION IF EXISTS dev_fd_meta.ben_demo.average_score
+  - step: 4
+    name: confirm
+    action: log
+    message: "\u2705 Teardown complete.\n\U0001F4CB Tables preserved: stg_customers,\
+      \ stg_orders, customer_clean, customer_orders, customer_summary\n\U0001F512\
+      \ Schemas preserved (use forge dev-down for dev schemas)\n\U0001F4E6 Backup:\
+      \ resources/teardown/_backup/\n\u267B\uFE0F  To re-instate: forge deploy"
+  reinstate:
+    command: forge deploy
+    note: Re-running deploy recreates the workflow and all orchestration from source

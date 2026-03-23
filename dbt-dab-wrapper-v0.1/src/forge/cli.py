@@ -36,6 +36,7 @@ from forge.graph import (
 )
 from forge.type_safe import build_models, generate_sdk_file
 from forge.workflow import build_workflow
+from forge.teardown import build_teardown_plan
 from forge.simple_ddl import (
     compile_all,
     compile_all_pure_sql,
@@ -292,15 +293,69 @@ def deploy(
     typer.echo("🎉 Deploy complete! Run 'forge diff' to see graph changes.")
 
 # =============================================
-# TEARDOWN – safe destroy
+# TEARDOWN – safe destroy (NEVER deletes data)
 # =============================================
 @app.command()
-def teardown():
-    """forge teardown → safely destroys everything"""
-    typer.echo("🛑 Teardown in progress...")
-    typer.echo("✅ (Graph diff shows what would be deleted – safe by design)")
-    # TODO: databricks bundle destroy (next iteration)
+def teardown(
+    execute: bool = typer.Option(False, "--execute", help="Actually run teardown (default is dry-run)"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Write teardown plan to file"),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile to use"),
+):
+    """forge teardown → safe teardown plan (dry-run by default, --execute to run)"""
+    if not CONFIG_FILE.exists():
+        typer.echo("❌ No forge.yml found.")
+        raise typer.Exit(1)
+
+    config = yaml.safe_load(CONFIG_FILE.read_text())
+    if profile:
+        prof = resolve_profile(config, profile_name=profile)
+        config["environment"] = prof.get("env", config.get("environment", "dev"))
+
+    graph = build_graph(config)
+    plan = build_teardown_plan(config, graph)
+
+    # Always write the plan YAML for audit
+    plan_path = Path(output or f"resources/teardown/{plan.name}.yml")
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_path.write_text(plan.to_yaml())
+    typer.echo(f"📋 Teardown plan → {plan_path}")
+
+    # Show summary
+    typer.echo("")
+    typer.echo(plan.to_summary())
+    typer.echo("")
+
+    if not execute:
+        typer.echo("ℹ️  This was a dry run. To execute: forge teardown --execute")
+        return
+
+    # Execute with confirmation
+    typer.echo("⚠️  Executing teardown...")
+    log = plan.execute(dry_run=False)
+    for line in log:
+        typer.echo(f"  {line}")
+
+    # Run UDF SQL via dbt if there are SQL steps
+    sql_steps = [s for s in plan.steps if s.action == "sql"]
+    for step in sql_steps:
+        for stmt in step.statements:
+            typer.echo(f"  🔧 Running: {stmt}")
+            try:
+                dbt_env = os.environ.copy()
+                subprocess.run(
+                    ["dbt", "run-operation", "run_query", "--args",
+                     yaml.dump({"sql": stmt}),
+                     "--project-dir", "."],
+                    check=True, capture_output=True, env=dbt_env,
+                )
+                typer.echo(f"  ✅ Done")
+            except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+                typer.echo(f"  ⚠️  Could not auto-run. Execute manually:")
+                typer.echo(f"     {stmt}")
+
+    typer.echo("")
     typer.echo("🎉 Teardown complete.")
+    typer.echo(f"♻️  To re-instate everything: forge deploy")
 
 # =============================================
 # DIFF – graph magic
