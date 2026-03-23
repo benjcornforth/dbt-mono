@@ -1,7 +1,7 @@
 teardown:
   name: TEARDOWN_demo
   environment: dev
-  generated_at: '2026-03-23T15:51:47.262590+00:00'
+  generated_at: '2026-03-23T16:23:27.101287+00:00'
   project: dbt-forge
   scope: fd
   id: demo
@@ -9,14 +9,10 @@ teardown:
     table: dev_fd_operations.ben_backups._backup_archive
     note: All table data is archived as JSON rows before any changes
   snapshot:
-    directory: resources/teardown/_backup/20260323_155147
+    directory: resources/teardown/_backup/20260323_162327
     contents: forge.yml, graph.json, workflow YAML, UDF source files, teardown plan
     note: Complete project state captured for forge restore
   removes:
-  - type: dab_job
-    name: PROCESS_demo
-    action: delete workflow YAML + databricks bundle destroy
-    path: resources/jobs/PROCESS_demo.yml
   - type: udf
     name: dev_fd_meta.ben_demo.loyalty_tier
     action: DROP FUNCTION IF EXISTS dev_fd_meta.ben_demo.loyalty_tier
@@ -29,15 +25,61 @@ teardown:
     name: dev_fd_meta.ben_demo.average_score
     action: DROP FUNCTION IF EXISTS dev_fd_meta.ben_demo.average_score
     note: "Functions are code, not data \u2014 safe to remove"
+  - type: table
+    name: stg_customers
+    action: DROP TABLE IF EXISTS
+    note: "\u26A0\uFE0F --wipe-all: table and data will be permanently deleted"
+  - type: table
+    name: stg_orders
+    action: DROP TABLE IF EXISTS
+    note: "\u26A0\uFE0F --wipe-all: table and data will be permanently deleted"
+  - type: table
+    name: customer_clean
+    action: DROP TABLE IF EXISTS
+    note: "\u26A0\uFE0F --wipe-all: table and data will be permanently deleted"
+  - type: table
+    name: customer_summary
+    action: DROP TABLE IF EXISTS
+    note: "\u26A0\uFE0F --wipe-all: table and data will be permanently deleted"
+  - type: table
+    name: customer_orders
+    action: DROP TABLE IF EXISTS
+    note: "\u26A0\uFE0F --wipe-all: table and data will be permanently deleted"
+  - type: schema
+    name: dev_fd_bronze.ben_demo
+    action: DROP SCHEMA IF EXISTS dev_fd_bronze.ben_demo CASCADE
+    note: "\u26A0\uFE0F --wipe-all: schema and all contents will be dropped"
+  - type: schema
+    name: dev_fd_bronze.ben_demo_ben_demo
+    action: DROP SCHEMA IF EXISTS dev_fd_bronze.ben_demo_ben_demo CASCADE
+    note: "\u26A0\uFE0F --wipe-all: schema and all contents will be dropped"
+  - type: schema
+    name: dev_fd_silver.ben_demo
+    action: DROP SCHEMA IF EXISTS dev_fd_silver.ben_demo CASCADE
+    note: "\u26A0\uFE0F --wipe-all: schema and all contents will be dropped"
+  - type: schema
+    name: dev_fd_silver.ben_demo_ben_demo
+    action: DROP SCHEMA IF EXISTS dev_fd_silver.ben_demo_ben_demo CASCADE
+    note: "\u26A0\uFE0F --wipe-all: schema and all contents will be dropped"
+  - type: schema
+    name: dev_fd_meta.ben_demo
+    action: DROP SCHEMA IF EXISTS dev_fd_meta.ben_demo CASCADE
+    note: "\u26A0\uFE0F --wipe-all: schema and all contents will be dropped"
+  - type: schema
+    name: dev_fd_meta.ben_demo_ben_demo
+    action: DROP SCHEMA IF EXISTS dev_fd_meta.ben_demo_ben_demo CASCADE
+    note: "\u26A0\uFE0F --wipe-all: schema and all contents will be dropped"
+  - type: schema
+    name: dev_fd_operations.ben_demo
+    action: DROP SCHEMA IF EXISTS dev_fd_operations.ben_demo CASCADE
+    note: "\u26A0\uFE0F --wipe-all: schema and all contents will be dropped"
+  - type: schema
+    name: dev_fd_operations.ben_demo_ben_demo
+    action: DROP SCHEMA IF EXISTS dev_fd_operations.ben_demo_ben_demo CASCADE
+    note: "\u26A0\uFE0F --wipe-all: schema and all contents will be dropped"
   preserves:
-    tables:
-    - stg_customers
-    - stg_orders
-    - customer_clean
-    - customer_orders
-    - customer_summary
-    schemas:
-    - dev schemas
+    tables: []
+    schemas: []
     note: All tables and data are preserved. Nothing is dropped.
   backup:
     directory: resources/teardown/_backup
@@ -46,7 +88,7 @@ teardown:
   - step: 1
     name: snapshot_all_assets
     action: snapshot
-    target: resources/teardown/_backup/20260323_155147
+    target: resources/teardown/_backup/20260323_162327
   - step: 2
     name: create_archive_table
     action: sql
@@ -62,31 +104,31 @@ teardown:
     statements:
     - INSERT INTO dev_fd_operations.ben_backups._backup_archive SELECT 'stg_customers'
       AS asset_name, 'table' AS asset_type, 'dbt-forge' AS project, 'dev' AS environment,
-      current_timestamp() AS archived_at, 'ben' AS performed_by, '75188ad' AS git_sha,
+      current_timestamp() AS archived_at, 'ben' AS performed_by, 'a29ad10' AS git_sha,
       'main' AS git_branch, 'PROCESS_demo' AS dab_name, COUNT(*) AS row_count, to_json(collect_list(to_json(struct(*))))
       AS snapshot_data FROM dev_fd_bronze.ben_demo.stg_customers
     - INSERT INTO dev_fd_operations.ben_backups._backup_archive SELECT 'stg_orders'
       AS asset_name, 'table' AS asset_type, 'dbt-forge' AS project, 'dev' AS environment,
-      current_timestamp() AS archived_at, 'ben' AS performed_by, '75188ad' AS git_sha,
+      current_timestamp() AS archived_at, 'ben' AS performed_by, 'a29ad10' AS git_sha,
       'main' AS git_branch, 'PROCESS_demo' AS dab_name, COUNT(*) AS row_count, to_json(collect_list(to_json(struct(*))))
       AS snapshot_data FROM dev_fd_bronze.ben_demo.stg_orders
     - INSERT INTO dev_fd_operations.ben_backups._backup_archive SELECT 'customer_clean'
       AS asset_name, 'table' AS asset_type, 'dbt-forge' AS project, 'dev' AS environment,
-      current_timestamp() AS archived_at, 'ben' AS performed_by, '75188ad' AS git_sha,
+      current_timestamp() AS archived_at, 'ben' AS performed_by, 'a29ad10' AS git_sha,
       'main' AS git_branch, 'PROCESS_demo' AS dab_name, COUNT(*) AS row_count, to_json(collect_list(to_json(struct(*))))
       AS snapshot_data FROM dev_fd_bronze.ben_demo.customer_clean
-    - INSERT INTO dev_fd_operations.ben_backups._backup_archive SELECT 'customer_orders'
-      AS asset_name, 'table' AS asset_type, 'dbt-forge' AS project, 'dev' AS environment,
-      current_timestamp() AS archived_at, 'ben' AS performed_by, '75188ad' AS git_sha,
-      'main' AS git_branch, 'PROCESS_demo' AS dab_name, COUNT(*) AS row_count, to_json(collect_list(to_json(struct(*))))
-      AS snapshot_data FROM dev_fd_bronze.ben_demo.customer_orders
     - INSERT INTO dev_fd_operations.ben_backups._backup_archive SELECT 'customer_summary'
       AS asset_name, 'table' AS asset_type, 'dbt-forge' AS project, 'dev' AS environment,
-      current_timestamp() AS archived_at, 'ben' AS performed_by, '75188ad' AS git_sha,
+      current_timestamp() AS archived_at, 'ben' AS performed_by, 'a29ad10' AS git_sha,
       'main' AS git_branch, 'PROCESS_demo' AS dab_name, COUNT(*) AS row_count, to_json(collect_list(to_json(struct(*))))
       AS snapshot_data FROM dev_fd_bronze.ben_demo.customer_summary
+    - INSERT INTO dev_fd_operations.ben_backups._backup_archive SELECT 'customer_orders'
+      AS asset_name, 'table' AS asset_type, 'dbt-forge' AS project, 'dev' AS environment,
+      current_timestamp() AS archived_at, 'ben' AS performed_by, 'a29ad10' AS git_sha,
+      'main' AS git_branch, 'PROCESS_demo' AS dab_name, COUNT(*) AS row_count, to_json(collect_list(to_json(struct(*))))
+      AS snapshot_data FROM dev_fd_bronze.ben_demo.customer_orders
     - "INSERT INTO dev_fd_operations.ben_backups._backup_archive VALUES ('forge.yml',\
-      \ 'config', 'dbt-forge', 'dev', current_timestamp(), 'ben', '75188ad', 'main',\
+      \ 'config', 'dbt-forge', 'dev', current_timestamp(), 'ben', 'a29ad10', 'main',\
       \ 'PROCESS_demo', NULL, 'name: dbt-forge\nscope: fd                        \
       \    # scope e.g. fd = foundational_data, client = crm data\nid: demo      \
       \                  # project identifier \u2014 used in catalog_pattern\nactive_profile:\
@@ -147,61 +189,8 @@ teardown:
       \    stage: enrich\n    depends_on: [customer_clean]\n\n  - task_key: notify_slack\n\
       \    notebook_task: notebooks/slack_alert.ipynb\n    stage: serve\n    depends_on:\
       \ [customer_summary]\n')"
-    - "INSERT INTO dev_fd_operations.ben_backups._backup_archive VALUES ('PROCESS_demo.yml',\
-      \ 'workflow', 'dbt-forge', 'dev', current_timestamp(), 'ben', '75188ad', 'main',\
-      \ 'PROCESS_demo', NULL, 'resources:\n  jobs:\n    PROCESS_demo:\n      name:\
-      \ PROCESS_demo (dev)\n      tasks:\n      - task_key: ingest_raw_customers\n\
-      \        timeout_seconds: 3600\n        dbt_task:\n          project_directory:\
-      \ dbt\n          commands:\n          - dbt run --select raw_customers\n   \
-      \       catalog: main\n          schema: default\n        environment_key: default\n\
-      \      - task_key: ingest_raw_orders\n        timeout_seconds: 3600\n      \
-      \  dbt_task:\n          project_directory: dbt\n          commands:\n      \
-      \    - dbt run --select raw_orders\n          catalog: main\n          schema:\
-      \ default\n        environment_key: default\n      - task_key: stage_customer_orders\n\
-      \        timeout_seconds: 3600\n        dbt_task:\n          project_directory:\
-      \ dbt\n          commands:\n          - dbt run --select customer_orders\n \
-      \         catalog: main\n          schema: default\n        environment_key:\
-      \ default\n        depends_on:\n        - task_key: clean_customer_clean\n \
-      \       - task_key: stage_stg_orders\n      - task_key: stage_stg_customers\n\
-      \        timeout_seconds: 3600\n        dbt_task:\n          project_directory:\
-      \ dbt\n          commands:\n          - dbt run --select stg_customers\n   \
-      \       catalog: main\n          schema: default\n        environment_key: default\n\
-      \        depends_on:\n        - task_key: ingest_raw_customers\n      - task_key:\
-      \ stage_stg_orders\n        timeout_seconds: 3600\n        dbt_task:\n     \
-      \     project_directory: dbt\n          commands:\n          - dbt run --select\
-      \ stg_orders\n          catalog: main\n          schema: default\n        environment_key:\
-      \ default\n        depends_on:\n        - task_key: ingest_raw_orders\n    \
-      \  - task_key: clean_customer_clean\n        timeout_seconds: 3600\n       \
-      \ dbt_task:\n          project_directory: dbt\n          commands:\n       \
-      \   - dbt run --select customer_clean\n          catalog: main\n          schema:\
-      \ default\n        environment_key: default\n        depends_on:\n        -\
-      \ task_key: stage_stg_customers\n      - task_key: enrich_data_is_fresh\n  \
-      \      timeout_seconds: 3600\n        dbt_task:\n          project_directory:\
-      \ dbt\n          commands:\n          - dbt run --select data_is_fresh\n   \
-      \       catalog: main\n          schema: default\n        environment_key: default\n\
-      \        depends_on:\n        - task_key: serve_customer_summary\n      - task_key:\
-      \ enrich_has_customers\n        timeout_seconds: 3600\n        dbt_task:\n \
-      \         project_directory: dbt\n          commands:\n          - dbt run --select\
-      \ has_customers\n          catalog: main\n          schema: default\n      \
-      \  environment_key: default\n        depends_on:\n        - task_key: serve_customer_summary\n\
-      \      - task_key: enrich_revenue_non_negative\n        timeout_seconds: 3600\n\
-      \        dbt_task:\n          project_directory: dbt\n          commands:\n\
-      \          - dbt run --select revenue_non_negative\n          catalog: main\n\
-      \          schema: default\n        environment_key: default\n        depends_on:\n\
-      \        - task_key: serve_customer_summary\n      - task_key: serve_customer_summary\n\
-      \        timeout_seconds: 3600\n        dbt_task:\n          project_directory:\
-      \ dbt\n          commands:\n          - dbt run --select customer_summary\n\
-      \          catalog: main\n          schema: default\n        environment_key:\
-      \ default\n        depends_on:\n        - task_key: stage_customer_orders\n\
-      \      - task_key: enrich_run_reconciliation\n        timeout_seconds: 3600\n\
-      \        sql_task:\n          file:\n            path: sql/reconcile.sql\n \
-      \       environment_key: default\n        depends_on:\n        - task_key: clean_customer_clean\n\
-      \      - task_key: serve_notify_slack\n        timeout_seconds: 3600\n     \
-      \   notebook_task:\n          notebook_path: notebooks/slack_alert.ipynb\n \
-      \       environment_key: default\n        depends_on:\n        - task_key: serve_customer_summary\n\
-      ')"
     - "INSERT INTO dev_fd_operations.ben_backups._backup_archive VALUES ('functions/average_score.sql',\
-      \ 'function', 'dbt-forge', 'dev', current_timestamp(), 'ben', '75188ad', 'main',\
+      \ 'function', 'dbt-forge', 'dev', current_timestamp(), 'ben', 'a29ad10', 'main',\
       \ 'PROCESS_demo', NULL, '-- UDF: average_score\n-- Pandas vectorized UDF\n--\
       \ Vectorized average using pandas \u2014 fast on large batches\nDROP FUNCTION\
       \ IF EXISTS {{ target.catalog }}.{{ target.schema }}.average_score;\nCREATE\
@@ -211,7 +200,7 @@ teardown:
       \ as pd\ndef compute(score_a: pd.Series, score_b: pd.Series) -> pd.Series:\n\
       \    return (score_a + score_b) / 2.0\n$$;\n')"
     - "INSERT INTO dev_fd_operations.ben_backups._backup_archive VALUES ('functions/clean_email.sql',\
-      \ 'function', 'dbt-forge', 'dev', current_timestamp(), 'ben', '75188ad', 'main',\
+      \ 'function', 'dbt-forge', 'dev', current_timestamp(), 'ben', 'a29ad10', 'main',\
       \ 'PROCESS_demo', NULL, '-- UDF: clean_email\n-- Lowercase and trim email addresses\n\
       DROP FUNCTION IF EXISTS {{ target.catalog }}.{{ target.schema }}.clean_email;\n\
       CREATE FUNCTION {{ target.catalog }}.{{ target.schema }}.clean_email(raw_email\
@@ -219,7 +208,7 @@ teardown:
       \ = ''clean''\nAS $$\ndef clean(raw_email):\n    if raw_email is None:\n   \
       \     return None\n    return raw_email.strip().lower()\n$$;\n')"
     - "INSERT INTO dev_fd_operations.ben_backups._backup_archive VALUES ('functions/loyalty_tier.sql',\
-      \ 'function', 'dbt-forge', 'dev', current_timestamp(), 'ben', '75188ad', 'main',\
+      \ 'function', 'dbt-forge', 'dev', current_timestamp(), 'ben', 'a29ad10', 'main',\
       \ 'PROCESS_demo', NULL, '-- UDF: loyalty_tier\n-- Assigns GOLD/SILVER/BRONZE\
       \ based on revenue\nDROP FUNCTION IF EXISTS {{ target.catalog }}.{{ target.schema\
       \ }}.loyalty_tier;\nCREATE FUNCTION {{ target.catalog }}.{{ target.schema }}.loyalty_tier(revenue\
@@ -227,35 +216,53 @@ teardown:
       \ ''GOLD''\n  WHEN revenue >=  500 THEN ''SILVER''\n  ELSE ''BRONZE''\nEND);\n\
       ')"
     - "INSERT INTO dev_fd_operations.ben_backups._backup_archive VALUES ('dbt_models/demo/bronze/stg_customers.sql',\
-      \ 'model', 'dbt-forge', 'dev', current_timestamp(), 'ben', '75188ad', 'main',\
-      \ 'PROCESS_demo', NULL, '{{ config(\n    materialized=''view'', schema=''{{\
-      \ var(\"schema_bronze\") }}'', database=''{{ var(\"catalog_bronze\") }}''\n\
-      ) }}\n\nselect\n    customer_id,\n    first_name,\n    last_name,\n    email,\n\
-      \    cast(signup_date as date) as signup_date,\n    country,\n    cast(revenue\
-      \ as decimal(10,2)) as revenue,\n    {{ dbt_dab_tools.lineage_columns(columns=[{''name'':\
-      \ ''signup_date'', ''expr'': ''cast(signup_date as date)'', ''op'': ''CAST'',\
-      \ ''inputs'': [''signup_date'']}, {''name'': ''revenue'', ''expr'': ''cast(revenue\
-      \ as decimal(10,2))'', ''op'': ''CAST'', ''inputs'': [''revenue'']}]) }}\nfrom\
-      \ {{ source(''seed'', ''raw_customers'') }}\n')"
+      \ 'model', 'dbt-forge', 'dev', current_timestamp(), 'ben', 'a29ad10', 'main',\
+      \ 'PROCESS_demo', NULL, '{{ config(\n    materialized=''view'', schema=var(\"\
+      schema_bronze\"), database=var(\"catalog_bronze\")\n) }}\n\nselect\n    customer_id,\n\
+      \    first_name,\n    last_name,\n    email,\n    cast(signup_date as date)\
+      \ as signup_date,\n    country,\n    cast(revenue as decimal(10,2)) as revenue,\n\
+      \    {{ dbt_dab_tools.lineage_columns(columns=[{''name'': ''signup_date'', ''expr'':\
+      \ ''cast(signup_date as date)'', ''op'': ''CAST'', ''inputs'': [''signup_date'']},\
+      \ {''name'': ''revenue'', ''expr'': ''cast(revenue as decimal(10,2))'', ''op'':\
+      \ ''CAST'', ''inputs'': [''revenue'']}]) }}\nfrom {{ source(''seed'', ''raw_customers'')\
+      \ }}\n')"
     - "INSERT INTO dev_fd_operations.ben_backups._backup_archive VALUES ('dbt_models/demo/bronze/stg_orders.sql',\
-      \ 'model', 'dbt-forge', 'dev', current_timestamp(), 'ben', '75188ad', 'main',\
-      \ 'PROCESS_demo', NULL, '{{ config(\n    materialized=''view'', schema=''{{\
-      \ var(\"schema_bronze\") }}'', database=''{{ var(\"catalog_bronze\") }}''\n\
-      ) }}\n\nselect\n    order_id,\n    customer_id,\n    product,\n    quantity,\n\
-      \    cast(unit_price as decimal(10,2)) as unit_price,\n    quantity * unit_price\
-      \ as line_total,\n    cast(order_date as date) as order_date,\n    {{ dbt_dab_tools.lineage_columns(columns=[{''name'':\
+      \ 'model', 'dbt-forge', 'dev', current_timestamp(), 'ben', 'a29ad10', 'main',\
+      \ 'PROCESS_demo', NULL, '{{ config(\n    materialized=''view'', schema=var(\"\
+      schema_bronze\"), database=var(\"catalog_bronze\")\n) }}\n\nselect\n    order_id,\n\
+      \    customer_id,\n    product,\n    quantity,\n    cast(unit_price as decimal(10,2))\
+      \ as unit_price,\n    quantity * unit_price as line_total,\n    cast(order_date\
+      \ as date) as order_date,\n    {{ dbt_dab_tools.lineage_columns(columns=[{''name'':\
       \ ''unit_price'', ''expr'': ''cast(unit_price as decimal(10,2))'', ''op'': ''CAST'',\
       \ ''inputs'': [''unit_price'']}, {''name'': ''line_total'', ''expr'': ''quantity\
       \ * unit_price'', ''op'': ''EXPRESSION''}, {''name'': ''order_date'', ''expr'':\
       \ ''cast(order_date as date)'', ''op'': ''CAST'', ''inputs'': [''order_date'']}])\
       \ }}\nfrom {{ source(''seed'', ''raw_orders'') }}\n')"
-    - "INSERT INTO dev_fd_operations.ben_backups._backup_archive VALUES ('dbt_models/demo/gold/customer_summary.sql',\
-      \ 'model', 'dbt-forge', 'dev', current_timestamp(), 'ben', '75188ad', 'main',\
-      \ 'PROCESS_demo', NULL, '{{ config(\n    materialized=''table'', schema=''{{\
-      \ var(\"schema_gold\") }}'', database=''{{ var(\"catalog_gold\") }}'', meta={''version'':\
-      \ ''v1''}\n) }}\n\nselect\n    customer_id,\n    first_name,\n    last_name,\n\
-      \    email,\n    country,\n    count(order_id) as total_orders,\n    sum(line_total)\
-      \ as total_revenue,\n    min(order_date) as first_order_date,\n    max(order_date)\
+    - "INSERT INTO dev_fd_operations.ben_backups._backup_archive VALUES ('dbt_models/demo/silver/customer_clean.sql',\
+      \ 'model', 'dbt-forge', 'dev', current_timestamp(), 'ben', 'a29ad10', 'main',\
+      \ 'PROCESS_demo', NULL, '{{ config(\n    materialized=''table'', schema=var(\"\
+      schema_silver\"), database=var(\"catalog_silver\"), meta={''version'': ''v2''},\
+      \ post_hook=\"{{ dbt_dab_tools.quarantine(''email IS NULL OR revenue < 0'')\
+      \ }}\"\n) }}\n\nselect\n    customer_id,\n    first_name,\n    last_name,\n\
+      \    email,\n    signup_date,\n    country,\n    revenue,\n    {{ dbt_dab_tools.lineage_columns()\
+      \ }}\nfrom {{ ref(''stg_customers'') }}\n')"
+    - "INSERT INTO dev_fd_operations.ben_backups._backup_archive VALUES ('dbt_models/demo/silver/customer_orders.sql',\
+      \ 'model', 'dbt-forge', 'dev', current_timestamp(), 'ben', 'a29ad10', 'main',\
+      \ 'PROCESS_demo', NULL, '{{ config(\n    materialized=''table'', schema=var(\"\
+      schema_silver\"), database=var(\"catalog_silver\"), meta={''version'': ''v1''}\n\
+      ) }}\n\nselect /*+ BROADCAST(c) */\n    c.customer_id,\n    c.first_name,\n\
+      \    c.last_name,\n    c.email,\n    c.country,\n    o.order_id,\n    o.product,\n\
+      \    o.quantity,\n    o.unit_price,\n    o.line_total,\n    o.order_date,\n\
+      \    {{ dbt_dab_tools.lineage_columns() }}\nfrom {{ ref(''customer_clean'')\
+      \ }} c\ninner join {{ ref(''stg_orders'') }} o\n    on c.customer_id = o.customer_id\n\
+      ')"
+    - "INSERT INTO dev_fd_operations.ben_backups._backup_archive VALUES ('dbt_models/demo/silver/customer_summary.sql',\
+      \ 'model', 'dbt-forge', 'dev', current_timestamp(), 'ben', 'a29ad10', 'main',\
+      \ 'PROCESS_demo', NULL, '{{ config(\n    materialized=''table'', schema=var(\"\
+      schema_silver\"), database=var(\"catalog_silver\"), meta={''version'': ''v1''}\n\
+      ) }}\n\nselect\n    customer_id,\n    first_name,\n    last_name,\n    email,\n\
+      \    country,\n    count(order_id) as total_orders,\n    sum(line_total) as\
+      \ total_revenue,\n    min(order_date) as first_order_date,\n    max(order_date)\
       \ as last_order_date,\n    loyalty_tier(total_revenue) as tier,\n    {{ dbt_dab_tools.lineage_columns(columns=[{''name'':\
       \ ''total_orders'', ''expr'': ''count(order_id)'', ''op'': ''AGGREGATION''},\
       \ {''name'': ''total_revenue'', ''expr'': ''sum(line_total)'', ''op'': ''AGGREGATION''},\
@@ -265,26 +272,8 @@ teardown:
       \ ''loyalty_tier'', ''op'': ''SQL_UDF'', ''inputs'': [''total_revenue'']}])\
       \ }}\nfrom {{ ref(''customer_orders'') }}\ngroup by\n    customer_id, first_name,\
       \ last_name, email, country\n')"
-    - "INSERT INTO dev_fd_operations.ben_backups._backup_archive VALUES ('dbt_models/demo/silver/customer_clean.sql',\
-      \ 'model', 'dbt-forge', 'dev', current_timestamp(), 'ben', '75188ad', 'main',\
-      \ 'PROCESS_demo', NULL, '{{ config(\n    materialized=''table'', schema=''{{\
-      \ var(\"schema_silver\") }}'', database=''{{ var(\"catalog_silver\") }}'', meta={''version'':\
-      \ ''v2''}, post_hook=\"{{ dbt_dab_tools.quarantine(''email IS NULL OR revenue\
-      \ < 0'') }}\"\n) }}\n\nselect\n    customer_id,\n    first_name,\n    last_name,\n\
-      \    email,\n    signup_date,\n    country,\n    revenue,\n    {{ dbt_dab_tools.lineage_columns()\
-      \ }}\nfrom {{ ref(''stg_customers'') }}\n')"
-    - "INSERT INTO dev_fd_operations.ben_backups._backup_archive VALUES ('dbt_models/demo/silver/customer_orders.sql',\
-      \ 'model', 'dbt-forge', 'dev', current_timestamp(), 'ben', '75188ad', 'main',\
-      \ 'PROCESS_demo', NULL, '{{ config(\n    materialized=''table'', schema=''{{\
-      \ var(\"schema_silver\") }}'', database=''{{ var(\"catalog_silver\") }}'', meta={''version'':\
-      \ ''v1''}\n) }}\n\nselect /*+ BROADCAST(c) */\n    c.customer_id,\n    c.first_name,\n\
-      \    c.last_name,\n    c.email,\n    c.country,\n    o.order_id,\n    o.product,\n\
-      \    o.quantity,\n    o.unit_price,\n    o.line_total,\n    o.order_date,\n\
-      \    {{ dbt_dab_tools.lineage_columns() }}\nfrom {{ ref(''customer_clean'')\
-      \ }} c\ninner join {{ ref(''stg_orders'') }} o\n    on c.customer_id = o.customer_id\n\
-      ')"
     - "INSERT INTO dev_fd_operations.ben_backups._backup_archive VALUES ('dbt_models/schema.yml',\
-      \ 'model', 'dbt-forge', 'dev', current_timestamp(), 'ben', '75188ad', 'main',\
+      \ 'model', 'dbt-forge', 'dev', current_timestamp(), 'ben', 'a29ad10', 'main',\
       \ 'PROCESS_demo', NULL, 'version: 2\nmodels:\n- name: stg_customers\n  description:\
       \ Staged customers with typed columns and lineage provenance\n  columns:\n \
       \ - name: customer_id\n    description: Unique customer identifier\n    data_type:\
@@ -300,57 +289,74 @@ teardown:
       \    data_tests:\n    - not_null\n  - name: product\n    data_type: string\n\
       \  - name: quantity\n    data_type: int\n  - name: unit_price\n    data_type:\
       \ decimal(10,2)\n  - name: line_total\n  - name: order_date\n    data_type:\
-      \ date\n- name: customer_summary\n  description: Aggregated customer metrics\
-      \ - gold layer\n  columns:\n  - name: customer_id\n    data_type: int\n    data_tests:\n\
-      \    - not_null\n    - unique\n  - name: first_name\n    data_type: string\n\
-      \  - name: last_name\n    data_type: string\n  - name: email\n    data_type:\
-      \ string\n  - name: country\n    data_type: string\n  - name: total_orders\n\
-      \    description: Count of orders per customer\n    data_type: int\n  - name:\
-      \ total_revenue\n    description: Sum of all order line totals\n    data_type:\
-      \ decimal(10,2)\n  - name: first_order_date\n    data_type: date\n  - name:\
-      \ last_order_date\n    data_type: date\n  - name: tier\n    description: GOLD/SILVER/BRONZE\
-      \ loyalty tier\n    data_type: string\n- name: customer_clean\n  description:\
-      \ Clean customers - null emails and negative revenue quarantined\n  columns:\n\
-      \  - name: customer_id\n    data_type: int\n    data_tests:\n    - not_null\n\
-      \    - unique\n  - name: first_name\n    data_type: string\n  - name: last_name\n\
-      \    data_type: string\n  - name: email\n    description: Validated email (nulls\
-      \ quarantined)\n    data_type: string\n    data_tests:\n    - not_null\n  -\
-      \ name: signup_date\n    data_type: date\n  - name: country\n    data_type:\
-      \ string\n  - name: revenue\n    description: Non-negative revenue (negatives\
-      \ quarantined)\n    data_type: decimal(10,2)\n- name: customer_orders\n  description:\
-      \ Joined clean customers with their orders\n  columns:\n  - name: customer_id\n\
-      \  - name: first_name\n  - name: last_name\n  - name: email\n  - name: country\n\
-      \  - name: order_id\n    data_tests:\n    - not_null\n    - unique\n  - name:\
-      \ product\n  - name: quantity\n  - name: unit_price\n  - name: line_total\n\
-      \  - name: order_date\n')"
+      \ date\n- name: customer_clean\n  description: Clean customers - null emails\
+      \ and negative revenue quarantined\n  columns:\n  - name: customer_id\n    data_type:\
+      \ int\n    data_tests:\n    - not_null\n    - unique\n  - name: first_name\n\
+      \    data_type: string\n  - name: last_name\n    data_type: string\n  - name:\
+      \ email\n    description: Validated email (nulls quarantined)\n    data_type:\
+      \ string\n    data_tests:\n    - not_null\n  - name: signup_date\n    data_type:\
+      \ date\n  - name: country\n    data_type: string\n  - name: revenue\n    description:\
+      \ Non-negative revenue (negatives quarantined)\n    data_type: decimal(10,2)\n\
+      - name: customer_orders\n  description: Joined clean customers with their orders\n\
+      \  columns:\n  - name: customer_id\n  - name: first_name\n  - name: last_name\n\
+      \  - name: email\n  - name: country\n  - name: order_id\n    data_tests:\n \
+      \   - not_null\n    - unique\n  - name: product\n  - name: quantity\n  - name:\
+      \ unit_price\n  - name: line_total\n  - name: order_date\n- name: customer_summary\n\
+      \  description: Aggregated customer metrics - gold layer\n  columns:\n  - name:\
+      \ customer_id\n    data_type: int\n    data_tests:\n    - not_null\n    - unique\n\
+      \  - name: first_name\n    data_type: string\n  - name: last_name\n    data_type:\
+      \ string\n  - name: email\n    data_type: string\n  - name: country\n    data_type:\
+      \ string\n  - name: total_orders\n    description: Count of orders per customer\n\
+      \    data_type: int\n  - name: total_revenue\n    description: Sum of all order\
+      \ line totals\n    data_type: decimal(10,2)\n  - name: first_order_date\n  \
+      \  data_type: date\n  - name: last_order_date\n    data_type: date\n  - name:\
+      \ tier\n    description: GOLD/SILVER/BRONZE loyalty tier\n    data_type: string\n\
+      ')"
   - step: 4
-    name: remove_workflow_yaml
-    action: delete_file
-    target: resources/jobs/PROCESS_demo.yml
-  - step: 5
     name: drop_udfs
     action: sql
     statements:
     - DROP FUNCTION IF EXISTS dev_fd_meta.ben_demo.loyalty_tier
     - DROP FUNCTION IF EXISTS dev_fd_meta.ben_demo.clean_email
     - DROP FUNCTION IF EXISTS dev_fd_meta.ben_demo.average_score
+  - step: 5
+    name: drop_tables
+    action: sql
+    statements:
+    - DROP TABLE IF EXISTS dev_fd_bronze.ben_demo.stg_customers
+    - DROP TABLE IF EXISTS dev_fd_bronze.ben_demo.stg_orders
+    - DROP TABLE IF EXISTS dev_fd_bronze.ben_demo.customer_clean
+    - DROP TABLE IF EXISTS dev_fd_bronze.ben_demo.customer_summary
+    - DROP TABLE IF EXISTS dev_fd_bronze.ben_demo.customer_orders
   - step: 6
+    name: drop_schemas
+    action: sql
+    statements:
+    - DROP SCHEMA IF EXISTS dev_fd_bronze.ben_demo CASCADE
+    - DROP SCHEMA IF EXISTS dev_fd_bronze.ben_demo_ben_demo CASCADE
+    - DROP SCHEMA IF EXISTS dev_fd_silver.ben_demo CASCADE
+    - DROP SCHEMA IF EXISTS dev_fd_silver.ben_demo_ben_demo CASCADE
+    - DROP SCHEMA IF EXISTS dev_fd_meta.ben_demo CASCADE
+    - DROP SCHEMA IF EXISTS dev_fd_meta.ben_demo_ben_demo CASCADE
+    - DROP SCHEMA IF EXISTS dev_fd_operations.ben_demo CASCADE
+    - DROP SCHEMA IF EXISTS dev_fd_operations.ben_demo_ben_demo CASCADE
+  - step: 7
     name: confirm
     action: log
-    message: 'Teardown complete.
+    message: 'Teardown complete (--wipe-all).
 
-      Snapshot saved: resources/teardown/_backup/20260323_155147/
+      Snapshot saved: resources/teardown/_backup/20260323_162327/
 
       Table data archived to: dev_fd_operations.ben_backups._backup_archive
 
-      Tables preserved: stg_customers, stg_orders, customer_clean, customer_orders,
-      customer_summary
+      Tables DROPPED: stg_customers, stg_orders, customer_clean, customer_summary,
+      customer_orders
 
-      Schemas preserved (use forge dev-down for dev schemas)
+      Schemas DROPPED: dev_fd_bronze.ben_demo, dev_fd_bronze.ben_demo_ben_demo, dev_fd_silver.ben_demo,
+      dev_fd_silver.ben_demo_ben_demo, dev_fd_meta.ben_demo, dev_fd_meta.ben_demo_ben_demo,
+      dev_fd_operations.ben_demo, dev_fd_operations.ben_demo_ben_demo
 
-      To re-instate: forge deploy
-
-      To restore: forge restore --snapshot 20260323_155147'
+      To restore: forge restore --snapshot 20260323_162327'
   reinstate:
     command: forge deploy
     note: Re-running deploy recreates the workflow and all orchestration from source

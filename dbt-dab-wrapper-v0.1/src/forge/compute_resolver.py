@@ -567,6 +567,28 @@ def generate_profiles_yml(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(text)
 
+    # Keep dbt_project.yml profile: and name: in sync with forge.yml name
+    dbt_project_path = (output_path.parent if output_path else Path(".")) / "dbt_project.yml"
+    if dbt_project_path.exists():
+        import re
+        dbt_text = dbt_project_path.read_text()
+        updated = re.sub(
+            r"^profile:\s*['\"]?[\w-]+['\"]?",
+            f"profile: '{project_name}'",
+            dbt_text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        updated = re.sub(
+            r"^name:\s*['\"]?[\w-]+['\"]?",
+            f"name: '{project_name}'",
+            updated,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        if updated != dbt_text:
+            dbt_project_path.write_text(updated)
+
     return text
 
 

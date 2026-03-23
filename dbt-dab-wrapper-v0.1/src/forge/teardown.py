@@ -201,10 +201,27 @@ class TeardownPlan:
         lines.append("")
 
         if self.removes:
-            lines.append("  📋 REMOVES (orchestration + code only):")
-            for a in self.removes:
-                method = f" ({a.method})" if a.method else ""
-                lines.append(f"    • {a.asset_type}: {a.name}{method}")
+            table_removes = [a for a in self.removes if a.asset_type == "table"]
+            schema_removes = [a for a in self.removes if a.asset_type == "schema"]
+            other_removes = [a for a in self.removes if a.asset_type not in ("table", "schema")]
+
+            if other_removes:
+                lines.append("  📋 REMOVES (orchestration + code only):")
+                for a in other_removes:
+                    method = f" ({a.method})" if a.method else ""
+                    lines.append(f"    • {a.asset_type}: {a.name}{method}")
+
+            if table_removes:
+                lines.append("")
+                lines.append(f"  ⚠️  DROPS ({len(table_removes)} tables — DATA WILL BE PERMANENTLY DELETED):")
+                for a in table_removes:
+                    lines.append(f"    • {a.name}")
+
+            if schema_removes:
+                lines.append("")
+                lines.append(f"  ⚠️  DROPS ({len(schema_removes)} schemas — CASCADE):")
+                for a in schema_removes:
+                    lines.append(f"    • {a.name}")
         else:
             lines.append("  📋 Nothing to remove.")
 
@@ -307,6 +324,8 @@ class TeardownPlan:
 def build_teardown_plan(
     forge_config: dict,
     graph: dict,
+    *,
+    wipe_all: bool = False,
 ) -> TeardownPlan:
     """
     Build a safe teardown plan from the lineage graph.
@@ -367,36 +386,69 @@ def build_teardown_plan(
                 note="Functions are code, not data — safe to remove",
             ))
 
-    # 3. Tables (NEVER removed)
+    # 3. Tables
     for cid, contract in contracts.items():
         ds = contract["dataset"]
         tags = set(contract.get("tags", []))
         if ds["type"] == "table" and "auto-generated" not in tags:
-            preserves.append(TeardownAsset(
-                asset_type="table",
-                name=ds["name"],
-                action="preserve",
-                note="Data is never deleted",
-            ))
+            if wipe_all:
+                removes.append(TeardownAsset(
+                    asset_type="table",
+                    name=ds["name"],
+                    action="remove",
+                    method="DROP TABLE IF EXISTS",
+                    note="⚠️ --wipe-all: table and data will be permanently deleted",
+                ))
+            else:
+                preserves.append(TeardownAsset(
+                    asset_type="table",
+                    name=ds["name"],
+                    action="preserve",
+                    note="Data is never deleted",
+                ))
 
-    # 4. Schemas (NEVER removed — only dev-down handles dev schemas)
-    preserves.append(TeardownAsset(
-        asset_type="schema",
-        name=f"{env} schemas",
-        action="preserve",
-        note="Schemas are preserved. Use forge dev-down for dev schema cleanup.",
-    ))
+    # 4. Schemas
+    if wipe_all:
+        # Collect schemas to drop: each catalog × the resolved schema
+        catalogs_list = forge_config.get("catalogs", [])
+        schema_drop_targets: list[str] = []
+        for cat_name in catalogs_list:
+            resolved_cat = _resolve_catalog(catalog_pattern, env, scope, cat_name)
+            resolved_sch = _resolve_schema(schema_pattern, env, project_id, scope)
+            schema_drop_targets.append(f"{resolved_cat}.{resolved_sch}")
+            # Also target the doubled schema name (artifact from pre-fix deployments)
+            doubled_sch = f"{resolved_sch}_{resolved_sch}"
+            schema_drop_targets.append(f"{resolved_cat}.{doubled_sch}")
+
+        removes.extend([
+            TeardownAsset(
+                asset_type="schema",
+                name=target,
+                action="remove",
+                method=f"DROP SCHEMA IF EXISTS {target} CASCADE",
+                note="⚠️ --wipe-all: schema and all contents will be dropped",
+            )
+            for target in schema_drop_targets
+        ])
+    else:
+        preserves.append(TeardownAsset(
+            asset_type="schema",
+            name=f"{env} schemas",
+            action="preserve",
+            note="Schemas are preserved. Use forge dev-down for dev schema cleanup.",
+        ))
 
     # ── Build archive table name ─────────────────────
     ops_catalog = _resolve_catalog(catalog_pattern, env, scope, "operations")
     ops_schema = _resolve_schema(schema_pattern, env, "backups", scope)
     archive_table = f"{ops_catalog}.{ops_schema}._backup_archive"
 
-    # Collect qualified table names for archive
+    # Collect qualified table names for archive (from preserves OR removes depending on --wipe-all)
     default_catalog = _resolve_catalog(catalog_pattern, env, scope, profile.get("catalog", "bronze"))
     default_schema = _resolve_schema(schema_pattern, env, project_id, scope)
     table_names_qualified: list[tuple[str, str]] = []  # (short_name, qualified_name)
-    for a in preserves:
+    all_assets = preserves + removes
+    for a in all_assets:
         if a.asset_type == "table":
             table_names_qualified.append((a.name, f"{default_catalog}.{default_schema}.{a.name}"))
 
@@ -526,23 +578,65 @@ def build_teardown_plan(
             statements=udf_stmts,
         ))
 
+    # Step: Drop tables (only with --wipe-all)
+    if wipe_all and table_names_qualified:
+        drop_stmts = [
+            f"DROP TABLE IF EXISTS {qualified}"
+            for _, qualified in table_names_qualified
+        ]
+        step_num += 1
+        steps.append(TeardownStep(
+            step=step_num,
+            name="drop_tables",
+            action="sql",
+            statements=drop_stmts,
+        ))
+
+    # Step: Drop schemas (only with --wipe-all)
+    schema_drop_stmts = [a.method for a in removes if a.asset_type == "schema" and a.method]
+    if schema_drop_stmts:
+        step_num += 1
+        steps.append(TeardownStep(
+            step=step_num,
+            name="drop_schemas",
+            action="sql",
+            statements=schema_drop_stmts,
+        ))
+
     # Step: Confirm
-    table_names = [a.name for a in preserves if a.asset_type == "table"]
+    preserved_tables = [a.name for a in preserves if a.asset_type == "table"]
+    dropped_tables = [a.name for a in removes if a.asset_type == "table"]
+    dropped_schemas = [a.name for a in removes if a.asset_type == "schema"]
     step_num += 1
-    steps.append(TeardownStep(
-        step=step_num,
-        name="confirm",
-        action="log",
-        message=(
-            "Teardown complete.\n"
-            f"Snapshot saved: {snapshot_dir}/\n"
-            f"Table data archived to: {archive_table}\n"
-            f"Tables preserved: {', '.join(table_names)}\n"
-            f"Schemas preserved (use forge dev-down for dev schemas)\n"
-            f"To re-instate: forge deploy\n"
-            f"To restore: forge restore --snapshot {timestamp}"
-        ),
-    ))
+    if wipe_all:
+        steps.append(TeardownStep(
+            step=step_num,
+            name="confirm",
+            action="log",
+            message=(
+                "Teardown complete (--wipe-all).\n"
+                f"Snapshot saved: {snapshot_dir}/\n"
+                f"Table data archived to: {archive_table}\n"
+                f"Tables DROPPED: {', '.join(dropped_tables)}\n"
+                f"Schemas DROPPED: {', '.join(dropped_schemas)}\n"
+                f"To restore: forge restore --snapshot {timestamp}"
+            ),
+        ))
+    else:
+        steps.append(TeardownStep(
+            step=step_num,
+            name="confirm",
+            action="log",
+            message=(
+                "Teardown complete.\n"
+                f"Snapshot saved: {snapshot_dir}/\n"
+                f"Table data archived to: {archive_table}\n"
+                f"Tables preserved: {', '.join(preserved_tables)}\n"
+                f"Schemas preserved (use forge dev-down for dev schemas)\n"
+                f"To re-instate: forge deploy\n"
+                f"To restore: forge restore --snapshot {timestamp}"
+            ),
+        ))
 
     return TeardownPlan(
         name=f"TEARDOWN_{project_id}",

@@ -45,6 +45,35 @@ models:
   - name: line_total
   - name: order_date
     data_type: date
+- name: customer_summary
+  description: Aggregated customer metrics - gold layer
+  columns:
+  - name: customer_id
+    data_type: int
+    data_tests:
+    - not_null
+    - unique
+  - name: first_name
+    data_type: string
+  - name: last_name
+    data_type: string
+  - name: email
+    data_type: string
+  - name: country
+    data_type: string
+  - name: total_orders
+    description: Count of orders per customer
+    data_type: int
+  - name: total_revenue
+    description: Sum of all order line totals
+    data_type: decimal(10,2)
+  - name: first_order_date
+    data_type: date
+  - name: last_order_date
+    data_type: date
+  - name: tier
+    description: GOLD/SILVER/BRONZE loyalty tier
+    data_type: string
 - name: customer_clean
   description: Clean customers - null emails and negative revenue quarantined
   columns:
@@ -86,32 +115,3 @@ models:
   - name: unit_price
   - name: line_total
   - name: order_date
-- name: customer_summary
-  description: Aggregated customer metrics - gold layer
-  columns:
-  - name: customer_id
-    data_type: int
-    data_tests:
-    - not_null
-    - unique
-  - name: first_name
-    data_type: string
-  - name: last_name
-    data_type: string
-  - name: email
-    data_type: string
-  - name: country
-    data_type: string
-  - name: total_orders
-    description: Count of orders per customer
-    data_type: int
-  - name: total_revenue
-    description: Sum of all order line totals
-    data_type: decimal(10,2)
-  - name: first_order_date
-    data_type: date
-  - name: last_order_date
-    data_type: date
-  - name: tier
-    description: GOLD/SILVER/BRONZE loyalty tier
-    data_type: string

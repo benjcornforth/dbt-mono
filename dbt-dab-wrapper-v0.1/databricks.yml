@@ -1,0 +1,6 @@
+bundle:
+  name: dbt-forge_demo
+workspace:
+  profile: dev
+include:
+- resources/jobs/PROCESS_demo.yml

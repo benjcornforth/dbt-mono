@@ -62,6 +62,7 @@ from forge.compute_resolver import (
     resolve_model_schema,
     _expand_env_prefix,
     generate_profiles_yml,
+    get_schema_variables,
     read_databrickscfg,
     list_databrickscfg_profiles,
 )
@@ -207,8 +208,10 @@ def deploy(
     # Auto-regenerate profiles.yml so dbt uses current forge.yml settings
     generate_profiles_yml(config, output_path=Path("profiles.yml"))
 
-    # Build dbt vars (lineage provenance only — catalog/schema resolved at compile time)
+    # Build dbt vars: catalog/schema variables + lineage provenance
+    schema_vars = get_schema_variables(prof, config)
     dbt_vars = {
+        **schema_vars,
         "git_commit": config.get("git_commit", "local"),
         "compute_type": conn.compute_type or "serverless",
     }
@@ -396,11 +399,12 @@ def backup(
     typer.echo(f"♻️  To restore: forge restore --snapshot {result.timestamp}")
 
 # =============================================
-# TEARDOWN – safe destroy (NEVER deletes data)
+# TEARDOWN – safe destroy (default preserves data, --wipe-all drops tables)
 # =============================================
 @app.command()
 def teardown(
     execute: bool = typer.Option(False, "--execute", help="Actually run teardown (default is dry-run)"),
+    wipe_all: bool = typer.Option(False, "--wipe-all", help="DROP all tables — permanently deletes data (requires --execute)"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Write teardown plan to file"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile to use"),
 ):
@@ -409,13 +413,18 @@ def teardown(
         typer.echo("❌ No forge.yml found.")
         raise typer.Exit(1)
 
+    if wipe_all and not execute:
+        typer.echo("❌ --wipe-all requires --execute. This is a destructive operation.")
+        typer.echo("   Usage: forge teardown --execute --wipe-all")
+        raise typer.Exit(1)
+
     config = yaml.safe_load(CONFIG_FILE.read_text())
     if profile:
         prof = resolve_profile(config, profile_name=profile)
         config["environment"] = prof.get("env", config.get("environment", "dev"))
 
     graph = build_graph(config)
-    plan = build_teardown_plan(config, graph)
+    plan = build_teardown_plan(config, graph, wipe_all=wipe_all)
 
     # Always write the plan YAML for audit
     plan_path = Path(output or f"resources/teardown/{plan.name}.yml")
@@ -429,8 +438,23 @@ def teardown(
     typer.echo("")
 
     if not execute:
-        typer.echo("ℹ️  This was a dry run. To execute: forge teardown --execute")
+        hint = "forge teardown --execute"
+        if wipe_all:
+            hint += " --wipe-all"
+        typer.echo(f"ℹ️  This was a dry run. To execute: {hint}")
         return
+
+    # Confirm destructive --wipe-all before proceeding
+    if wipe_all:
+        dropped = [a.name for a in plan.removes if a.asset_type == "table"]
+        typer.echo(f"🚨 WARNING: This will permanently DROP {len(dropped)} table(s):")
+        for t in dropped:
+            typer.echo(f"   • {t}")
+        typer.echo("")
+        confirm = typer.prompt("Type the project id to confirm", default="")
+        if confirm != config.get("id", config.get("name", "")):
+            typer.echo("❌ Aborted. Project id did not match.")
+            raise typer.Exit(1)
 
     # Execute with confirmation
     typer.echo("⚠️  Executing teardown...")
