@@ -299,6 +299,92 @@ class ForgeTask:
             self._sql_conn.close()
             self._sql_conn = None
 
+    # ── Volume helpers ────────────────────────────────
+
+    def list_volume(self, volume_name: str, catalog: str | None = None, schema: str | None = None) -> list[dict]:
+        """List files in a Unity Catalog Volume.
+
+        On Databricks: executes ``LIST '/Volumes/{catalog}/{schema}/{volume}'``.
+        Locally: falls back to ``os.listdir()`` for the path.
+
+        Returns a list of dicts with keys: path, name, size.
+
+            files = task.list_volume("landing")
+            for f in files:
+                print(f["name"], f["size"])
+        """
+        cat = catalog or self.catalog("bronze")
+        sch = schema or self.schema("bronze")
+        volume_path = f"/Volumes/{cat}/{sch}/{volume_name}"
+
+        if self.platform == "databricks":
+            try:
+                spark = self.spark_session()
+                rows = spark.sql(f"LIST '{volume_path}'").collect()
+                return [
+                    {"path": r.path, "name": r.name, "size": r.size}
+                    for r in rows
+                ]
+            except Exception:
+                pass
+
+        # Local fallback
+        local_path = Path(volume_path)
+        if local_path.is_dir():
+            return [
+                {"path": str(f), "name": f.name, "size": f.stat().st_size}
+                for f in local_path.iterdir()
+                if f.is_file()
+            ]
+        return []
+
+    def read_volume_file(self, volume_name: str, file_name: str, file_format: str = "csv", **read_options: Any) -> Any:
+        """Read a single file from a Volume as a Spark DataFrame.
+
+            df = task.read_volume_file("landing", "customers_2024.csv", "csv", header=True)
+        """
+        cat = self.catalog("bronze")
+        sch = self.schema("bronze")
+        file_path = f"/Volumes/{cat}/{sch}/{volume_name}/{file_name}"
+        spark = self.spark_session()
+        return spark.read.format(file_format).options(**read_options).load(file_path)
+
+    def write_table_with_lineage(
+        self,
+        model_name: str,
+        df: Any,
+        source_path: str = "",
+        source_type: str = "volume",
+        mode: str = "append",
+        model_def: dict | None = None,
+    ) -> None:
+        """Write a DataFrame to a table with a _lineage STRUCT column.
+
+        Adds provenance metadata so forge explain can trace data origin
+        back to the source file / API / event stream.
+
+            task.write_table_with_lineage(
+                "raw_customers", df,
+                source_path="/Volumes/.../customers_2024.csv",
+                source_type="volume",
+            )
+        """
+        from datetime import datetime, timezone
+        from pyspark.sql import functions as F
+
+        now = datetime.now(timezone.utc).isoformat()
+        lineage_col = F.struct(
+            F.lit("3").alias("schema_version"),
+            F.lit(model_name).alias("model"),
+            F.lit(source_path).alias("source_path"),
+            F.lit(source_type).alias("source_type"),
+            F.lit(now).alias("ingested_at"),
+        ).alias("_lineage")
+
+        df_with_lineage = df.withColumn("_lineage", lineage_col)
+        fqn = self.table(model_name, model_def)
+        df_with_lineage.write.mode(mode).saveAsTable(fqn)
+
     def __enter__(self):
         return self
 

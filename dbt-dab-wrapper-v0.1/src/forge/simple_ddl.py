@@ -101,7 +101,7 @@ def load_raw_ddl(ddl_path: Path, forge_config: dict | None = None) -> dict:
         return yaml.safe_load(ddl_path.read_text()) or {}
 
     if ddl_path.is_dir():
-        merged: dict[str, Any] = {"models": {}, "udfs": {}, "seeds": {}}
+        merged: dict[str, Any] = {"models": {}, "udfs": {}, "seeds": {}, "volumes": {}}
 
         # Collect allowed layer names from forge.yml
         allowed_layers: set[str] | None = None
@@ -135,6 +135,7 @@ def load_raw_ddl(ddl_path: Path, forge_config: dict | None = None) -> dict:
                 _merge_section(merged, "models", raw, yml_file, inject_layer=layer)
                 _merge_section(merged, "udfs", raw, yml_file)
                 _merge_section(merged, "seeds", raw, yml_file)
+                _merge_section(merged, "volumes", raw, yml_file)
         else:
             # Layout 2: flat directory — root-level *.yml only
             for yml_file in root_ymls:
@@ -142,6 +143,7 @@ def load_raw_ddl(ddl_path: Path, forge_config: dict | None = None) -> dict:
                 _merge_section(merged, "models", raw, yml_file)
                 _merge_section(merged, "udfs", raw, yml_file)
                 _merge_section(merged, "seeds", raw, yml_file)
+                _merge_section(merged, "volumes", raw, yml_file)
 
         return merged
 
@@ -183,6 +185,11 @@ def load_udfs(ddl_path: Path, forge_config: dict | None = None) -> dict[str, dic
 def load_seeds(ddl_path: Path, forge_config: dict | None = None) -> dict[str, dict]:
     """Load seed definitions from a file or directory."""
     return load_raw_ddl(ddl_path, forge_config=forge_config).get("seeds", {})
+
+
+def load_volumes(ddl_path: Path, forge_config: dict | None = None) -> dict[str, dict]:
+    """Load volume definitions from a file or directory."""
+    return load_raw_ddl(ddl_path, forge_config=forge_config).get("volumes", {})
 
 
 # =============================================
@@ -266,6 +273,69 @@ def _resolve_base_schema(forge_config: dict, layer: str) -> str:
     return result.strip("_")
 
 
+def _compile_managed_table(
+    model_name: str,
+    model_def: dict,
+    forge_config: dict | None = None,
+) -> str:
+    """Compile a managed_by: python model to CREATE TABLE IF NOT EXISTS.
+
+    These tables are populated by an external process (Python task, API, etc.)
+    rather than a dbt SELECT.  Forge still generates schema.yml tests
+    and a graph node.
+    """
+    columns = model_def.get("columns", {})
+
+    # Schema/catalog routing
+    layer = model_def.get("layer")
+    model_schema = model_def.get("schema")
+    model_catalog = model_def.get("catalog")
+
+    config_parts = ["materialized='table'"]
+    if model_schema:
+        config_parts.append(f"schema='{model_schema}'")
+    elif layer:
+        config_parts.append(f'schema=var("schema_{layer}")')
+    if model_catalog:
+        config_parts.append(f"database='{model_catalog}'")
+    elif layer:
+        config_parts.append(f'database=var("catalog_{layer}")')
+
+    lines: list[str] = []
+    lines.append("{{{{ config({}) }}}}".format(", ".join(config_parts)))
+    lines.append("")
+    lines.append(f"-- managed_by: {model_def.get('managed_by', 'python')}")
+    lines.append("-- This table is populated by an external process.")
+    lines.append("-- Forge generates CREATE TABLE to keep it in the graph with tests.")
+    lines.append("")
+
+    # Build column definitions
+    col_defs: list[str] = []
+    for col_name, col_def in columns.items():
+        if isinstance(col_def, str):
+            col_def = {"type": col_def}
+        elif col_def is None:
+            col_def = {}
+        col_type = col_def.get("type", "STRING").upper()
+        not_null = " NOT NULL" if col_def.get("required") else ""
+        col_defs.append(f"    {col_name} {col_type}{not_null}")
+
+    # Emit a SELECT that creates the schema but returns zero rows
+    lines.append("SELECT")
+    cast_cols = []
+    for col_name, col_def in columns.items():
+        if isinstance(col_def, str):
+            col_def = {"type": col_def}
+        elif col_def is None:
+            col_def = {}
+        col_type = col_def.get("type", "STRING")
+        cast_cols.append(f"    CAST(NULL AS {col_type}) AS {col_name}")
+    lines.append(",\n".join(cast_cols))
+    lines.append("WHERE 1 = 0")
+
+    return "\n".join(lines) + "\n"
+
+
 def compile_model(model_name: str, model_def: dict, forge_config: dict | None = None, seed_names: set[str] | None = None, udf_languages: dict[str, str] | None = None, lineage_mode: str = "full", origin_tracking: bool = True) -> str:
     """Compile a single model definition into a dbt SQL file.
 
@@ -273,6 +343,11 @@ def compile_model(model_name: str, model_def: dict, forge_config: dict | None = 
     lineage_mode: 'full' (capture runtime values) or 'lightweight' (names only).
     origin_tracking: whether to include origin metadata in lineage struct.
     """
+    # ── managed_by: python → CREATE TABLE (no SELECT) ─────
+    managed_by = model_def.get("managed_by")
+    if managed_by:
+        return _compile_managed_table(model_name, model_def, forge_config)
+
     lines: list[str] = []
 
     # Config block
@@ -634,12 +709,18 @@ def compile_sources_yml(ddl_path: Path, source_name: str = "seed", forge_config:
     via ``{{ source('seed', 'raw_customers') }}``.  The source
     schema defaults to ``{{ target.schema }}`` so it matches wherever
     ``dbt seed`` loads the CSV data.
+
+    Seeds with ``catalog:`` or ``schema:`` overrides are placed in a
+    separate source group so dbt routes them to the correct location.
     """
     seeds = load_seeds(ddl_path, forge_config=forge_config)
     if not seeds:
         return None
 
-    tables = []
+    # Group seeds: default vs overridden
+    default_tables = []
+    override_groups: dict[tuple[str, str], list[dict]] = {}
+
     for seed_name, seed_def in seeds.items():
         seed_def = seed_def or {}
         table: dict[str, Any] = {"name": seed_name}
@@ -660,18 +741,47 @@ def compile_sources_yml(ddl_path: Path, source_name: str = "seed", forge_config:
                     col_entry["description"] = col_desc
                 col_list.append(col_entry)
             table["columns"] = col_list
-        tables.append(table)
+
+        seed_catalog = seed_def.get("catalog")
+        seed_schema = seed_def.get("schema")
+        if seed_catalog or seed_schema:
+            key = (seed_catalog or "", seed_schema or "")
+            override_groups.setdefault(key, []).append(table)
+        else:
+            default_tables.append(table)
+
+    sources_list: list[dict] = []
+
+    if default_tables:
+        sources_list.append({
+            "name": source_name,
+            "description": "Seed data loaded by dbt seed",
+            "schema": "{{ target.schema }}",
+            "tables": default_tables,
+        })
+
+    # Each override group gets its own source entry
+    for (cat, sch), tables in override_groups.items():
+        group_name = f"{source_name}_{cat or 'default'}_{sch or 'default'}".replace("-", "_")
+        entry: dict[str, Any] = {
+            "name": group_name,
+            "description": f"Seed data in {cat or 'default'}.{sch or 'default'}",
+            "tables": tables,
+        }
+        if cat:
+            entry["database"] = cat
+        if sch:
+            entry["schema"] = sch
+        else:
+            entry["schema"] = "{{ target.schema }}"
+        sources_list.append(entry)
+
+    if not sources_list:
+        return None
 
     source_block = {
         "version": 2,
-        "sources": [
-            {
-                "name": source_name,
-                "description": "Seed data loaded by dbt seed",
-                "schema": "{{ target.schema }}",
-                "tables": tables,
-            }
-        ],
+        "sources": sources_list,
     }
     return yaml.dump(source_block, default_flow_style=False, sort_keys=False)
 
@@ -705,6 +815,118 @@ def _ensure_generate_schema_name_macro(forge_config: dict | None = None) -> None
             return  # user has a custom override — don't touch it
 
     macro_path.write_text(_GENERATE_SCHEMA_NAME_SQL)
+
+
+# =============================================
+# VOLUME COMPILER
+# =============================================
+
+def compile_volume_sql(
+    volume_name: str,
+    volume_def: dict,
+    catalog: str,
+    schema: str,
+) -> str:
+    """Compile a volume definition to a CREATE VOLUME SQL statement.
+
+    Example output:
+      CREATE EXTERNAL VOLUME IF NOT EXISTS `catalog`.`schema`.`landing`
+        LOCATION 's3://bucket/landing/';
+    """
+    vol_type = volume_def.get("type", "managed").upper()
+    location = volume_def.get("location", "")
+
+    lines = [f"-- Volume: {volume_name}"]
+    lines.append(f"-- Generated by: forge compile")
+
+    if vol_type == "EXTERNAL":
+        lines.append(
+            f"CREATE EXTERNAL VOLUME IF NOT EXISTS "
+            f"`{catalog}`.`{schema}`.`{volume_name}`"
+        )
+        if location:
+            lines.append(f"  LOCATION '{location}';")
+        else:
+            lines.append(";")
+    else:
+        lines.append(
+            f"CREATE VOLUME IF NOT EXISTS "
+            f"`{catalog}`.`{schema}`.`{volume_name}`;"
+        )
+
+    desc = volume_def.get("description", "")
+    if desc:
+        lines.append(
+            f"COMMENT ON VOLUME `{catalog}`.`{schema}`.`{volume_name}` "
+            f"IS '{desc}';"
+        )
+
+    return "\n".join(lines) + "\n"
+
+
+def compile_volumes(
+    ddl_path: Path,
+    output_dir: Path,
+    forge_config: dict | None = None,
+) -> dict[str, Path]:
+    """Compile all volume definitions to SQL files.
+
+    Supports domain-aware volumes: when ``domain: true`` (or inherited
+    from domain_layers), a separate CREATE VOLUME is emitted per domain.
+
+    Output goes to ``{output_dir}/_volumes/``.
+    """
+    volumes = load_volumes(ddl_path, forge_config=forge_config)
+    if not volumes:
+        return {}
+
+    out_dir = output_dir / "_volumes"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    domains = (forge_config or {}).get("domains", {})
+    domain_layers = set((forge_config or {}).get("domain_layers", []))
+
+    # Resolve default catalog/schema from forge_config
+    profile_name = (forge_config or {}).get("active_profile", "dev")
+    profiles = (forge_config or {}).get("profiles", {})
+    prof = profiles.get(profile_name, {})
+    default_catalog = prof.get("catalog", (forge_config or {}).get("catalog", "main"))
+    default_schema = prof.get("schema", (forge_config or {}).get("schema", "default"))
+
+    results: dict[str, Path] = {}
+
+    for vol_name, vol_def in volumes.items():
+        vol_catalog = vol_def.get("catalog", default_catalog)
+        vol_layer = vol_def.get("layer", "bronze")
+        vol_domain_enabled = vol_def.get("domain", True) is not False
+        is_bifurcated = domains and vol_layer in domain_layers and vol_domain_enabled
+
+        if is_bifurcated:
+            base_schema = _resolve_base_schema(forge_config, vol_layer) if forge_config else default_schema
+            for domain_name, domain_cfg in domains.items():
+                suffix = domain_cfg.get("schema_suffix", f"_{domain_name}")
+                instance_name = f"{vol_name}_{domain_name}"
+                d_schema = f"{base_schema}{suffix}"
+
+                # Support per-domain location overrides
+                d_def = {**vol_def}
+                domain_locs = vol_def.get("domain_locations", {})
+                if domain_name in domain_locs:
+                    d_def["location"] = domain_locs[domain_name]
+                elif vol_def.get("location"):
+                    d_def["location"] = vol_def["location"].rstrip("/") + f"/{domain_name}/"
+
+                sql = compile_volume_sql(instance_name, d_def, vol_catalog, d_schema)
+                out_path = out_dir / f"{instance_name}.sql"
+                out_path.write_text(sql)
+                results[instance_name] = out_path
+        else:
+            sql = compile_volume_sql(vol_name, vol_def, vol_catalog, default_schema)
+            out_path = out_dir / f"{vol_name}.sql"
+            out_path.write_text(sql)
+            results[vol_name] = out_path
+
+    return results
 
 
 # =============================================
@@ -854,6 +1076,11 @@ def compile_all(
         sources_path = sources_dir / "_sources.yml"
         sources_path.write_text(sources_yml)
         results["_sources"] = sources_path
+
+    # Generate Volume DDL → _volumes/ (CREATE VOLUME SQL)
+    volume_results = compile_volumes(ddl_path, output_dir, forge_config=forge_config)
+    for vol_name, vol_path in volume_results.items():
+        results[f"_volume_{vol_name}"] = vol_path
 
     # Generate generate_schema_name macro so dbt uses the schema as-is
     # (dbt's default concatenates default_schema + custom_schema)

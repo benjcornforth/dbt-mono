@@ -638,6 +638,7 @@ def build_workflow(
             prev_task_name = task_name
 
     # ── Python tasks ──────────────────────────────────
+    domain_name = forge_config.get("_domain")  # set by build_domain_workflows
     for stage in STAGES:
         for pt in python_by_stage[stage]:
             pt_name = f"{stage}_py_{pt['name']}"
@@ -651,11 +652,17 @@ def build_workflow(
                 if stage_dbt:
                     pt_deps.append(stage_dbt[-1])
 
+            # Inject domain parameter for per-domain workflows
+            pt_config: dict[str, Any] | None = None
+            if domain_name:
+                pt_config = {"parameters": [f"--domain={domain_name}"]}
+
             tasks.append(WorkflowTask(
                 name=pt_name,
                 stage=stage,
                 task_type="python",
                 python_file=pt["file"],
+                additional_config=pt_config,
                 depends_on=pt_deps,
                 compute_type=compute_type,
             ))
@@ -756,6 +763,7 @@ def build_domain_workflows(
         # Build the workflow with a domain-suffixed name
         domain_config = {**forge_config}
         domain_config["_workflow_suffix"] = suffix
+        domain_config["_domain"] = domain_name
         wf = build_workflow(domain_config, domain_graph)
         wf.name = f"{wf.name}{suffix}"
         workflows.append(wf)

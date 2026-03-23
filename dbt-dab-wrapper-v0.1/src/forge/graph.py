@@ -62,6 +62,7 @@ FORGE_ASSET_TYPES = {
     "python_udf": "function",
     "sql_udf": "function",
     "dab_workflow": "workflow",
+    "volume": "volume",
 }
 
 
@@ -179,6 +180,12 @@ def build_graph(
 
     # ── Inject custom task nodes ─────────────────────────
     _add_custom_task_nodes(graph, forge_config, catalog, schema, git_commit, now)
+
+    # ── Inject volume nodes from DDL YAML ────────────────
+    _add_volume_nodes(graph, dbt_project_dir or Path("dbt"), forge_config, catalog, schema, git_commit, now)
+
+    # ── Mark python_managed models ───────────────────────
+    _mark_python_managed_nodes(graph, dbt_project_dir or Path("dbt"), forge_config)
 
     # ── Compute content hashes for diffing ───────────────
     for contract_id, contract in graph["contracts"].items():
@@ -843,6 +850,79 @@ def _resolve_custom_task_dep(graph: dict, project: str, dep_name: str) -> str | 
 
 
 # =============================================
+# VOLUME NODES
+# =============================================
+
+def _add_volume_nodes(
+    graph: dict,
+    dbt_dir: Path,
+    forge_config: dict,
+    catalog: str,
+    schema: str,
+    git_commit: str,
+    now: str,
+) -> None:
+    """Inject volume declarations from DDL YAML into the graph."""
+    ddl_path = _resolve_ddl_path(dbt_dir)
+    if not ddl_path:
+        return
+
+    from forge.simple_ddl import load_volumes
+    volumes = load_volumes(ddl_path, forge_config=forge_config)
+    if not volumes:
+        return
+
+    project = graph["metadata"]["project"]
+
+    for vol_name, vol_def in volumes.items():
+        vol_id = f"volume.{project}.{vol_name}"
+        vol_type = vol_def.get("type", "managed")
+        location = vol_def.get("location", "")
+
+        graph["contracts"][vol_id] = _make_contract(
+            dataset_name=vol_name,
+            dataset_domain=schema,
+            dataset_type="volume",
+            description=vol_def.get("description", f"Volume: {vol_name}"),
+            columns=[],
+            quality_rules=[],
+            catalog=catalog,
+            schema=schema,
+            git_commit=git_commit,
+            generated_at=now,
+            materialization=f"{vol_type}_volume",
+            tags=["volume", vol_type],
+            meta={"location": location, "volume_type": vol_type},
+        )
+
+
+def _mark_python_managed_nodes(
+    graph: dict,
+    dbt_dir: Path,
+    forge_config: dict,
+) -> None:
+    """Tag existing model contracts that have managed_by set in DDL."""
+    ddl_path = _resolve_ddl_path(dbt_dir)
+    if not ddl_path:
+        return
+
+    from forge.simple_ddl import load_ddl
+    models = load_ddl(ddl_path, forge_config=forge_config)
+    project = graph["metadata"]["project"]
+
+    for model_name, model_def in models.items():
+        managed_by = model_def.get("managed_by")
+        if not managed_by:
+            continue
+        # Find matching contract and tag it
+        for prefix in [f"model.{project}.{model_name}", f"model.dbt_dab_wrapper.{model_name}"]:
+            if prefix in graph["contracts"]:
+                graph["contracts"][prefix].setdefault("tags", []).append("python_managed")
+                graph["contracts"][prefix].setdefault("_meta", {})["managed_by"] = managed_by
+                break
+
+
+# =============================================
 # ODCS CONTRACT FACTORY
 # =============================================
 
@@ -1492,8 +1572,11 @@ def render_mermaid(
     def _shape(contract: dict, cid: str) -> str:
         name = contract["dataset"]["name"]
         dtype = contract["dataset"]["type"]
+        tags = set(contract.get("tags", []))
         safe_id = cid.replace(".", "_").replace("-", "_")
-        if dtype == "source":
+        if dtype == "volume":
+            return f"    {safe_id}[(\"{name}\")]"      # cylinder / stadium
+        elif dtype == "source":
             return f'    {safe_id}[("{name}")]'       # stadium / rounded
         elif dtype == "function":
             return f"    {safe_id}{{{{{name}}}}}"      # rhombus
@@ -1504,6 +1587,8 @@ def render_mermaid(
         elif dtype == "workflow_task":
             return f'    {safe_id}>"{name}"]'          # asymmetric / flag
         elif dtype == "table":
+            if "python_managed" in tags:
+                return f"    {safe_id}[[\"{name}\"]]"  # subroutine / double-border box
             if "quarantine" in name:
                 return f"    {safe_id}[/\"{name}\"/]"  # parallelogram
             elif "_v_previous" in name:
@@ -1597,6 +1682,28 @@ def render_mermaid(
         lines.append("")
         lines.append("    classDef check fill:#ffecd2,stroke:#e67e22,stroke-width:2px")
         lines.append(f"    class {','.join(check_ids)} check")
+
+    # Volume nodes get blue/teal styling
+    volume_ids = [
+        cid.replace(".", "_").replace("-", "_")
+        for cid, c in contracts.items()
+        if c["dataset"]["type"] == "volume"
+    ]
+    if volume_ids:
+        lines.append("")
+        lines.append("    classDef volume fill:#e0f2f1,stroke:#00897b,stroke-width:2px")
+        lines.append(f"    class {','.join(volume_ids)} volume")
+
+    # Python-managed nodes get a distinct green styling
+    pymanaged_ids = [
+        cid.replace(".", "_").replace("-", "_")
+        for cid, c in contracts.items()
+        if "python_managed" in c.get("tags", [])
+    ]
+    if pymanaged_ids:
+        lines.append("")
+        lines.append("    classDef pymanaged fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,stroke-dasharray: 5 5")
+        lines.append(f"    class {','.join(pymanaged_ids)} pymanaged")
 
     return "\n".join(lines)
 

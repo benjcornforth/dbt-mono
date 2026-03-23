@@ -1,0 +1,1143 @@
+# ============================================================================
+# TODO-PYTHON-VOLUME-INGESTION.yml  (v2 — consolidated)
+# ============================================================================
+# date:          2026-03-23
+# status:        READY FOR PHASE 1
+# priority:      HIGH
+# rule:          Every change must be expressible via DDL YAML + forge.yml.
+#                No hand-written SQL/Python outside the scaffold.
+# goal:          Replace CSV seeds with Volume + Python ingestion
+#                while keeping "a child could change 3 lines" promise.
+# philosophy:    Code = Documentation. Graph = Truth. One command = Deploy.
+# ============================================================================
+#
+# VISION
+# ------
+# Today both sample projects load raw data via `dbt seed` from CSV files.
+# This is fine for demos but breaks down in production:
+#
+#   • Developers maintain dozens of CSV files per domain.
+#   • Seeds are fully reloaded every run — no idempotency.
+#   • No visibility into which files have already been processed.
+#   • No shared configuration for file-matching rules.
+#
+# The new approach:
+#
+#   1. Raw files land in Unity Catalog VOLUMES (one per domain).
+#   2. A Python ingestion task reads new files, applies regex from a
+#      shared config table, and writes to the downstream raw tables.
+#   3. A per-domain file_manifest table tracks ingested files.
+#   4. The regex / file-format config is itself a seed in the META catalog,
+#      shared across all domains.
+#   5. Full column-level provenance traces from Volume file → raw table.
+#
+# What a child changes:
+#   • Edit dbt/ddl/.../volumes/landing.yml  (3 lines)
+#   • Add rows to dbt/seeds/ingestion_config.csv
+#   • Run `forge deploy` → everything happens
+#
+# Core promises kept:
+#   • One-command deploy/teardown/setup
+#   • Full graph + diff + provenance for every column
+#   • External tooling only (src/forge/)
+#   • SQL preferred, Python only for ingest
+#
+# FUTURE-PROOF DESIGN
+# -------------------
+# Volume ingestion is the FIRST ingestion type.  The architecture
+# must support future ingestion types without breaking existing DDL
+# contracts.  See SECTION 9 for the full extensibility roadmap:
+#   • API ingestion (REST/GraphQL)
+#   • Event / message queue ingestion (Kafka, Event Hub)
+#   • JDBC / cross-database ingestion
+#   • Webscraper ingestion
+#   • SFTP / cloud-to-cloud file transfer
+#
+# The key insight: every ingestion type follows the same contract:
+#   1. A config row in ingestion_config (shared)
+#   2. A Python task that reads config + writes raw tables + updates manifest
+#   3. A file_manifest (or event_manifest, api_manifest) per domain
+#
+# We design for this NOW by:
+#   • Making ingestion_config.type a discriminator column
+#   • Making the Python task template dispatch on type
+#   • Making managed_by: python generic (not Volume-specific)
+# ============================================================================
+
+
+# ============================================================================
+# SECTION 1: ARCHITECTURE — WHAT CHANGES
+# ============================================================================
+#
+#   BEFORE (seed-based)
+#   ───────────────────
+#   raw_customers.csv  ──► dbt seed ──► raw_customers (table)
+#   raw_orders.csv     ──► dbt seed ──► raw_orders    (table)
+#
+#   AFTER (volume-based)
+#   ────────────────────
+#   /Volumes/.../landing_eu/   ──► Python task ──► raw_customers_eu (table)
+#                                                  raw_orders_eu    (table)
+#   /Volumes/.../landing_us/   ──► Python task ──► raw_customers_us (table)
+#                                                  raw_orders_us    (table)
+#
+#   meta.ingestion_config (seed)  ──► read by Python task at runtime
+#   bronze_eu.file_manifest       ──► written by Python task per file
+#
+#   The staging models (stg_customers, stg_orders) still use domain_sources
+#   to point at the per-domain raw tables.  Nothing downstream changes.
+
+architecture:
+  new_components:
+    - name: volumes
+      description: >
+        One UC Volume per domain, declared in DDL YAML.  Forge generates
+        CREATE EXTERNAL VOLUME IF NOT EXISTS during deploy.
+      layer: bronze
+      scope: per-domain
+      graph_node: cylinder (new shape in graph.py)
+
+    - name: ingestion_config
+      description: >
+        Seed table in the META catalog.  Contains regex patterns,
+        file formats, target model names, and an ingestion TYPE
+        discriminator.  Shared across all domains (domain: false).
+        Future ingestion types (API, Kafka, SFTP) add rows here —
+        the Python task dispatches on the type column.
+      layer: meta
+      scope: shared
+
+    - name: file_manifest
+      description: >
+        Per-domain table tracking every file ingested: path, checksum,
+        row count, timestamp, status.  Written by the Python task.
+        Declared with managed_by: python — forge generates CREATE TABLE
+        instead of SELECT, keeping it in the graph with full tests.
+      layer: bronze
+      scope: per-domain
+      graph_node: python_managed box
+
+    - name: ingest_from_volume
+      description: >
+        Python task scaffolded via `forge python-task`.  Uses ForgeTask
+        to read config, list Volume files, ingest new ones, update
+        the manifest, and attach column-level lineage via
+        write_table_with_lineage().  One task per domain in the DAG.
+      layer: bronze
+      scope: per-domain
+      graph_node: python task (🐍)
+
+  dag_order:
+    # Within the INGEST stage, explicit depends_on controls ordering.
+    - step: 1
+      task: "dbt seed (ingestion_config)"
+      stage: ingest
+      note: "Seed loads config table in meta catalog first"
+
+    - step: 2
+      task: "ingest_from_volume (python)"
+      stage: ingest
+      depends_on: [ingestion_config]
+      parameters: { domain: "{{ domain }}" }   # injected by workflow.py
+      note: "Reads config, lists Volume files, writes raw tables + manifest + lineage"
+
+    - step: 3
+      task: "dbt run (stg_*, silver models)"
+      stage: stage → clean → enrich
+      note: "Standard dbt pipeline — unchanged"
+
+
+# ============================================================================
+# SECTION 2: FOUR PREREQUISITES — DETAILED DESIGN
+# ============================================================================
+
+prerequisites:
+
+  # ── 1. Python Task ─────────────────────────────────────────────────────────
+  - id: python-ingestion-task
+    title: "Python ingestion task using ForgeTask (with provenance)"
+    status: 🔧 NEEDS CODE
+    effort: M
+    description: >
+      A single Python file (scaffolded via `forge python-task ingest_from_volume`)
+      that uses ForgeTask to:
+        1. Read ingestion_config from the meta catalog.
+        2. List files in the domain's Volume.
+        3. Diff against file_manifest to find new files.
+        4. Read each new file (csv/parquet/json) via Spark.
+        5. Write rows to the target raw table via write_table_with_lineage()
+           — attaching the _lineage STRUCT automatically.
+        6. Append manifest entries (file_path, checksum, row_count, status).
+      The template dispatches on config.type so future ingestion types
+      (API, Kafka, etc.) plug in without changing the task structure.
+
+    ddl_syntax:
+      # In forge.yml — auto-generated by `forge python-task`
+      forge_yml: |
+        python_tasks:
+          - name: ingest_from_volume
+            file: python/ingest_from_volume.py
+            stage: ingest
+            depends_on: [ingestion_config]
+
+    code_sketch: |
+      # python/ingest_from_volume.py  (scaffolded template — developer edits body)
+      # ================================================
+      # THIS FILE IS THE DOCUMENTATION
+      # A child can maintain this because:
+      #   • Edit 3 lines of YAML/CSV
+      #   • Run forge deploy
+      #   • Everything else (volumes, lineage, graph) is automatic
+      # ================================================
+      from forge.python_task import ForgeTask
+      import hashlib, datetime
+
+      def main():
+          task = ForgeTask()
+          spark = task.spark_session()
+          domain = task.config.get("domain", spark.conf.get("forge.domain"))
+
+          # 1. Read shared config (filter by active + type)
+          config_table = task.table("ingestion_config", catalog="meta")
+          configs = [r for r in spark.table(config_table).collect()
+                     if r.active and r.ingest_type == "volume"]
+          # ↑ Future: r.ingest_type == "api" routes to a different handler
+
+          # 2. Read manifest (current domain)
+          manifest_table = task.table("file_manifest")
+          try:
+              existing = set(
+                  r.file_path for r in spark.table(manifest_table)
+                                          .select("file_path").collect()
+              )
+          except Exception:
+              existing = set()
+
+          # 3. For each config entry, list Volume + ingest new files
+          for cfg in configs:
+              files = task.list_volume(cfg.volume_name)
+              import re
+              pattern = re.compile(cfg.file_regex)
+              target = task.table(cfg.target_model)
+
+              for f in files:
+                  if f.path in existing or not pattern.search(f.path):
+                      continue
+                  df = spark.read.format(cfg.file_format) \
+                           .option("header", cfg.has_header) \
+                           .load(f.path)
+
+                  # 4. Write with lineage — attaches _lineage STRUCT
+                  task.write_table_with_lineage(
+                      target, df,
+                      source_path=f.path,
+                      source_type="volume",
+                  )
+
+                  # 5. Update manifest
+                  manifest_row = spark.createDataFrame([{
+                      "file_path": f.path,
+                      "file_name": f.name,
+                      "model_name": cfg.target_model,
+                      "domain": domain,
+                      "file_format": cfg.file_format,
+                      "row_count": df.count(),
+                      "file_size_bytes": f.size,
+                      "checksum": hashlib.md5(f.path.encode()).hexdigest(),
+                      "ingested_at": datetime.datetime.utcnow(),
+                      "status": "SUCCESS",
+                  }])
+                  manifest_row.write.mode("append").saveAsTable(manifest_table)
+
+      if __name__ == "__main__":
+          main()
+
+    new_helpers_added:
+      - ForgeTask.write_table_with_lineage()   # attaches _lineage STRUCT
+      - ForgeTask.list_volume()                # Spark LIST + local fallback
+      - ForgeTask.read_volume_file()           # convenience: list + read
+
+    what_exists_today:
+      - "ForgeTask class with spark_session(), read_table(), write_table(), table()"
+      - "forge python-task <name> scaffolding command in cli.py"
+      - "python_tasks: section in forge.yml → auto-wired into workflow DAG"
+      - "Workflow stage ordering with depends_on (INGEST → STAGE → ...)"
+
+    limitations:
+      - id: no-domain-param
+        severity: MEDIUM
+        description: >
+          python_tasks config has no 'domain' key.  The task doesn't know
+          which domain it's running for unless we extend the config or
+          pass it via Spark conf (spark.conf.set("forge.domain", "eu")).
+        mitigation: >
+          Option A: build_domain_workflows() already creates per-domain
+          workflows.  Add a `parameters: { domain: eu }` key to each
+          python task node when generating the DAB YAML, and read via
+          spark.conf or dbutils.widgets.  ~15 lines in workflow.py.
+          Option B: Scaffold one task file per domain (ingest_eu.py,
+          ingest_us.py) — simple but duplicates code.
+          RECOMMENDATION: Option A (parameterised task).
+
+      - id: no-volume-list-api
+        severity: LOW
+        description: >
+          ForgeTask has no list_volume_files() helper.  Spark SQL
+          `LIST '/Volumes/...'` works on Databricks but not locally.
+        mitigation: >
+          Add a thin wrapper ForgeTask.list_volume(volume_name) that
+          issues `LIST` on Databricks and falls back to os.listdir()
+          on local/Postgres profiles.  ~20 lines in python_task.py.
+
+      - id: no-task-error-recovery
+        severity: LOW
+        description: >
+          No built-in retry / dead-letter-queue for failed file reads.
+        mitigation: >
+          The manifest tracks status (SUCCESS / FAILED).  Retry logic
+          is a try/except in the scaffolded template — no core change.
+
+
+  # ── 2. Volumes ─────────────────────────────────────────────────────────────
+  - id: volume-ddl
+    title: "Volume declaration in DDL YAML"
+    status: 🔧 NEEDS CODE
+    effort: M
+    description: >
+      Declare Volumes in DDL YAML so forge can CREATE them during deploy.
+      Each domain gets its own Volume (landing zone for raw files).
+
+    ddl_syntax:
+      # New top-level key in DDL YAML files (alongside models: / seeds: / udfs:)
+      example: |
+        # dbt/ddl/bronze/volumes/landing.yml
+        volumes:
+          landing:
+            description: "Landing zone for raw inbound files"
+            type: external              # EXTERNAL | MANAGED
+            location: "s3://bucket/landing/"   # required for external
+            domain: true                 # default: inherits from domain_layers
+            # When domain: true, forge creates:
+            #   landing_eu  → /Volumes/{catalog}/{schema_eu}/landing_eu
+            #   landing_us  → /Volumes/{catalog}/{schema_us}/landing_us
+            #   landing_apac → /Volumes/{catalog}/{schema_apac}/landing_apac
+
+    compile_output: |
+      -- Generated by forge compile for domain=eu
+      -- File: dbt/models/.../landing_eu.sql  (or a deploy-time SQL script)
+      CREATE EXTERNAL VOLUME IF NOT EXISTS
+        {{ catalog }}.{{ schema }}_eu.landing_eu
+        LOCATION 's3://bucket/landing/eu/';
+
+    what_exists_today:
+      - "origin.type: volume_file — tracks Volume path in lineage metadata"
+      - "Volumes referenced in ForgeTask via /Volumes/ paths at runtime"
+      - "meta and operations catalogs already in forge.yml catalogs list"
+
+    limitations:
+      - id: no-volumes-ddl-key
+        severity: HIGH
+        description: >
+          simple_ddl.py only parses models:, seeds:, and udfs: top-level
+          keys.  A volumes: key is ignored today.
+        mitigation: >
+          Add a new compile_volumes() function in simple_ddl.py (~60 lines):
+            1. Parse volumes: blocks from DDL YAML.
+            2. For each volume, generate CREATE VOLUME SQL.
+            3. If domain: true, generate per-domain variants.
+            4. Output to dbt/models/_volumes/ or a deploy script.
+          Also add execute_volume_ddl() in cli.py deploy command
+          to run the CREATE statements (~20 lines).
+        files_changed:
+          - src/forge/simple_ddl.py    # parse + compile volumes
+          - src/forge/cli.py           # deploy command runs volume DDL
+
+      - id: volume-not-dbt-model
+        severity: MEDIUM
+        description: >
+          Volumes are not dbt models — they're Unity Catalog objects.
+          dbt has no native Volume support (no materialisation type).
+          The CREATE VOLUME statement must be executed outside dbt run.
+        mitigation: >
+          Execute CREATE VOLUME as a pre-deploy step in cli.py, using
+          ForgeTask.run_sql() or the Databricks SQL connector.  This
+          is the same pattern used for CREATE SCHEMA IF NOT EXISTS
+          during domain deploy.  The volume DDL runs before dbt seed
+          and dbt run.
+
+      - id: volume-location-per-domain
+        severity: LOW
+        description: >
+          External Volumes need a storage LOCATION.  Each domain may
+          point at a different S3/ADLS prefix.
+        mitigation: >
+          Support a domain_locations override in the DDL YAML:
+            domain_locations:
+              eu:   "s3://bucket/landing/eu/"
+              us:   "s3://bucket/landing/us/"
+              apac: "s3://bucket/landing/apac/"
+          Falls back to "{location}/{domain}/" if not specified.
+
+
+  # ── 3. Config Table (ingestion_config) ─────────────────────────────────────
+  - id: config-table
+    title: "Ingestion config seeded into meta catalog"
+    status: ⚠️ PARTIAL
+    effort: S
+    description: >
+      A seed table containing regex patterns, file formats, and target
+      model names.  Lives in the META catalog so it's shared across all
+      domain schemas.  Read by the Python ingestion task at runtime.
+
+    ddl_syntax:
+      # Standard seed DDL with catalog: meta override
+      example: |
+        # dbt/ddl/meta/seeds/ingestion_config.yml
+        seeds:
+          ingestion_config:
+            description: "File-matching rules for Volume ingestion"
+            domain: false               # shared — not domain-duplicated
+            catalog: meta               # override: deploy to meta catalog
+            schema: config              # override: use config schema
+            origin:
+              type: seed
+              path: dbt/seeds/ingestion_config.csv
+              format: csv
+            columns:
+              config_id:      { type: int, required: true, unique: true }
+              ingest_type:    { type: string, description: "Discriminator: volume | api | kafka | jdbc | sftp" }
+              target_model:   { type: string, description: "Raw model name to write into" }
+              volume_name:    { type: string, description: "Volume name to scan (type=volume)" }
+              file_regex:     { type: string, description: "Regex pattern to match filenames" }
+              file_format:    { type: string, description: "csv | parquet | json | delta" }
+              has_header:     { type: boolean }
+              delimiter:      { type: string }
+              # Future columns (nullable, ignored by volume handler):
+              # api_url:      { type: string, description: "REST endpoint (type=api)" }
+              # api_method:   { type: string, description: "GET | POST (type=api)" }
+              # topic:        { type: string, description: "Kafka topic (type=kafka)" }
+              # jdbc_url:     { type: string, description: "Connection string (type=jdbc)" }
+              active:         { type: boolean, description: "Toggle rule on/off" }
+
+      csv_example: |
+        # dbt/seeds/ingestion_config.csv
+        config_id,ingest_type,target_model,volume_name,file_regex,file_format,has_header,delimiter,active
+        1,volume,raw_customers,landing,"^customers_.*\\.csv$",csv,true,",",true
+        2,volume,raw_orders,landing,"^orders_.*\\.csv$",csv,true,",",true
+
+    what_exists_today:
+      - "seeds: DDL key — full compile support"
+      - "meta catalog already declared in forge.yml catalogs list"
+      - "domain: false — suppresses domain duplication"
+
+    limitations:
+      - id: no-catalog-override-on-seeds
+        severity: HIGH
+        description: >
+          DDL models support catalog: and schema: overrides to place a
+          model in a non-default catalog.  Seeds may not honour these
+          keys today — compile_seed_properties() in simple_ddl.py
+          generates schema.yml entries but does not inject catalog.
+        mitigation: >
+          Two options:
+          Option A (RECOMMENDED): Add catalog/schema override support
+          to compile_seed_properties().  When a seed has catalog: meta,
+          emit the dbt schema.yml with `+database: {{ meta_catalog }}`
+          and `+schema: config`.  ~15 lines in simple_ddl.py.
+          Option B: Declare ingestion_config as a model (not a seed)
+          that is materialized as a table with a pre-hook INSERT.
+          Heavier — needs hand-written SQL.
+        files_changed:
+          - src/forge/simple_ddl.py    # compile_seed_properties() catalog override
+
+      - id: seed-runs-before-python
+        severity: LOW
+        description: >
+          The config seed must be loaded before the Python task reads it.
+          Both are in the INGEST stage.
+        mitigation: >
+          Already handled: python_tasks depends_on: [ingestion_config]
+          ensures the seed runs first within the same stage.
+
+
+  # ── 4. File Manifest ──────────────────────────────────────────────────────
+  - id: file-manifest
+    title: "Per-domain file_manifest tracking table"
+    status: 🔧 NEEDS CODE
+    effort: S
+    description: >
+      Each domain maintains a file_manifest table that logs every file
+      processed by the Python ingestion task.  Used for:
+        • Idempotency — skip already-ingested files.
+        • Auditing — who ingested what, when, how many rows.
+        • Re-processing — mark a file as FAILED for retry.
+
+    ddl_syntax:
+      example: |
+        # dbt/ddl/bronze/models/file_manifest.yml
+        models:
+          file_manifest:
+            description: "Tracks files ingested from Volumes"
+            materialized: table
+            domain: true                # one per domain (eu/us/apac)
+            managed_by: python          # NEW KEY — tells forge this table
+                                        # is written by a Python task, not
+                                        # compiled to a SELECT statement.
+            columns:
+              manifest_id:    { type: bigint, expr: "monotonically_increasing_id()" }
+              file_path:      { type: string, required: true }
+              file_name:      { type: string }
+              model_name:     { type: string, required: true }
+              domain:         { type: string }
+              file_format:    { type: string }
+              row_count:      { type: bigint }
+              file_size_bytes: { type: bigint }
+              checksum:       { type: string }
+              ingested_at:    { type: timestamp, required: true }
+              status:         { type: string, description: "SUCCESS | FAILED | SKIPPED" }
+
+    what_exists_today:
+      - "models: DDL key with domain: true → creates file_manifest_eu, etc."
+      - "ForgeTask.write_table() with mode='append'"
+      - "Column definitions generate schema.yml tests (required, unique)"
+
+    limitations:
+      - id: no-managed-by-key
+        severity: MEDIUM
+        description: >
+          DDL models always compile to a SELECT statement.  A model
+          marked managed_by: python has no SELECT — it's a table
+          created and populated by the Python task.  Forge would
+          generate a CREATE TABLE IF NOT EXISTS instead of a
+          SELECT-based model.
+        mitigation: >
+          Option A (RECOMMENDED): Add `managed_by: python` support in
+          compile_model().  When set, output a CREATE TABLE with the
+          column definitions instead of a SELECT.  Schema.yml tests
+          still generate normally.  ~25 lines in simple_ddl.py.
+          Output SQL:
+            CREATE TABLE IF NOT EXISTS {{ catalog }}.{{ schema }}.file_manifest_eu (
+              manifest_id  BIGINT,
+              file_path    STRING NOT NULL,
+              ...
+            );
+          Option B: Skip SQL generation entirely — let the Python task
+          create the table on first write.  But then no schema.yml
+          tests, no lineage, no graph node.  Loses forge guarantees.
+          RECOMMENDATION: Option A — keeps the table in the graph
+          and retains data quality tests.
+        files_changed:
+          - src/forge/simple_ddl.py    # compile_model() managed_by branch
+
+      - id: no-incremental
+        severity: LOW
+        description: >
+          DDL YAML has no incremental materialisation.  The manifest
+          grows over time and should not be fully rebuilt each run.
+        mitigation: >
+          managed_by: python resolves this — dbt never rebuilds the
+          table.  The Python task appends rows.  For cleanup, a
+          scheduled SQL task can OPTIMIZE or VACUUM.
+
+
+# ============================================================================
+# SECTION 3: IMPLEMENTATION PLAN (PHASED)
+# ============================================================================
+
+phases:
+
+  - phase: 1
+    title: "Core DDL + Graph + Provenance Extensions"
+    status: NOT STARTED
+    effort: M (2-3 focused sessions)
+    deliverables:
+      - what: "volumes: DDL key → compile_volumes() in simple_ddl.py"
+        files:
+          - src/forge/simple_ddl.py
+        lines_estimate: 60
+
+      - what: "managed_by: python → CREATE TABLE in compile_model()"
+        files:
+          - src/forge/simple_ddl.py
+        lines_estimate: 25
+
+      - what: "catalog/schema override on seeds (compile_seed_properties)"
+        files:
+          - src/forge/simple_ddl.py
+        lines_estimate: 15
+
+      - what: "Domain parameter injection in workflow python tasks"
+        files:
+          - src/forge/workflow.py
+        lines_estimate: 15
+
+      - what: "ForgeTask.list_volume() + write_table_with_lineage() helpers"
+        files:
+          - src/forge/python_task.py
+        lines_estimate: 40
+
+      - what: "Graph nodes for volume (cylinder) + python_managed (box) in graph.py"
+        files:
+          - src/forge/graph.py
+        lines_estimate: 30
+
+    validation:
+      - "forge compile produces CREATE VOLUME SQL for each domain"
+      - "forge compile produces CREATE TABLE for file_manifest (no SELECT)"
+      - "forge compile places ingestion_config seed in meta catalog schema.yml"
+      - "forge workflow --dab shows domain param on python tasks"
+      - "Unit tests pass for all new DDL keys"
+
+  - phase: 2
+    title: "Ingestion template + example projects"
+    status: NOT STARTED
+    effort: M (2-3 focused sessions)
+    deliverables:
+      - what: "forge python-task ingest_from_volume — template with config/manifest logic"
+        files:
+          - src/forge/python_task.py    # template additions
+          - src/forge/cli.py            # --template ingest flag
+
+      - what: "Update multi_domain_project with volumes + ingestion + config + manifest"
+        files:
+          - docs/examples/multi_domain_project/forge.yml
+          - docs/examples/multi_domain_project/dbt/ddl/bronze/volumes/landing.yml
+          - docs/examples/multi_domain_project/dbt/ddl/meta/seeds/ingestion_config.yml
+          - docs/examples/multi_domain_project/dbt/ddl/bronze/models/file_manifest.yml
+          - docs/examples/multi_domain_project/dbt/seeds/ingestion_config.csv
+          - docs/examples/multi_domain_project/python/ingest_from_volume.py
+          - docs/examples/multi_domain_project/HOW-TO.md
+
+      - what: "Update sales_project with single-domain volume ingestion"
+        files:
+          - docs/examples/sales_project/forge.yml
+          - docs/examples/sales_project/dbt/ddl/bronze/volumes/landing.yml
+          - docs/examples/sales_project/dbt/ddl/meta/seeds/ingestion_config.yml
+          - docs/examples/sales_project/dbt/ddl/bronze/models/file_manifest.yml
+          - docs/examples/sales_project/dbt/seeds/ingestion_config.csv
+          - docs/examples/sales_project/python/ingest_from_volume.py
+          - docs/examples/sales_project/HOW-TO.md
+
+      - what: "Remove CSV seed files and seed DDL YAMLs from both projects"
+        note: >
+          raw_customers*.csv, raw_orders*.csv and their DDL YAMLs are
+          replaced by Volume-based ingestion.  The ingestion_config.csv
+          seed remains (it's the config, not raw data).
+
+    validation:
+      - "forge compile in multi_domain_project produces volume + manifest SQL"
+      - "forge workflow --mermaid shows seed → python-task → staging flow"
+      - "HOW-TO.md updated with new ingestion steps"
+
+  - phase: 3
+    title: "Deploy integration + documentation"
+    status: NOT STARTED
+    effort: S (1 session)
+    deliverables:
+      - what: "cli.py deploy command runs CREATE VOLUME before dbt seed"
+        files:
+          - src/forge/cli.py
+        lines_estimate: 20
+
+      - what: "forge guide regenerated with Volume + ingestion sections"
+        files:
+          - .instructions.md
+          - docs/GUIDE.md
+
+      - what: "README.md updated with ingestion feature row"
+        files:
+          - README.md
+
+    validation:
+      - "forge deploy creates volumes, seeds config, runs python task, then dbt"
+      - "forge guide includes volumes: and managed_by: documentation"
+      - "_smoke_test.py passes"
+
+
+# ============================================================================
+# SECTION 4: LIMITATIONS MATRIX
+# ============================================================================
+#
+# Every limitation must have a verdict:
+#   ✅ SOLVED BY PLAN  — addressed in this plan
+#   ⚠️ DEFERRED        — acknowledged, not blocking, future work
+#   🚫 OUT OF SCOPE    — won't do (wrong layer / external concern)
+
+limitations_matrix:
+
+  - id: no-volumes-ddl-key
+    severity: HIGH
+    verdict: ✅ SOLVED BY PLAN
+    phase: 1
+    summary: "Add volumes: top-level key in DDL YAML → compile_volumes()"
+
+  - id: no-catalog-override-on-seeds
+    severity: HIGH
+    verdict: ✅ SOLVED BY PLAN
+    phase: 1
+    summary: "Extend compile_seed_properties() to honour catalog:/schema: keys"
+
+  - id: no-managed-by-key
+    severity: MEDIUM
+    verdict: ✅ SOLVED BY PLAN
+    phase: 1
+    summary: "managed_by: python → CREATE TABLE instead of SELECT model"
+
+  - id: no-domain-param-on-tasks
+    severity: MEDIUM
+    verdict: ✅ SOLVED BY PLAN
+    phase: 1
+    summary: "Inject domain parameter into python task nodes in workflow DAG"
+
+  - id: no-volume-list-api
+    severity: LOW
+    verdict: ✅ SOLVED BY PLAN
+    phase: 1
+    summary: "Add ForgeTask.list_volume() with Spark LIST + local fallback"
+
+  - id: no-incremental-materialisation
+    severity: LOW
+    verdict: ✅ SOLVED BY PLAN
+    phase: 1
+    summary: "managed_by: python sidesteps this — dbt never rebuilds the table"
+
+  - id: no-volume-schema-inference
+    severity: LOW
+    verdict: ⚠️ DEFERRED
+    summary: >
+      No auto-schema detection from Volume files.  Developer declares
+      columns in DDL YAML manually.  Could add forge infer-schema <path>
+      as a future convenience command.
+
+  - id: no-streaming-ingestion
+    severity: LOW
+    verdict: 🚫 OUT OF SCOPE
+    summary: >
+      This plan covers batch ingestion (scan-and-load).  Streaming
+      (Auto Loader / Structured Streaming) is a different pattern that
+      would need a streaming_task type.  Not needed for the sample
+      projects.
+
+  - id: no-secret-management
+    severity: LOW
+    verdict: 🚫 OUT OF SCOPE
+    summary: >
+      Volume access relies on Unity Catalog permissions, not secrets
+      in forge.  Secrets for external APIs are managed via Databricks
+      secret scopes — outside forge's responsibility.
+
+  - id: volume-local-testing
+    severity: MEDIUM
+    verdict: ⚠️ DEFERRED
+    summary: >
+      On the local/Postgres profile, UC Volumes don't exist.  The
+      list_volume() fallback reads from a local directory, but full
+      parity requires a mock Volume layer.  For now, local testing
+      uses direct file paths and is documented as a known gap.
+
+  - id: no-task-result-passing
+    severity: LOW
+    verdict: 🚫 OUT OF SCOPE
+    summary: >
+      Python task can't pass row counts or status to downstream dbt
+      tasks via DAB.  The manifest table serves as the communication
+      channel — downstream tasks can query it if needed.
+
+  - id: future-ingestion-types
+    severity: LOW
+    verdict: ✅ SOLVED BY PLAN
+    phase: 1
+    summary: >
+      ingestion_config.ingest_type discriminator + dispatcher pattern
+      in the Python task template means API/Kafka/JDBC/SFTP ingestion
+      types are additive (config + handler function) — no core DDL
+      compiler or graph changes needed.
+
+
+# ============================================================================
+# SECTION 5: DDL KEY SUMMARY (NEW + CHANGED)
+# ============================================================================
+
+ddl_keys:
+
+  new_top_level:
+    - key: "volumes:"
+      scope: DDL YAML
+      description: "Declare Unity Catalog Volumes (landing zones)"
+      example: |
+        volumes:
+          landing:
+            type: external
+            location: "s3://bucket/landing/"
+            domain: true
+
+  new_model_keys:
+    - key: "managed_by"
+      values: [python, external]
+      description: >
+        Tells forge this table is not compiled to a SELECT statement.
+        Instead, forge generates CREATE TABLE IF NOT EXISTS with the
+        declared column schema.  The table is populated by the named
+        external process (Python task, API, etc.).
+
+  changed_seed_keys:
+    - key: "catalog"
+      description: "Override target catalog for this seed (e.g., meta)"
+      status: "needs code — compile_seed_properties()"
+
+    - key: "schema"
+      description: "Override target schema for this seed (e.g., config)"
+      status: "needs code — compile_seed_properties()"
+
+  changed_python_task_keys:
+    - key: "domain"
+      scope: forge.yml python_tasks
+      description: >
+        When true, the task is duplicated per domain in the workflow
+        DAG and receives a `domain` parameter via Spark conf.
+      default: "inherits from domain_layers"
+
+
+# ============================================================================
+# SECTION 6: FILE MANIFEST — WHAT THE MULTI-DOMAIN DAG LOOKS LIKE
+# ============================================================================
+#
+#  ┌─────────────────────┐
+#  │  ingestion_config   │  ← dbt seed (meta catalog, shared)
+#  │  (INGEST stage)     │
+#  └────────┬────────────┘
+#           │ depends_on
+#  ┌────────▼────────────┐
+#  │ ingest_from_volume  │  ← Python task (per-domain)
+#  │ domain=eu/us/apac   │     reads config → lists Volume → writes raw tables
+#  │ (INGEST stage)      │     + appends to file_manifest
+#  └────────┬────────────┘
+#           │
+#  ┌────────▼────────────┐
+#  │  stg_customers_eu   │  ← domain_sources: { eu: raw_customers_eu }
+#  │  stg_orders_eu      │
+#  │  (STAGE)            │
+#  └────────┬────────────┘
+#           │
+#  ┌────────▼────────────┐
+#  │  customer_clean_eu  │  ← quarantine, lineage — unchanged
+#  │  (CLEAN)            │
+#  └────────┬────────────┘
+#           │
+#  ┌────────▼────────────┐
+#  │  customer_orders_eu │  ← join, broadcast — unchanged
+#  │  customer_summary_eu│
+#  │  (ENRICH)           │
+#  └────────────────────-┘
+#
+#  × 3 domains (eu, us, apac) — each as separate workflow or shared
+
+
+# ============================================================================
+# SECTION 7: SUCCESS CRITERIA
+# ============================================================================
+
+success_criteria:
+  - id: SC-1
+    check: "volumes: DDL key compiles to CREATE VOLUME SQL"
+    status: NOT STARTED
+
+  - id: SC-2
+    check: "managed_by: python compiles to CREATE TABLE (no SELECT)"
+    status: NOT STARTED
+
+  - id: SC-3
+    check: "ingestion_config seed deploys to meta catalog"
+    status: NOT STARTED
+
+  - id: SC-4
+    check: "file_manifest_eu/us/apac tables created per domain"
+    status: NOT STARTED
+
+  - id: SC-5
+    check: "Python task reads config, ingests files, updates manifest"
+    status: NOT STARTED
+
+  - id: SC-6
+    check: "forge workflow DAG shows seed → python → staging ordering"
+    status: NOT STARTED
+
+  - id: SC-7
+    check: "Both sample projects work end-to-end with Volume ingestion"
+    status: NOT STARTED
+
+  - id: SC-8
+    check: "No CSV seed files for raw data in either sample project"
+    status: NOT STARTED
+
+  - id: SC-9
+    check: "HOW-TO.md updated for both projects"
+    status: NOT STARTED
+
+  - id: SC-10
+    check: "_smoke_test.py passes with new DDL keys"
+    status: NOT STARTED
+
+  - id: SC-11
+    check: "forge explain works on EVERY column in raw_* tables (full provenance from volume)"
+    status: NOT STARTED
+
+  - id: SC-12
+    check: "forge diff --mermaid shows new volumes + python_managed tables in green"
+    status: NOT STARTED
+
+  - id: SC-13
+    check: "forge deploy is still exactly ONE command"
+    status: NOT STARTED
+
+
+# ============================================================================
+# SECTION 8: NEXT ACTION
+# ============================================================================
+
+next_action: >
+  Start Phase 1:
+    1. Add volumes: parsing + compile_volumes()
+    2. Add managed_by: python branch in compile_model()
+    3. Add catalog/schema override on seeds
+    4. Add domain parameter injection in workflow.py
+    5. Add write_table_with_lineage() + list_volume() in ForgeTask
+    6. Add graph nodes for volume + python_managed in graph.py
+    7. Write unit tests for each new DDL key
+    8. Run `forge guide` → new section appears automatically
+
+
+# ============================================================================
+# SECTION 9: FUTURE INGESTION TYPES — EXTENSIBILITY ROADMAP
+# ============================================================================
+#
+# The Volume ingestion pattern establishes a contract that future
+# ingestion types must follow.  This section defines each future type,
+# what it adds, and what it reuses from the existing infrastructure.
+#
+# ── THE UNIVERSAL CONTRACT ──────────────────────────────────────────────
+#
+#   Every ingestion type shares:
+#     1. A row in ingestion_config with ingest_type = "<type>"
+#     2. A Python task (or handler within the dispatching task)
+#     3. A manifest table tracking what was ingested
+#     4. write_table_with_lineage() for provenance
+#     5. Declared in DDL YAML → appears in graph → tested by schema.yml
+#
+#   What differs per type:
+#     • Source location (Volume path vs API URL vs Kafka topic)
+#     • Read mechanism (Spark file read vs HTTP client vs consumer)
+#     • Config columns (file_regex vs api_url vs topic_name)
+#     • Manifest columns (file_path vs request_id vs offset)
+#
+# ── TYPE REGISTRY ───────────────────────────────────────────────────────
+
+future_ingestion_types:
+
+  - type: api
+    title: "REST / GraphQL API ingestion"
+    priority: HIGH
+    description: >
+      Many raw datasets arrive via paginated REST APIs (e.g., Salesforce,
+      Stripe, internal microservices).  The Python task makes HTTP calls,
+      paginates, and writes JSON/DataFrame to raw tables.
+    config_columns_added:
+      - api_url:        { type: string, description: "Base endpoint URL" }
+      - api_method:     { type: string, description: "GET | POST" }
+      - api_headers:    { type: string, description: "JSON-encoded headers (secrets via scope reference)" }
+      - api_pagination: { type: string, description: "offset | cursor | link" }
+      - api_page_size:  { type: int }
+    manifest_columns_added:
+      - request_id:     { type: string, description: "Unique request correlation ID" }
+      - http_status:    { type: int }
+      - response_bytes: { type: bigint }
+    handler_sketch: |
+      # Inside the dispatch loop:
+      if cfg.ingest_type == "api":
+          import requests
+          session = requests.Session()
+          session.headers.update(json.loads(cfg.api_headers))
+          data = paginate(session, cfg.api_url, cfg.api_pagination)
+          df = spark.createDataFrame(data)
+          task.write_table_with_lineage(target, df, source_type="api")
+    what_reuses:
+      - ingestion_config table (add columns, existing rows untouched)
+      - file_manifest (rename to ingestion_manifest or add source_type column)
+      - write_table_with_lineage() (source_type="api")
+      - managed_by: python (raw table DDL)
+      - Domain parameter injection (per-domain API endpoints)
+    limitations:
+      - id: api-secrets
+        severity: MEDIUM
+        description: "API keys/tokens must not be in ingestion_config CSV"
+        mitigation: >
+          Reference Databricks secret scopes in the headers column:
+          "Authorization: Bearer {{secret/scope/key}}".  The Python
+          task resolves via dbutils.secrets.get().  forge doesn't
+          manage secrets — it references them.
+      - id: api-rate-limiting
+        severity: LOW
+        mitigation: "Built into the paginate() helper with configurable delay"
+
+  - type: kafka
+    title: "Event / message queue ingestion (Kafka, Event Hub)"
+    priority: MEDIUM
+    description: >
+      Consume events from Kafka topics or Azure Event Hubs.  The task
+      reads a batch of messages (not streaming — batch-triggered),
+      writes to raw tables, and commits offsets to the manifest.
+    config_columns_added:
+      - topic:              { type: string }
+      - bootstrap_servers:  { type: string }
+      - consumer_group:     { type: string }
+      - batch_size:         { type: int, description: "Max messages per run" }
+    manifest_columns_added:
+      - topic:      { type: string }
+      - partition:  { type: int }
+      - offset:     { type: bigint }
+      - msg_count:  { type: int }
+    handler_sketch: |
+      if cfg.ingest_type == "kafka":
+          df = spark.read.format("kafka") \
+               .option("subscribe", cfg.topic) \
+               .option("kafka.bootstrap.servers", cfg.bootstrap_servers) \
+               .option("startingOffsets", last_offset_from_manifest) \
+               .load()
+          task.write_table_with_lineage(target, df, source_type="kafka")
+    what_reuses:
+      - Full infrastructure (config table, manifest, lineage, graph)
+    limitations:
+      - id: kafka-exactly-once
+        severity: MEDIUM
+        description: "Batch consume + manifest offset tracking gives at-least-once"
+        mitigation: "Downstream dedup via primary key or MERGE — standard pattern"
+      - id: kafka-vs-autoloader
+        severity: LOW
+        description: >
+          For true streaming, Databricks Auto Loader is better.
+          This type covers scheduled batch consumption only.
+
+  - type: jdbc
+    title: "JDBC / cross-database ingestion"
+    priority: MEDIUM
+    description: >
+      Pull data from external databases (Postgres, MySQL, Oracle, SQL
+      Server) via JDBC.  The task reads a table or query, optionally
+      with watermark-based incremental logic, and writes to raw.
+    config_columns_added:
+      - jdbc_url:       { type: string }
+      - jdbc_table:     { type: string, description: "Source table or (subquery)" }
+      - jdbc_driver:    { type: string }
+      - watermark_col:  { type: string, description: "Column for incremental reads" }
+    manifest_columns_added:
+      - jdbc_table:     { type: string }
+      - watermark_value: { type: string, description: "Last seen watermark value" }
+      - row_count:      { type: bigint }
+    handler_sketch: |
+      if cfg.ingest_type == "jdbc":
+          reader = spark.read.format("jdbc") \
+                   .option("url", cfg.jdbc_url) \
+                   .option("dbtable", cfg.jdbc_table) \
+                   .option("driver", cfg.jdbc_driver)
+          if cfg.watermark_col:
+              last_wm = get_last_watermark(manifest_table, cfg)
+              reader = reader.option("predicates",
+                  [f"{cfg.watermark_col} > '{last_wm}'"])
+          df = reader.load()
+          task.write_table_with_lineage(target, df, source_type="jdbc")
+    what_reuses:
+      - Full infrastructure
+    limitations:
+      - id: jdbc-credentials
+        severity: HIGH
+        description: "JDBC URLs often contain credentials"
+        mitigation: >
+          Reference Databricks secrets: jdbc_url stores the secret
+          scope/key path, resolved at runtime.  Never in CSV.
+
+  - type: sftp
+    title: "SFTP / cloud-to-cloud file transfer"
+    priority: LOW
+    description: >
+      Download files from SFTP servers or cloud storage buckets
+      (cross-account S3, GCS, ADLS) into a Volume, then ingest.
+      This is a two-phase process: transfer → volume ingest.
+    config_columns_added:
+      - sftp_host:    { type: string }
+      - sftp_path:    { type: string }
+      - sftp_user:    { type: string }
+    handler_sketch: |
+      if cfg.ingest_type == "sftp":
+          # Phase 1: Download to Volume
+          import paramiko
+          ssh = paramiko.SSHClient()
+          # ... download files to volume_path ...
+          # Phase 2: Delegate to volume handler
+          volume_ingest(task, cfg, spark, existing, manifest_table)
+    what_reuses:
+      - Volume infrastructure (files land in Volume first)
+      - Volume handler (reused for Phase 2)
+    limitations:
+      - id: sftp-credentials
+        severity: HIGH
+        mitigation: "Databricks secret scopes for SSH keys / passwords"
+
+  - type: webscraper
+    title: "Web scraper ingestion"
+    priority: LOW
+    description: >
+      Scrape structured data from web pages.  Already tracked as
+      origin.type: webscraper in lineage metadata.  The task
+      fetches HTML, parses with BeautifulSoup/Scrapy, writes to raw.
+    config_columns_added:
+      - scrape_url:       { type: string }
+      - scrape_selector:  { type: string, description: "CSS selector or XPath" }
+      - scrape_schedule:  { type: string, description: "Cron for freshness" }
+    what_reuses:
+      - Full infrastructure
+    limitations:
+      - id: scrape-reliability
+        severity: MEDIUM
+        description: "HTML structure changes break scrapers"
+        mitigation: "Selector stored in config → update CSV, redeploy"
+
+# ── EXTENSIBILITY PATTERN ──────────────────────────────────────────────
+#
+# To add a new ingestion type:
+#
+#   1. Add type-specific columns to ingestion_config DDL YAML
+#      (nullable — existing rows unaffected)
+#
+#   2. Add rows to ingestion_config.csv with ingest_type = "<type>"
+#
+#   3. Add a handler function in the Python task template:
+#        def handle_<type>(task, cfg, spark, existing, manifest_table):
+#            ...
+#
+#   4. Register the handler in the dispatch dict:
+#        HANDLERS = {
+#            "volume": handle_volume,
+#            "api":    handle_api,
+#            ...
+#        }
+#
+#   5. Optional: Add type-specific manifest columns (nullable)
+#
+#   NO CORE CODE CHANGES NEEDED for steps 1-5.
+#   The only core change is if the type needs a new DDL key
+#   (e.g., volumes: needed compile_volumes()).  API/Kafka/JDBC
+#   don't need new DDL keys — they're config-driven.
+#
+# ── IMPACT ON DDL YAML ─────────────────────────────────────────────────
+#
+#   DDL YAML changes needed per type:
+#     volume:     volumes: (new top-level key)        ← Phase 1
+#     api:        none (config-only)                  ← future
+#     kafka:      none (config-only)                  ← future
+#     jdbc:       none (config-only)                  ← future
+#     sftp:       reuses volumes: key                 ← future
+#     webscraper: none (config-only)                  ← future
+#
+#   This is the key design win: after Phase 1, adding new ingestion
+#   types is pure configuration + a Python handler function.
+#   No new DDL keys, no compiler changes, no graph changes.
