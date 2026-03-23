@@ -1,0 +1,114 @@
+# TODO-DOMAIN-BASED-MODEL-INSTANCES.yml
+# ────────────────────────────────────────────────────────────────
+#   dbt-dab-wrapper — Developer TODO: Domain-Based Multiple Instances
+#   Date: 23 March 2026
+#   Goal: Support multiple instances of the **same model** in different schemas
+#         (one schema per domain/region/tenant) and ingest slightly different files
+#         driven by a reference table/seed — all while staying child-simple.
+#   Rule: Users edit ONLY wrapper.yml + dbt/ddl/. Everything else generated.
+#         Graph shows every instance as its own node. One command = deploy/teardown.
+#         Never deletes data. Code = the documentation.
+# ────────────────────────────────────────────────────────────────
+
+vision:
+  "Same model logic (e.g. customer_summary) runs in many domains (EU, US, APAC)
+   each in its own schema (e.g. silver_eu, silver_us) and each ingests its own
+   slightly different source files based on a simple reference seed/table.
+   No code duplication. Graph shows every instance clearly. One command deploys all."
+
+is_this_possible:
+  answer: "Yes — 100% possible and very clean with the existing folder + schema pattern system."
+  why_easy:
+    - Schema names are already driven by wrapper.yml patterns
+    - Folder structure (ddl/silver/) already maps to schemas
+    - Reference seeds are already supported in ddl/bronze/seeds/
+    - Graph and provenance already track per-model assets
+
+developer_todos:
+
+  - id: domain-schemas-in-wrapper-yml
+    priority: 1
+    status: Ready to build
+    title: Define domains and their schemas in wrapper.yml
+    effort: S (½ day)
+    justification: >
+      A child should be able to say “run this model in EU schema and US schema”
+      without touching any model YAML.
+    next_steps:
+      - Add to wrapper.yml:
+          domains:
+            eu:
+              schema_suffix: "_eu"
+            us:
+              schema_suffix: "_us"
+            apac:
+              schema_suffix: "_apac"
+      - Compiler automatically creates schemas: silver_eu, silver_us, etc.
+      - forge deploy creates separate tables: silver_eu.customer_summary, silver_us.customer_summary
+
+  - id: reference-seed-for-file-ingestion
+    priority: 2
+    status: Ready to build
+    title: Let models ingest different files via a reference seed/table
+    effort: S (1 day)
+    justification: >
+      Each domain ingests slightly different source files (e.g. different S3 paths or filenames).
+      Use a simple reference seed to drive this — no code changes per instance.
+    next_steps:
+      - Create a reference seed in ddl/bronze/seeds/domain_files.yml:
+          domain_files:
+            eu:
+              file_path: "s3://bucket/eu_customers_*.csv"
+            us:
+              file_path: "s3://bucket/us_customers_*.csv"
+      - In the model YAML (once):
+          source: raw_customers
+          reference_seed: domain_files
+          file_pattern: "{{ domain.file_path }}"
+      - Compiler creates separate source definitions per domain
+      - Graph shows each instance with its own source file path
+
+  - id: instance-graph-and-provenance
+    priority: 3
+    status: Ready to build
+    title: Show each domain instance in the graph + provenance
+    effort: XS (½ day)
+    justification: >
+      Graph must clearly show silver_eu.customer_summary vs silver_us.customer_summary.
+      wrapper explain must show the exact domain and reference file used.
+    next_steps:
+      - Instance name = model_name + domain (e.g. customer_summary_eu)
+      - Add domain + reference_seed to _lineage struct
+      - forge explain customer_summary_eu.total_revenue shows "domain: eu, file: s3://.../eu_customers.csv"
+      - forge diff highlights changes per domain
+
+  - id: deploy-and-teardown-per-domain
+    priority: 4
+    status: Ready to build
+    title: forge deploy / teardown works per domain (safe, no data loss)
+    effort: XS (½ day)
+    justification: >
+      Each domain instance gets its own backup in _backup_archive and its own re-instate path.
+      Follows the exact safe-teardown philosophy we just shipped.
+    next_steps:
+      - forge deploy creates tables in the correct domain schema
+      - forge teardown lists each domain separately
+      - Ends with "To re-instate EU instance: forge deploy"
+
+success_criteria:
+  - A child adds 3 domains in wrapper.yml + one reference seed and runs forge deploy once
+  - Sees 3 separate tables (silver_eu.customer_summary, silver_us.customer_summary, etc.)
+  - Graph shows 3 distinct nodes with domain badges
+  - forge explain shows the exact file ingested for that domain
+  - forge teardown is safe (archives only, never deletes data)
+
+auto_documentation:
+  - After every todo: run `forge guide`
+  - New section appears automatically: "## HOW-TO: Multiple Instances per Domain (Different Schemas + Different Files)"
+
+next_action:
+  - Start with #1 today (domains in wrapper.yml — 30 minutes)
+  - Run `forge guide` after each step — the new HOW-TO section appears instantly
+  - Share this TODO with the developer
+
+last_updated: 2026-03-23

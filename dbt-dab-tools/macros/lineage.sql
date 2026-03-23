@@ -38,7 +38,7 @@
 
 {#- Bump this constant whenever the struct shape changes.
     The lineage_migrate() macro uses it to detect stale rows. -#}
-{% set LINEAGE_SCHEMA_VERSION = '3' %}
+{% set LINEAGE_SCHEMA_VERSION = '4' %}
 
 -- =============================================
 -- VERBOSE COLUMN LINEAGE
@@ -46,16 +46,33 @@
 -- Pass `columns` to capture runtime input values
 -- alongside the expression that produced each output.
 --
+-- Parameters:
+--   columns       — list of column dicts (name, expr, op, inputs)
+--   origin        — dict with type/path/endpoint/format for data provenance
+--   lineage_mode  — 'full' (runtime values) or 'lightweight' (names only)
+--
+-- Origin types:
+--   seed           → CSV seed file loaded by dbt
+--   volume_file    → file on a Unity Catalog volume
+--   api            → REST / GraphQL API endpoint
+--   webscraper     → web scraping pipeline
+--   external_table → external table / federated source
+--   python_process → custom Python ETL / script
+--
 -- Supported op types (covers all SQL statement patterns):
---   PASSTHROUGH  → column passed through unchanged
---   CAST         → type conversion (cast, ::)
---   EXPRESSION   → arithmetic / string ops (a * b, concat)
---   CASE         → conditional logic (CASE WHEN ... END)
---   AGGREGATION  → aggregate functions (SUM, COUNT, MIN, MAX, AVG)
---   WINDOW       → window functions (ROW_NUMBER, RANK, LAG, LEAD)
---   FUNCTION     → scalar function or UDF call
---   JOIN         → column sourced from a joined table
---   CONSTANT     → hard-coded literal value
+--   PASSTHROUGH   → column passed through unchanged
+--   CAST          → type conversion (cast, ::)
+--   EXPRESSION    → arithmetic / string ops (a * b, concat)
+--   CASE          → conditional logic (CASE WHEN ... END)
+--   AGGREGATION   → aggregate functions (SUM, COUNT, MIN, MAX, AVG)
+--   WINDOW        → window functions (ROW_NUMBER, RANK, LAG, LEAD)
+--   FUNCTION      → generic scalar function call
+--   SQL_UDF       → SQL UDF defined in dbt/ddl/00_udfs.yml
+--   PYTHON_UDF    → Python scalar UDF (language: python)
+--   PANDAS_UDF    → Pandas vectorized UDF (language: pandas)
+--   EXTERNAL_UDF  → UDF not defined in this project
+--   JOIN          → column sourced from a joined table
+--   CONSTANT      → hard-coded literal value
 --
 -- Usage:
 --   {{ dbt_dab_tools.lineage_columns(columns=[
@@ -70,7 +87,7 @@
 --   _lineage.columns[0].inputs  →  {'quantity': '5', 'unit_price': '10.00'}
 -- =============================================
 
-{% macro lineage_columns(columns=none) %}
+{% macro lineage_columns(columns=none, origin=none, lineage_mode='full') %}
     {%- set base_fields = {
         'schema_version': dbt_dab_tools._lineage_schema_version(),
         'model':          this.name,
@@ -80,13 +97,28 @@
         'compute_type':   var("compute_type", "serverless"),
         'contract_id':    this.schema ~ '.' ~ this.name,
         'version':        dbt_dab_tools._lineage_methodology_version(),
+        'lineage_mode':   lineage_mode,
     } -%}
+
+    {%- set is_full = (lineage_mode == 'full') -%}
 
     {%- if target.type in ('databricks', 'spark') -%}
     named_struct(
         {%- for key, val in base_fields.items() %}
         '{{ key }}', '{{ val }}',
         {%- endfor %}
+        'origin',
+        {%- if origin %}
+        named_struct(
+            'type', '{{ origin.type | default("unknown") }}',
+            'path', '{{ origin.path | default("") }}',
+            'endpoint', '{{ origin.endpoint | default("") }}',
+            'format', '{{ origin.format | default("") }}',
+            'loaded_at', current_timestamp()
+        ),
+        {%- else %}
+        cast(null as struct<type:string, path:string, endpoint:string, format:string, loaded_at:timestamp>),
+        {%- endif %}
         'columns',
         {%- if columns %}
         array(
@@ -101,7 +133,11 @@
                 'op', '{{ col_op }}',
                 'inputs', map(
                     {%- for inp in col_inputs %}
+                    {%- if is_full %}
                     '{{ inp }}', cast({{ inp }} as string){{ ',' if not loop.last }}
+                    {%- else %}
+                    '{{ inp }}', '{{ inp }}'{{ ',' if not loop.last }}
+                    {%- endif %}
                     {%- endfor %}
                 )
             ){{ ',' if not loop.last }}
@@ -117,6 +153,18 @@
         {%- for key, val in base_fields.items() %}
         '{{ key }}', '{{ val }}',
         {%- endfor %}
+        'origin',
+        {%- if origin %}
+        jsonb_build_object(
+            'type', '{{ origin.type | default("unknown") }}',
+            'path', '{{ origin.path | default("") }}',
+            'endpoint', '{{ origin.endpoint | default("") }}',
+            'format', '{{ origin.format | default("") }}',
+            'loaded_at', now()
+        ),
+        {%- else %}
+        'null'::jsonb,
+        {%- endif %}
         'columns',
         {%- if columns %}
         jsonb_build_array(
@@ -131,7 +179,11 @@
                 'op', '{{ col_op }}',
                 'inputs', jsonb_build_object(
                     {%- for inp in col_inputs %}
+                    {%- if is_full %}
                     '{{ inp }}', {{ inp }}::text{{ ',' if not loop.last }}
+                    {%- else %}
+                    '{{ inp }}', '{{ inp }}'{{ ',' if not loop.last }}
+                    {%- endif %}
                     {%- endfor %}
                 )
             ){{ ',' if not loop.last }}
