@@ -2,7 +2,7 @@
     materialized='table', meta={'version': 'v1'}
 ) }}
 
-select
+select /*+ BROADCAST(c) */
     c.customer_id,
     c.first_name,
     c.last_name,

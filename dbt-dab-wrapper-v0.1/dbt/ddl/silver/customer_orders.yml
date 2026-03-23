@@ -6,6 +6,7 @@ models:
       c: customer_clean
       o: stg_orders
     join: "c.customer_id = o.customer_id"
+    broadcast: c          # small table → BROADCAST hint for Databricks join optimisation
     materialized: table
     version: v1
     columns:

@@ -317,7 +317,15 @@ def compile_model(model_name: str, model_def: dict, forge_config: dict | None = 
     else:
         col_lines.append("    {{ dbt_dab_tools.lineage_columns() }}")
 
-    lines.append("select")
+    # Broadcast hint (Databricks join optimisation)
+    broadcast = model_def.get("broadcast")
+    if broadcast and is_join:
+        # broadcast can be a single alias or a list
+        aliases = [broadcast] if isinstance(broadcast, str) else list(broadcast)
+        hint_list = ", ".join(aliases)
+        lines.append(f"select /*+ BROADCAST({hint_list}) */")
+    else:
+        lines.append("select")
     lines.append(",\n".join(col_lines))
 
     # FROM clause
@@ -430,11 +438,22 @@ def compile_udf_sql(udf_name: str, udf_def: dict, schema: str = "{{ target.schem
 
     Supports both SQL and Python UDFs on Databricks.
     """
-    language = udf_def.get("language", "sql").upper()
+    raw_language = udf_def.get("language", "sql").upper()
+    # Treat PANDAS as a Python UDF variant — auto-include pandas package
+    is_pandas = raw_language == "PANDAS"
+    language = "PYTHON" if is_pandas else raw_language
+
     returns = udf_def.get("returns", "STRING")
     params = udf_def.get("params", [])
     body = udf_def.get("body", "NULL").strip()
     comment = udf_def.get("description", "")
+    handler = udf_def.get("handler")
+    runtime_version = udf_def.get("runtime_version")
+    packages = list(udf_def.get("packages", []))
+
+    # Pandas UDFs always need the pandas package
+    if is_pandas and "pandas" not in packages:
+        packages.insert(0, "pandas")
 
     # Build parameter list
     param_parts = []
@@ -452,6 +471,8 @@ def compile_udf_sql(udf_name: str, udf_def: dict, schema: str = "{{ target.schem
 
     lines: list[str] = []
     lines.append(f"-- UDF: {udf_name}")
+    if is_pandas:
+        lines.append(f"-- Pandas vectorized UDF")
     if comment:
         lines.append(f"-- {comment}")
     lines.append(f"CREATE OR REPLACE FUNCTION {schema}.{udf_name}({param_str})")
@@ -460,15 +481,22 @@ def compile_udf_sql(udf_name: str, udf_def: dict, schema: str = "{{ target.schem
     if language == "SQL":
         lines.append(f"RETURN ({body});")
     elif language == "PYTHON":
-        lines.append(f"LANGUAGE PYTHON")
-        lines.append(f"AS $$")
+        lines.append("LANGUAGE PYTHON")
+        if runtime_version:
+            lines.append(f"RUNTIME_VERSION = '{runtime_version}'")
+        if packages:
+            pkg_str = ", ".join(f"'{p}'" for p in packages)
+            lines.append(f"PACKAGES ({pkg_str})")
+        if handler:
+            lines.append(f"HANDLER = '{handler}'")
+        lines.append("AS $$")
         lines.append(body)
-        lines.append(f"$$;")
+        lines.append("$$;")
     else:
         lines.append(f"LANGUAGE {language}")
-        lines.append(f"AS $$")
+        lines.append("AS $$")
         lines.append(body)
-        lines.append(f"$$;")
+        lines.append("$$;")
 
     return "\n".join(lines)
 

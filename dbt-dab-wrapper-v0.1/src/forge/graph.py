@@ -325,6 +325,7 @@ def _add_sql_scan_nodes(
     source_pattern = re.compile(r"\{\{\s*source\(\s*['\"](\w+)['\"]\s*,\s*['\"](\w+)['\"]\s*\)\s*\}\}")
     quarantine_pattern = re.compile(r"\{\{\s*quarantine\(")
     udf_pattern = re.compile(r"\{\{\s*python_udf\(\s*['\"](\w+)['\"]\s*\)\s*\}\}")
+    broadcast_pattern = re.compile(r"/\*\+\s*BROADCAST\(([^)]+)\)\s*\*/")
 
     models_dir = dbt_dir / "models"
     if not models_dir.exists():
@@ -340,6 +341,8 @@ def _add_sql_scan_nodes(
         sources_found = source_pattern.findall(sql_content)
         has_quarantine = bool(quarantine_pattern.search(sql_content))
         udfs_used = udf_pattern.findall(sql_content)
+        broadcast_match = broadcast_pattern.search(sql_content)
+        broadcast_aliases = [a.strip() for a in broadcast_match.group(1).split(",")] if broadcast_match else []
 
         graph["contracts"][contract_id] = _make_contract(
             dataset_name=model_name,
@@ -354,7 +357,8 @@ def _add_sql_scan_nodes(
             generated_at=now,
             materialization="view",
             tags=[],
-            meta={"sql_file": str(sql_file.relative_to(dbt_dir))},
+            meta={"sql_file": str(sql_file.relative_to(dbt_dir)),
+                  **({"broadcast": broadcast_aliases} if broadcast_aliases else {})},
             raw_sql=sql_content,
             uses_quarantine=has_quarantine,
             udfs_used=udfs_used,
@@ -553,7 +557,9 @@ def _add_sql_udf_nodes(
     # Add UDF nodes
     for udf_name, udf_def in udfs.items():
         udf_id = f"udf.{project}.{udf_name}"
-        language = udf_def.get("language", "sql").upper()
+        raw_language = udf_def.get("language", "sql").upper()
+        is_pandas = raw_language == "PANDAS"
+        language = "PYTHON" if is_pandas else raw_language
         params = udf_def.get("params", [])
         returns = udf_def.get("returns", "STRING")
 
@@ -562,11 +568,14 @@ def _add_sql_udf_nodes(
             for p in params
         )
 
+        udf_kind = "pandas_udf" if is_pandas else ("python_udf" if language == "PYTHON" else "sql_udf")
+        desc_prefix = "Pandas UDF" if is_pandas else (f"{language} UDF")
+
         graph["contracts"][udf_id] = _make_contract(
             dataset_name=udf_name,
             dataset_domain=schema,
             dataset_type="function",
-            description=udf_def.get("description", f"SQL UDF: {udf_name}({param_desc}) → {returns}"),
+            description=udf_def.get("description", f"{desc_prefix}: {udf_name}({param_desc}) → {returns}"),
             columns=[],
             quality_rules=[],
             catalog=catalog,
@@ -574,8 +583,9 @@ def _add_sql_udf_nodes(
             git_commit=git_commit,
             generated_at=now,
             materialization="function",
-            tags=["sql_udf", f"lang:{language.lower()}"],
-            meta={"language": language, "returns": returns, "params": param_desc},
+            tags=[udf_kind, f"lang:{language.lower()}"],
+            meta={"language": language, "returns": returns, "params": param_desc,
+                  "vectorized": is_pandas},
         )
 
     # Scan models for udf: column references → edges

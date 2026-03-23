@@ -690,8 +690,16 @@ def udfs(
             elif isinstance(p, str):
                 param_names.append(p)
         param_str = ", ".join(param_names) if param_names else "(none)"
-        icon = "🟣" if lang == "PYTHON" else "🔵"
-        typer.echo(f"  {icon} {udf_name}({param_str}) → {returns}  [{lang}]")
+        if lang == "PANDAS":
+            icon = "🟠"
+            display_lang = "PANDAS"
+        elif lang == "PYTHON":
+            icon = "🟣"
+            display_lang = "PYTHON"
+        else:
+            icon = "🔵"
+            display_lang = lang
+        typer.echo(f"  {icon} {udf_name}({param_str}) → {returns}  [{display_lang}]")
 
     if output:
         out_lines = []
