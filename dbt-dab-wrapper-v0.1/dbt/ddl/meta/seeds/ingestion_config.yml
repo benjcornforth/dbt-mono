@@ -1,0 +1,28 @@
+# ── Ingestion configuration — seed in meta catalog ───────
+# One row per inbound data source. The Python ingestion task
+# reads this table to discover volumes, file patterns and targets.
+#
+# Loaded by `dbt seed` from dbt/seeds/ingestion_config.csv
+# Lives in the META catalog — shared across all domains.
+# forge codegen generates a Pydantic class: IngestionConfig
+seeds:
+  ingestion_config:
+    description: "File-matching rules for Volume ingestion"
+    domain: false
+    catalog: meta
+    schema: config
+    origin:
+      type: seed
+      path: dbt/seeds/ingestion_config.csv
+      format: csv
+    columns:
+      config_id:      { type: int, required: true, unique: true, description: "Unique config identifier" }
+      ingest_type:    { type: string, required: true, description: "Discriminator: volume | api | kafka | jdbc | sftp" }
+      source_name:    { type: string, required: true, description: "Logical name (e.g. customer_feed)" }
+      target_model:   { type: string, required: true, description: "Raw model name to write into" }
+      volume_name:    { type: string, description: "Volume name to scan (ingest_type=volume)" }
+      file_regex:     { type: string, description: "Regex pattern to match filenames" }
+      file_format:    { type: string, description: "File format: csv, json, parquet, delta" }
+      has_header:     { type: boolean, description: "Whether CSV has a header row" }
+      delimiter:      { type: string, description: "CSV delimiter character" }
+      active:         { type: boolean, description: "Toggle rule on/off" }

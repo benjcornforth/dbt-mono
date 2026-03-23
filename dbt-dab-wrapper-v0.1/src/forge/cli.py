@@ -863,6 +863,7 @@ def python_task(
     stage: str = typer.Option("enrich", "--stage", "-s", help="Pipeline stage: ingest/stage/clean/enrich/serve"),
     output: str = typer.Option("python", "--output", "-o", help="Output directory for task file"),
     description: str = typer.Option("", "--desc", help="Short description of the task"),
+    template: str = typer.Option("default", "--template", "-t", help="Task template: default, ingest"),
 ):
     """forge python-task <name> → scaffolds a Python task file + registers in forge.yml"""
     from forge.python_task import scaffold_python_task
@@ -872,6 +873,7 @@ def python_task(
         output_dir=Path(output),
         stage=stage,
         description=description,
+        template=template,
     )
     typer.echo(f"✅ Created {out}")
 
