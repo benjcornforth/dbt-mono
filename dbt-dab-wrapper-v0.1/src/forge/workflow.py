@@ -130,9 +130,12 @@ class WorkflowTask:
     """One task in the Databricks workflow DAG."""
     name: str
     stage: str
-    task_type: str = "dbt"             # "dbt" or "python"
+    task_type: str = "dbt"             # "dbt", "python", "sql", "notebook"
     models: list[str] = field(default_factory=list)
     python_file: str | None = None      # path for spark_python_task
+    sql_file: str | None = None         # path for sql_task
+    notebook_path: str | None = None    # path for notebook_task
+    additional_config: dict | None = None  # extra DAB keys (warehouse_id, base_parameters, etc.)
     depends_on: list[str] = field(default_factory=list)
     compute_type: str = "serverless"
     timeout_minutes: int = 60
@@ -164,9 +167,9 @@ class Workflow:
                     "stage": t.stage,
                     "task_type": t.task_type,
                     "models": t.models,
-                    **(                        {"python_file": t.python_file}
-                        if t.python_file else {}
-                    ),
+                    **({"python_file": t.python_file} if t.python_file else {}),
+                    **({"sql_file": t.sql_file} if t.sql_file else {}),
+                    **({"notebook_path": t.notebook_path} if t.notebook_path else {}),
                     "depends_on": [{"task_key": d} for d in t.depends_on],
                     "compute_type": t.compute_type,
                     "timeout_minutes": t.timeout_minutes,
@@ -213,6 +216,19 @@ class Workflow:
                 # spark_python_task — runs a .py file on the cluster
                 task_def["spark_python_task"] = {
                     "python_file": task.python_file,
+                    **(task.additional_config or {}),
+                }
+            elif task.task_type == "sql" and task.sql_file:
+                # sql_task — runs a .sql file on a SQL warehouse
+                task_def["sql_task"] = {
+                    "file": {"path": task.sql_file},
+                    **(task.additional_config or {}),
+                }
+            elif task.task_type == "notebook" and task.notebook_path:
+                # notebook_task — runs a Databricks notebook
+                task_def["notebook_task"] = {
+                    "notebook_path": task.notebook_path,
+                    **(task.additional_config or {}),
                 }
             else:
                 # dbt_task — runs dbt commands
@@ -270,6 +286,10 @@ class Workflow:
                     model_list += f" +{len(task.models)-3}"
                 if task.task_type == "python":
                     lines.append(f'        {safe}["{task.name}<br/>🐍 {task.python_file or model_list}"]')
+                elif task.task_type == "sql":
+                    lines.append(f'        {safe}["{task.name}<br/>📄 {task.sql_file}"]')
+                elif task.task_type == "notebook":
+                    lines.append(f'        {safe}["{task.name}<br/>📓 {task.notebook_path}"]')
                 else:
                     lines.append(f'        {safe}["{task.name}<br/>{model_list}"]')
             lines.append("    end")
@@ -282,6 +302,98 @@ class Workflow:
                 lines.append(f"    {src} --> {tgt}")
 
         return "\n".join(lines)
+
+
+# =============================================
+# CUSTOM TASKS – user-defined sql/notebook/python tasks
+# =============================================
+
+def load_custom_tasks(forge_config: dict) -> list[dict]:
+    """
+    Read custom_tasks from forge.yml (or wrapper.yml).
+
+    forge.yml:
+        custom_tasks:
+          - task_key: run_reconciliation
+            sql_task: sql/reconcile.sql
+            stage: enrich
+            depends_on: [customer_clean]
+          - task_key: notify_slack
+            notebook_task: notebooks/slack_alert.ipynb
+            stage: serve
+            depends_on: [customer_summary]
+          - task_key: my_api_pull
+            python_task: python/my_api_pull.py
+            stage: ingest
+            config:
+              timeout_seconds: 7200
+
+    Returns list of task dicts with keys:
+      task_key, task_type, file, stage, depends_on, config.
+    """
+    custom = forge_config.get("custom_tasks", [])
+    result = []
+    for task in custom:
+        task_key = task["task_key"]
+        # Determine task_type from which key is present
+        if "python_task" in task:
+            task_type = "python"
+            file_path = task["python_task"]
+        elif "sql_task" in task:
+            task_type = "sql"
+            file_path = task["sql_task"]
+        elif "notebook_task" in task:
+            task_type = "notebook"
+            file_path = task["notebook_task"]
+        else:
+            task_type = "dbt"
+            file_path = None
+
+        result.append({
+            "task_key": task_key,
+            "task_type": task_type,
+            "file": file_path,
+            "stage": task.get("stage", "enrich"),
+            "depends_on": task.get("depends_on", []),
+            "config": task.get("config", {}),
+        })
+    return result
+
+
+def _resolve_task_dependency(
+    dep_name: str,
+    wf_prefix: str,
+    all_task_names: set[str],
+    stage_task_map: dict[str, str],
+) -> str | None:
+    """
+    Resolve a depends_on reference to an actual task key.
+
+    Tries (in order):
+      1. Exact match against existing task names
+      2. Prefixed match: wf_prefix-dep_name
+      3. Python task prefix: wf_prefix-py-dep_name
+      4. Custom task prefix: wf_prefix-custom-dep_name
+      5. Model name → stage task (the stage that contains this model)
+    """
+    # 1. Exact match
+    if dep_name in all_task_names:
+        return dep_name
+
+    # 2–4. Prefixed matches
+    for pattern in [
+        f"{wf_prefix}-{dep_name}",
+        f"{wf_prefix}-py-{dep_name}",
+        f"{wf_prefix}-custom-{dep_name}",
+    ]:
+        if pattern in all_task_names:
+            return pattern
+
+    # 5. Model name → the stage task that contains it
+    if dep_name in stage_task_map:
+        return stage_task_map[dep_name]
+
+    return None
 
 
 # =============================================
@@ -339,6 +451,8 @@ def build_workflow(
     are injected into the appropriate stage.
     """
     project_name = forge_config.get("name", "unnamed")
+    project_id = forge_config.get("id", project_name)
+    wf_prefix = f"PROCESS_{project_id}"
     environment = forge_config.get("environment", "dev")
     catalog = forge_config.get("catalog", "main")
     schema = forge_config.get("schema", "default")
@@ -356,7 +470,10 @@ def build_workflow(
         tags = set(contract.get("tags", []))
         if tags & {"quarantine", "prior_version", "auto-generated"}:
             continue
-        if contract["dataset"]["type"] == "function":
+        if contract["dataset"]["type"] in ("function", "workflow", "workflow_task"):
+            continue
+        # Skip workflow and custom_task contract IDs
+        if cid.startswith("workflow.") or cid.startswith("custom_task."):
             continue
 
         model_name = contract["dataset"]["name"]
@@ -374,20 +491,31 @@ def build_workflow(
     for pt in python_tasks:
         python_by_stage.get(pt["stage"], python_by_stage["enrich"]).append(pt)
 
+    # ── Load custom_tasks from forge.yml ──────────────
+    custom_tasks = load_custom_tasks(forge_config)
+    # Group custom tasks by stage
+    custom_by_stage: dict[str, list[dict]] = {s: [] for s in STAGES}
+    for ct in custom_tasks:
+        custom_by_stage.get(ct["stage"], custom_by_stage["enrich"]).append(ct)
+
     # Build tasks — one per non-empty stage
     tasks: list[WorkflowTask] = []
     prev_task_name: str | None = None
 
+    # Track model→stage-task mapping for dependency resolution
+    model_to_stage_task: dict[str, str] = {}
+
     for stage in STAGES:
         models = stage_models[stage]
         py_tasks = python_by_stage[stage]
+        ct_tasks = custom_by_stage[stage]
 
-        if not models and not py_tasks:
+        if not models and not py_tasks and not ct_tasks:
             continue
 
         # dbt task for this stage (if there are models)
         if models:
-            task_name = f"{project_name}-{stage}"
+            task_name = f"{wf_prefix}-{stage}"
             depends = [prev_task_name] if prev_task_name else []
 
             tasks.append(WorkflowTask(
@@ -398,20 +526,23 @@ def build_workflow(
                 depends_on=depends,
                 compute_type=compute_type,
             ))
+            # Map each model to its stage task for dependency resolution
+            for m in models:
+                model_to_stage_task[m] = task_name
             prev_task_name = task_name
 
         # Python tasks for this stage
         for pt in py_tasks:
-            pt_name = f"{project_name}-py-{pt['name']}"
+            pt_name = f"{wf_prefix}-py-{pt['name']}"
             # Python task depends on stage's dbt task (if any) plus explicit deps
             pt_depends: list[str] = []
             if models:
-                pt_depends.append(f"{project_name}-{stage}")
+                pt_depends.append(f"{wf_prefix}-{stage}")
             elif prev_task_name:
                 pt_depends.append(prev_task_name)
             # Add explicit depends_on from forge.yml
             for dep in pt.get("depends_on", []):
-                dep_task = f"{project_name}-py-{dep}"
+                dep_task = f"{wf_prefix}-py-{dep}"
                 if dep_task not in pt_depends:
                     pt_depends.append(dep_task)
 
@@ -425,8 +556,44 @@ def build_workflow(
             ))
             prev_task_name = pt_name
 
+        # Custom tasks for this stage
+        for ct in ct_tasks:
+            ct_name = f"{wf_prefix}-custom-{ct['task_key']}"
+            ct_depends: list[str] = []
+
+            # Default: depend on previous task in the pipeline
+            if not ct["depends_on"]:
+                if prev_task_name:
+                    ct_depends.append(prev_task_name)
+            else:
+                # Resolve explicit depends_on
+                all_task_names = {t.name for t in tasks}
+                for dep in ct["depends_on"]:
+                    resolved = _resolve_task_dependency(
+                        dep, wf_prefix, all_task_names, model_to_stage_task,
+                    )
+                    if resolved and resolved not in ct_depends:
+                        ct_depends.append(resolved)
+
+            ct_config = ct.get("config", {})
+            ct_timeout = ct_config.pop("timeout_seconds", None)
+
+            tasks.append(WorkflowTask(
+                name=ct_name,
+                stage=stage,
+                task_type=ct["task_type"],
+                python_file=ct["file"] if ct["task_type"] == "python" else None,
+                sql_file=ct["file"] if ct["task_type"] == "sql" else None,
+                notebook_path=ct["file"] if ct["task_type"] == "notebook" else None,
+                additional_config=ct_config or None,
+                depends_on=ct_depends,
+                compute_type=compute_type,
+                timeout_minutes=ct_timeout // 60 if ct_timeout else 60,
+            ))
+            prev_task_name = ct_name
+
     return Workflow(
-        name=f"{project_name}-pipeline",
+        name=wf_prefix,
         tasks=tasks,
         schedule=schedule,
         environment=environment,

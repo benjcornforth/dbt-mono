@@ -1,0 +1,128 @@
+# TODO-DATABRICKS-ASSET-BUNDLE-CONFORMITY.yml
+# ────────────────────────────────────────────────────────────────
+#   dbt-dab-wrapper — Databricks Asset Bundle (DAB) Conformity TODO
+#   Date: 23 March 2026
+#   CLI note: All commands use `forge` (the real CLI)
+#   Goal: forge deploy / forge teardown = 100% native, safe, one-command DAB
+#   Rule: Users edit ONLY wrapper.yml + dbt/ddl/. Everything else generated.
+#         Graph shows every asset. One command = everything.
+#         SQL preferred. Code = the documentation.
+# ────────────────────────────────────────────────────────────────
+
+current_score: 8/10
+review_summary: >
+  #1 Done ✅ (auto-gen workflow YAML). #6 Done ✅ (custom workflows).
+  Two of six items shipped. Teardown is a stub. Per-model tasks next.
+
+updated_todos:
+
+  - id: workflow-yaml-location-and-creation
+    priority: 1
+    status: ✅ DONE
+    title: Auto-generate DAB workflow YAML on every forge deploy
+    completed:
+      - forge deploy auto-calls workflow builder after dbt run
+      - Writes to resources/jobs/PROCESS_{id}.yml (e.g. PROCESS_demo.yml)
+      - Terminal prints "📋 DAB workflow → resources/jobs/PROCESS_demo.yml"
+      - Graph shows "DAB Workflow" node (stadium/pill shape)
+      - Mermaid renders workflow with orchestration edges
+      - forge guide auto-updates with the path
+
+  - id: per-model-tasks-in-dag
+    priority: 2
+    status: Ready to build
+    title: Make each model its own task in the DAG (configurable — your idea)
+    effort: S (1 day)
+    justification: >
+      You are right — this is the most readable for operational flows.
+      One task per model name = instant visibility in Databricks UI.
+      Retry just one model. Perfect 1:1 with the graph.
+    next_steps:
+      - Add per_model_tasks: true in wrapper.yml (default = stage-level for simplicity)
+      - forge workflow --dab creates one task_key per model
+      - Graph shows "DAB Task" badge on every model
+
+  - id: teardown-workflow-full-support
+    priority: 3
+    status: Ready to build
+    title: Add safe, one-command teardown workflow
+    effort: M (2–4 days total)
+    feasibility_tiers:
+      - tier: schema-only → 2–4h (DROP SCHEMA ... CASCADE — mirrors dev-down)
+      - tier: +udfs       → +2h  (DROP FUNCTION IF EXISTS per UDF)
+      - tier: full-dab    → +4h  (generate complete databricks.yml + bundle destroy)
+      - tier: safety      → +2h  (confirmation prompts, block prd, audit log to _deploy_log)
+    next_steps:
+      - Start with schema-only (quick win using existing dev-down pattern)
+      - Add UDF cleanup
+      - Generate full databricks.yml
+      - forge teardown --dry-run first, then real destroy with prompts
+      - Add "Teardown" node to graph
+
+  - id: pure-sql-on-serverless-with-error-success
+    priority: 4
+    status: Ready to build
+    title: Run pure compiled SQL directly on serverless (SQL-level SUCCESS/ERROR)
+    effort: M (1–2 days)
+    notes:
+      - Auto-detect Python/Pandas UDFs → warn + skip pure mode
+      - _deploy_log table with CREATE IF NOT EXISTS
+
+  - id: dbt-run-only-when-pure-sql-impossible
+    priority: 5
+    status: Ready to build
+    title: Use dbt run ONLY as fallback
+
+  - id: custom-workflow-empowerment
+    priority: 6
+    status: ✅ DONE
+    title: "Empowering Users to Create Their Own Custom Workflows"
+    completed:
+      - load_custom_tasks() parses custom_tasks: from forge.yml
+      - WorkflowTask extended with sql_file, notebook_path, additional_config
+      - to_databricks_yml() emits sql_task, notebook_task, spark_python_task blocks
+      - to_mermaid() renders 📄 sql / 📓 notebook / 🐍 python icons
+      - _resolve_task_dependency() resolves deps across all task types (exact, prefixed, model→stage)
+      - Custom tasks merged into build_workflow() by stage alongside dbt + python tasks
+      - _add_custom_task_nodes() injects custom tasks into graph as flag-shaped nodes
+      - depends_on edges rendered as thick arrows (==>) in Mermaid
+      - Graph diff marks new custom tasks as "added" (green)
+      - Model classification skips custom_task and workflow contract types
+    verified_output:
+      - "forge workflow --dab → 7 tasks (5 dbt + 2 custom), clean dependency chains"
+      - "forge diff --mermaid → custom tasks as flag shapes with depends_on edges"
+      - "PROCESS_demo.yml contains sql_task + notebook_task blocks with correct DAB structure"
+    forge_yml_example: |
+      custom_tasks:
+        - task_key: run_reconciliation
+          sql_task: sql/reconcile.sql
+          stage: enrich
+          depends_on: [customer_clean]
+        - task_key: notify_slack
+          notebook_task: notebooks/slack_alert.ipynb
+          stage: serve
+          depends_on: [customer_summary]
+
+success_criteria:
+  - "✅ forge deploy prints exact workflow YAML path every time"
+  - Per-model tasks toggle works (your idea)
+  - forge teardown is safe, one-command, with dry-run
+  - "✅ Custom workflows merge cleanly and appear in graph"
+  - "✅ Still one command for everything"
+  - "✅ New dev can open resources/jobs/...yml and understand the flow instantly"
+
+auto_documentation:
+  - After every todo: run `forge guide`
+  - New sections appear automatically:
+    - "## Databricks Asset Bundle Conformity"
+    - "## Teardown Workflow (Safe One-Command Destroy)"
+    - "## Custom Workflows (Build Your Own)"
+
+next_action:
+  - "#1 DONE ✅ — workflow auto-generation"
+  - "#6 DONE ✅ — custom workflows (sql_task + notebook_task + graph)"
+  - "#2 next: per-model tasks (your idea, 1 day)"
+  - "#3 after: teardown (schema-only quick win first)"
+  - "Run forge guide after each step"
+
+last_updated: 2026-03-23

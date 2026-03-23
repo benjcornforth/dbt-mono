@@ -61,6 +61,7 @@ FORGE_ASSET_TYPES = {
     "prior_version": "table",
     "python_udf": "function",
     "sql_udf": "function",
+    "dab_workflow": "workflow",
 }
 
 
@@ -150,6 +151,34 @@ def build_graph(
 
     # ── Inject check nodes from models.yml ───────────────
     _add_check_nodes(graph, dbt_project_dir or Path("dbt"), git_commit, now)
+
+    # ── Inject DAB workflow node ─────────────────────────
+    project_id = forge_config.get("id", project_name)
+    wf_name = f"PROCESS_{project_id}"
+    wf_path = Path(f"resources/jobs/{wf_name}.yml")
+    if wf_path.exists():
+        graph["contracts"][f"workflow.{project_name}"] = _make_contract(
+            dataset_name=project_name,
+            dataset_domain="workflow",
+            dataset_type="workflow",
+            description=f"Databricks Asset Bundle workflow — {wf_path}",
+            columns=[],
+            quality_rules=[],
+            catalog=catalog,
+            schema=schema,
+            git_commit=git_commit,
+            generated_at=now,
+            materialization="dab_workflow",
+            tags=["dab", "workflow"],
+            meta={"yaml_path": str(wf_path)},
+        )
+        # Edge from every model → workflow (workflow orchestrates all models)
+        for cid in list(graph["contracts"]):
+            if cid.startswith("model."):
+                graph["edges"].append({"from": cid, "to": f"workflow.{project_name}", "type": "orchestrates"})
+
+    # ── Inject custom task nodes ─────────────────────────
+    _add_custom_task_nodes(graph, forge_config, catalog, schema, git_commit, now)
 
     # ── Compute content hashes for diffing ───────────────
     for contract_id, contract in graph["contracts"].items():
@@ -716,6 +745,104 @@ def _add_check_nodes(
 
 
 # =============================================
+# CUSTOM TASK NODES
+# =============================================
+
+def _add_custom_task_nodes(
+    graph: dict,
+    forge_config: dict,
+    catalog: str,
+    schema: str,
+    git_commit: str,
+    now: str,
+) -> None:
+    """
+    Read custom_tasks from forge.yml and inject into the graph.
+
+    Each custom task becomes a node (sql_task, notebook_task, python_task)
+    with edges from its depends_on targets.
+    """
+    custom_tasks = forge_config.get("custom_tasks", [])
+    if not custom_tasks:
+        return
+
+    project = graph["metadata"]["project"]
+
+    for ct in custom_tasks:
+        task_key = ct["task_key"]
+        task_id = f"custom_task.{project}.{task_key}"
+
+        # Determine task type
+        if "python_task" in ct:
+            task_type = "python"
+            file_ref = ct["python_task"]
+        elif "sql_task" in ct:
+            task_type = "sql"
+            file_ref = ct["sql_task"]
+        elif "notebook_task" in ct:
+            task_type = "notebook"
+            file_ref = ct["notebook_task"]
+        else:
+            task_type = "unknown"
+            file_ref = ""
+
+        graph["contracts"][task_id] = _make_contract(
+            dataset_name=task_key,
+            dataset_domain=schema,
+            dataset_type="workflow_task",
+            description=f"Custom {task_type} task: {task_key} → {file_ref}",
+            columns=[],
+            quality_rules=[],
+            catalog=catalog,
+            schema=schema,
+            git_commit=git_commit,
+            generated_at=now,
+            materialization=f"custom_{task_type}_task",
+            tags=["custom_task", f"type:{task_type}"],
+            meta={
+                "task_key": task_key,
+                "task_type": task_type,
+                "file": file_ref,
+                "stage": ct.get("stage", "enrich"),
+            },
+        )
+
+        # Add edges from dependencies
+        for dep in ct.get("depends_on", []):
+            dep_id = _resolve_custom_task_dep(graph, project, dep)
+            if dep_id:
+                graph["edges"].append({
+                    "from": dep_id,
+                    "to": task_id,
+                    "type": "depends_on",
+                    "description": f"{task_key} depends on {dep}",
+                })
+
+
+def _resolve_custom_task_dep(graph: dict, project: str, dep_name: str) -> str | None:
+    """Resolve a dependency name to its contract ID in the graph."""
+    # Try exact match first
+    if dep_name in graph["contracts"]:
+        return dep_name
+
+    # Try common prefixes: model, custom_task, check
+    for prefix in [
+        f"model.{project}.{dep_name}",
+        f"model.dbt_dab_wrapper.{dep_name}",
+        f"custom_task.{project}.{dep_name}",
+    ]:
+        if prefix in graph["contracts"]:
+            return prefix
+
+    # Fallback: scan all contracts for a matching dataset name
+    for cid, contract in graph["contracts"].items():
+        if contract.get("dataset", {}).get("name") == dep_name:
+            return cid
+
+    return None
+
+
+# =============================================
 # ODCS CONTRACT FACTORY
 # =============================================
 
@@ -943,6 +1070,9 @@ def walk_column_lineage(
     generated_at = graph.get("metadata", {}).get("generated_at", "")
     version = model_def.get("version", "v1")
 
+    # ── Origin tracking ──────────────────────────
+    origin = model_def.get("origin")
+
     # ── Build the provenance node ────────────────
     node: dict[str, Any] = {
         "model": model_name,
@@ -958,9 +1088,12 @@ def walk_column_lineage(
         "git_commit": git_commit,
         "generated_at": generated_at,
     }
+    if origin:
+        node["origin"] = origin
 
     # ── Recurse upstream ─────────────────────────
     upstream: list[dict] = []
+    seeds = raw.get("seeds", {})
     if source_model and source_model in models:
         source_cols = models[source_model].get("columns", {})
         for src_col in source_columns:
@@ -968,6 +1101,27 @@ def walk_column_lineage(
                 upstream.append(
                     walk_column_lineage(graph, source_model, src_col, dbt_dir)
                 )
+    elif source_model and source_model in seeds:
+        # Terminal node: data originates from a seed
+        seed_def = seeds[source_model]
+        seed_origin = seed_def.get("origin", {"type": "seed", "path": f"dbt/seeds/{source_model}.csv"})
+        for src_col in source_columns:
+            upstream.append({
+                "model": source_model,
+                "column": src_col,
+                "expression": src_col,
+                "op": "SEED",
+                "type": seed_def.get("columns", {}).get(src_col, {}).get("type", "inferred") if isinstance(seed_def.get("columns", {}).get(src_col), dict) else "inferred",
+                "version": "v1",
+                "source_model": None,
+                "source_columns": [],
+                "udf_calls": [],
+                "checks": [],
+                "git_commit": git_commit,
+                "generated_at": generated_at,
+                "origin": seed_origin,
+                "upstream": [],
+            })
     node["upstream"] = upstream
 
     return node
@@ -977,24 +1131,31 @@ def render_provenance_tree(
     tree: dict,
     mermaid: bool = False,
     full: bool = False,
+    light: bool = False,
+    show_origin: bool = False,
 ) -> str:
     """
     Render a provenance tree as terminal text or Mermaid diagram.
 
-    Returns the rendered string.
+    full:        Include UDF runtime details, packages, handler
+    light:       Compact view — expressions and columns only
+    show_origin: Include data origin / source provenance
     """
     if "error" in tree:
         return f"❌ {tree['error']}"
 
     if mermaid:
         return _render_provenance_mermaid(tree)
-    return _render_provenance_terminal(tree, full=full)
+    if light:
+        return _render_provenance_light(tree)
+    return _render_provenance_terminal(tree, full=full, show_origin=show_origin)
 
 
 def _render_provenance_terminal(
     tree: dict,
     depth: int = 0,
     full: bool = False,
+    show_origin: bool = False,
 ) -> str:
     """Pretty-print provenance tree for terminal output."""
     lines: list[str] = []
@@ -1032,6 +1193,17 @@ def _render_provenance_terminal(
         if tree.get("generated_at"):
             lines.append(f"├─ Generated: {tree['generated_at']}")
 
+        # Origin
+        if show_origin and tree.get("origin"):
+            o = tree["origin"]
+            lines.append(f"├─ 📦 Origin: {o.get('type', 'unknown')}")
+            if o.get("path"):
+                lines.append(f"│    Path: {o['path']}")
+            if o.get("endpoint"):
+                lines.append(f"│    Endpoint: {o['endpoint']}")
+            if o.get("format"):
+                lines.append(f"│    Format: {o['format']}")
+
         # Checks
         checks = tree.get("checks", [])
         if checks:
@@ -1054,13 +1226,37 @@ def _render_provenance_terminal(
             for chk in tree["checks"]:
                 icon = "🔴" if chk["severity"] == "error" else "🟡"
                 lines.append(f"{indent}│  {icon} {chk['name']}")
+        if show_origin and tree.get("origin"):
+            o = tree["origin"]
+            lines.append(f"{indent}│  📦 {o.get('type', 'unknown')}: {o.get('path') or o.get('endpoint', '')}")
 
     # Upstream
     for child in tree.get("upstream", []):
         if "error" not in child:
             lines.append("")
             lines.append(f"{indent}  ⬆ Upstream: {child['model']}.{child['column']}")
-            lines.append(_render_provenance_terminal(child, depth + 1, full=full))
+            lines.append(_render_provenance_terminal(child, depth + 1, full=full, show_origin=show_origin))
+
+    return "\n".join(lines)
+
+
+def _render_provenance_light(tree: dict, depth: int = 0) -> str:
+    """Compact provenance view — just expressions and column flow."""
+    lines: list[str] = []
+    indent = "  " * depth
+
+    if depth == 0:
+        lines.append(f"{tree['model']}.{tree['column']}  ←  {tree['expression']}  [{tree['op']}]")
+    else:
+        lines.append(f"{indent}← {tree['model']}.{tree['column']}  ←  {tree['expression']}  [{tree['op']}]")
+
+    if tree.get("origin"):
+        o = tree["origin"]
+        lines.append(f"{indent}   📦 {o.get('type', '?')}: {o.get('path') or o.get('endpoint', '')}")
+
+    for child in tree.get("upstream", []):
+        if "error" not in child:
+            lines.append(_render_provenance_light(child, depth + 1))
 
     return "\n".join(lines)
 
@@ -1303,6 +1499,10 @@ def render_mermaid(
             return f"    {safe_id}{{{{{name}}}}}"      # rhombus
         elif dtype == "quality":
             return f"    {safe_id}{{{{{{{name}}}}}}}"  # hexagon
+        elif dtype == "workflow":
+            return f'    {safe_id}(["{name} DAB"])'    # stadium / pill
+        elif dtype == "workflow_task":
+            return f'    {safe_id}>"{name}"]'          # asymmetric / flag
         elif dtype == "table":
             if "quarantine" in name:
                 return f"    {safe_id}[/\"{name}\"/]"  # parallelogram
@@ -1340,6 +1540,10 @@ def render_mermaid(
             lines.append(f"    {src} ==>|udf| {tgt}")
         elif etype == "check":
             lines.append(f"    {src} -.->|check| {tgt}")
+        elif etype == "orchestrates":
+            lines.append(f"    {src} -.->|orchestrates| {tgt}")
+        elif etype == "depends_on":
+            lines.append(f"    {src} ==>|depends_on| {tgt}")
         else:
             lines.append(f"    {src} --> {tgt}")
 

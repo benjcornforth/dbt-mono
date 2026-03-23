@@ -229,10 +229,12 @@ def _compile_column_select(col_name: str, col_def: dict, alias: str | None = Non
     return f"    {ref}"
 
 
-def compile_model(model_name: str, model_def: dict, forge_config: dict | None = None, seed_names: set[str] | None = None, udf_languages: dict[str, str] | None = None) -> str:
+def compile_model(model_name: str, model_def: dict, forge_config: dict | None = None, seed_names: set[str] | None = None, udf_languages: dict[str, str] | None = None, lineage_mode: str = "full", origin_tracking: bool = True) -> str:
     """Compile a single model definition into a dbt SQL file.
 
     udf_languages: optional {udf_name: language} lookup for rich lineage ops.
+    lineage_mode: 'full' (capture runtime values) or 'lightweight' (names only).
+    origin_tracking: whether to include origin metadata in lineage struct.
     """
     lines: list[str] = []
 
@@ -335,9 +337,20 @@ def compile_model(model_name: str, model_def: dict, forge_config: dict | None = 
         if entry.get("op"):
             verbose_cols.append(entry)
 
+    # Build lineage macro arguments
+    lineage_args: list[str] = []
     if verbose_cols:
-        lineage_arg = f"columns={verbose_cols}"
-        col_lines.append(f"    {{{{ dbt_dab_tools.lineage_columns({lineage_arg}) }}}}")
+        lineage_args.append(f"columns={verbose_cols}")
+    # Origin tracking — from model def or seed origin
+    origin = model_def.get("origin")
+    if origin and origin_tracking:
+        lineage_args.append(f"origin={origin}")
+    # Lineage mode
+    if lineage_mode != "full":
+        lineage_args.append(f"lineage_mode='{lineage_mode}'")
+
+    if lineage_args:
+        col_lines.append(f"    {{{{ dbt_dab_tools.lineage_columns({', '.join(lineage_args)}) }}}}")
     else:
         col_lines.append("    {{ dbt_dab_tools.lineage_columns() }}")
 
@@ -456,11 +469,13 @@ def compile_schema_yml(models: dict[str, dict]) -> str:
 # forge udfs    → shows defined UDFs
 # Graph:          → adds purple UDF nodes
 
-def compile_udf_sql(udf_name: str, udf_def: dict, schema: str = "{{ target.schema }}") -> str:
+def compile_udf_sql(udf_name: str, udf_def: dict, schema: str = "{{ target.catalog }}.{{ target.schema }}") -> str:
     """
     Compile a single UDF definition into a CREATE FUNCTION SQL statement.
 
     Supports both SQL and Python UDFs on Databricks.
+    Uses fully-qualified catalog.schema naming so UDFs are created in the
+    same catalog where models will search for them.
     """
     raw_language = udf_def.get("language", "sql").upper()
     # Treat PANDAS as a Python UDF variant — auto-include pandas package
@@ -499,7 +514,11 @@ def compile_udf_sql(udf_name: str, udf_def: dict, schema: str = "{{ target.schem
         lines.append(f"-- Pandas vectorized UDF")
     if comment:
         lines.append(f"-- {comment}")
-    lines.append(f"CREATE OR REPLACE FUNCTION {schema}.{udf_name}({param_str})")
+    # DROP + CREATE is more portable than CREATE OR REPLACE across
+    # Databricks warehouse types and Unity Catalog versions.
+    fq_name = f"{schema}.{udf_name}"
+    lines.append(f"DROP FUNCTION IF EXISTS {fq_name};")
+    lines.append(f"CREATE FUNCTION {fq_name}({param_str})")
     lines.append(f"RETURNS {returns}")
 
     if language == "SQL":
@@ -651,9 +670,15 @@ def compile_all(
     # Build UDF language lookup once for lineage enrichment
     udf_lang_map = {n: d.get("language", "sql") for n, d in load_udfs(ddl_path, forge_config=forge_config).items()}
 
+    # Lineage settings from forge_config
+    lineage_cfg = (forge_config or {}).get("lineage", {})
+    lineage_mode = lineage_cfg.get("mode", "full")
+    origin_tracking = lineage_cfg.get("origin_tracking", True)
+
     for model_name, model_def in models.items():
         sql = compile_model(model_name, model_def, forge_config=forge_config, seed_names=seed_names,
-                            udf_languages=udf_lang_map)
+                            udf_languages=udf_lang_map, lineage_mode=lineage_mode,
+                            origin_tracking=origin_tracking)
         layer = model_def.get("layer", "default")
         sub_dir = output_dir / origin / layer
         sub_dir.mkdir(parents=True, exist_ok=True)
@@ -1522,6 +1547,10 @@ def generate_agent_guide(
     lines.append("| `forge diff --mermaid` | Visual diagram of changes (color-coded) |")
     lines.append("| `forge explain model.col` | Full provenance tree for any column |")
     lines.append("| `forge explain model.col --mermaid` | Provenance as Mermaid diagram |")
+    lines.append("| `forge explain model.col --full` | Include UDF runtime details |")
+    lines.append("| `forge explain model.col --light` | Compact: expressions + columns only |")
+    lines.append("| `forge explain model.col --origin` | Show data origin / source provenance |")
+    lines.append("| `forge explain model.col --version v2` | Filter to specific version |")
     lines.append("| `forge explain model.col --json` | Provenance as JSON (for scripting) |")
     lines.append("| `forge workflow` | Shows the pipeline DAG |")
     lines.append("| `forge workflow --mermaid` | Visual diagram of the pipeline |")
@@ -1593,6 +1622,55 @@ def generate_agent_guide(
     lines.append('      total_orders:  { expr: "count(order_id)", type: int }')
     lines.append('      total_revenue: { expr: "sum(line_total)", type: decimal(10,2) }')
     lines.append("```")
+    lines.append("")
+
+    # ── Lineage Modes & Origin Tracking ──────────
+    lineage_cfg = forge_config.get("lineage", {})
+    lineage_mode = lineage_cfg.get("mode", "full")
+    origin_tracking = lineage_cfg.get("origin_tracking", True)
+
+    lines.append("## Lineage & Origin Tracking")
+    lines.append("")
+    lines.append(f"**Mode:** `{lineage_mode}`  ")
+    lines.append(f"**Origin tracking:** `{'enabled' if origin_tracking else 'disabled'}`")
+    lines.append("")
+    lines.append("| Mode | What it captures | When to use |")
+    lines.append("|------|-----------------|-------------|")
+    lines.append("| `full` | Runtime input values + expressions + origin | Production audits, compliance |")
+    lines.append("| `lightweight` | Column names + expressions only (no runtime values) | Dev/test, cost savings |")
+    lines.append("")
+    lines.append("### Origin types")
+    lines.append("")
+    lines.append("Add `origin:` to any seed or model to track where data comes from:")
+    lines.append("")
+    lines.append("```yaml")
+    lines.append("seeds:")
+    lines.append("  raw_customers:")
+    lines.append("    origin:")
+    lines.append("      type: seed                        # seed, volume_file, api, webscraper, external_table, python_process")
+    lines.append("      path: dbt/seeds/raw_customers.csv")
+    lines.append("      format: csv")
+    lines.append("```")
+    lines.append("")
+    lines.append("```yaml")
+    lines.append("models:")
+    lines.append("  stg_events:")
+    lines.append("    origin:")
+    lines.append("      type: volume_file")
+    lines.append("      path: /Volumes/bronze/landing/events/")
+    lines.append("      format: parquet")
+    lines.append("```")
+    lines.append("")
+    lines.append("```yaml")
+    lines.append("models:")
+    lines.append("  stg_api_data:")
+    lines.append("    origin:")
+    lines.append("      type: api")
+    lines.append("      endpoint: https://api.example.com/v2/records")
+    lines.append("      format: json")
+    lines.append("```")
+    lines.append("")
+    lines.append("Use `forge explain model.col --origin` to see the full origin chain.")
     lines.append("")
 
     # ── Column Options ───────────────────────────
@@ -1756,6 +1834,19 @@ def generate_agent_guide(
     lines.append("Multiple tables: `broadcast: [c, small_lookup]`")
     lines.append("")
 
+    # ── Core dbt Concepts ────────────────────────
+    lines.append("## Core dbt Concepts (that the wrapper makes invisible)")
+    lines.append("")
+    lines.append("You never need to know these to be successful — but here's what's happening behind the scenes:")
+    lines.append("")
+    lines.append("- **Jinja** = dbt's templating language (the wrapper writes it for you)")
+    lines.append("- **Macros** = reusable SQL snippets (all live in external `../dbt-dab-tools`)")
+    lines.append("- **Tests** = data quality checks (wrapper's `checks:` + `quarantine:` replace raw dbt tests)")
+    lines.append("- **Incremental models & snapshots** = performance tricks (wrapper uses `materialized:` + `prior_version`)")
+    lines.append("")
+    lines.append("The wrapper hides the complex parts so you can focus on business logic in YAML.")
+    lines.append("")
+
     # ── How Migrations Work ──────────────────────
     lines.append("## How to Make Changes (Migrations)")
     lines.append("")
@@ -1811,6 +1902,22 @@ def generate_agent_guide(
         _render_text_pipeline(models, lines)
         lines.append("```")
         lines.append("")
+
+    # ── DAB Workflow ─────────────────────────────
+    lines.append("## Databricks Asset Bundle Workflow")
+    lines.append("")
+    lines.append("`forge deploy` automatically generates a DAB workflow YAML after every successful run.")
+    lines.append("")
+    wf_name = forge_config.get("name", "unnamed")
+    wf_path = f"resources/jobs/{wf_name}.yml"
+    lines.append(f"- **Workflow YAML**: `{wf_path}`")
+    lines.append(f"- Open this file to see the full pipeline: stages, tasks, compute, and schedule.")
+    lines.append(f"- To regenerate manually: `forge workflow --dab`")
+    lines.append(f"- To see the pipeline as a diagram: `forge workflow --mermaid`")
+    lines.append("")
+    lines.append("The graph (`forge diff`) includes a **DAB Workflow** node linked to every model,")
+    lines.append("so you can see orchestration alongside data lineage.")
+    lines.append("")
 
     # ── Troubleshooting ──────────────────────────
     lines.append("## Troubleshooting")

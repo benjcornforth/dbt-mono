@@ -1,0 +1,73 @@
+resources:
+  jobs:
+    PROCESS_demo:
+      name: PROCESS_demo (dev)
+      tasks:
+      - task_key: PROCESS_demo-ingest
+        timeout_seconds: 3600
+        dbt_task:
+          project_directory: dbt
+          commands:
+          - dbt run --select raw_customers raw_orders
+          catalog: main
+          schema: default
+        environment_key: default
+      - task_key: PROCESS_demo-stage
+        timeout_seconds: 3600
+        dbt_task:
+          project_directory: dbt
+          commands:
+          - dbt run --select customer_orders stg_customers stg_orders
+          catalog: main
+          schema: default
+        environment_key: default
+        depends_on:
+        - task_key: PROCESS_demo-ingest
+      - task_key: PROCESS_demo-clean
+        timeout_seconds: 3600
+        dbt_task:
+          project_directory: dbt
+          commands:
+          - dbt run --select customer_clean
+          catalog: main
+          schema: default
+        environment_key: default
+        depends_on:
+        - task_key: PROCESS_demo-stage
+      - task_key: PROCESS_demo-enrich
+        timeout_seconds: 3600
+        dbt_task:
+          project_directory: dbt
+          commands:
+          - dbt run --select data_is_fresh has_customers revenue_non_negative
+          catalog: main
+          schema: default
+        environment_key: default
+        depends_on:
+        - task_key: PROCESS_demo-clean
+      - task_key: PROCESS_demo-custom-run_reconciliation
+        timeout_seconds: 3600
+        sql_task:
+          file:
+            path: sql/reconcile.sql
+        environment_key: default
+        depends_on:
+        - task_key: PROCESS_demo-clean
+      - task_key: PROCESS_demo-serve
+        timeout_seconds: 3600
+        dbt_task:
+          project_directory: dbt
+          commands:
+          - dbt run --select customer_summary
+          catalog: main
+          schema: default
+        environment_key: default
+        depends_on:
+        - task_key: PROCESS_demo-custom-run_reconciliation
+      - task_key: PROCESS_demo-custom-notify_slack
+        timeout_seconds: 3600
+        notebook_task:
+          notebook_path: notebooks/slack_alert.ipynb
+        environment_key: default
+        depends_on:
+        - task_key: PROCESS_demo-serve

@@ -20,7 +20,7 @@ active_profile: dev
 # Set skip_env_prefix: [prd, prod] to control which envs get bare schema names.
 
 catalog_pattern: "{env}_{scope}_{catalog}"     # → dev_fd_bronze, prd_fd_meta (always prefixed)
-schema_pattern:  "{user}_{id}"    # → dev_ben_demo (prd → demo)
+schema_pattern:  "{user}_{id}"    # → ben_demo (prd → demo)
 skip_env_prefix: [prd, prod]               # these envs drop {env}_ from schemas only
 
 # =============================================
@@ -108,6 +108,37 @@ features:
   validation_exceptions: true
   prior_version: true
   python_udfs: true
+
+# =============================================
+# LINEAGE & ORIGIN TRACKING
+# =============================================
+# mode: full | lightweight
+#   full        — captures runtime input values, UDF metadata, origin details
+#   lightweight — captures column names + expressions only (no runtime values)
+#
+# origin_tracking: true | false
+#   When true, origin: blocks in DDL files are compiled into the
+#   _lineage struct so every value is traceable to its physical source.
+lineage:
+  mode: full
+  origin_tracking: true
+
 portability:
   avoid_databricks_only: true
   postgres_compatible: true
+
+# =============================================
+# CUSTOM TASKS – user-defined workflow tasks
+# =============================================
+# Each entry needs task_key + one task type (python_task, sql_task, notebook_task).
+# Optional: stage (default=enrich), depends_on (list of model/task names), config.
+custom_tasks:
+  - task_key: run_reconciliation
+    sql_task: sql/reconcile.sql
+    stage: enrich
+    depends_on: [customer_clean]
+
+  - task_key: notify_slack
+    notebook_task: notebooks/slack_alert.ipynb
+    stage: serve
+    depends_on: [customer_summary]

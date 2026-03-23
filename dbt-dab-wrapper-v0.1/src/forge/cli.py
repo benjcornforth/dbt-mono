@@ -216,17 +216,49 @@ def deploy(
         udf_files = sorted(functions_dir.glob("*.sql"))
         if udf_files:
             typer.echo("🔧 Deploying UDFs via dbt run-operation...")
-            udfs_sql = "\n".join(f.read_text() for f in udf_files)
-            try:
-                subprocess.run(
-                    ["dbt", "run-operation", "deploy_udfs",
-                     "--args", yaml.dump({"udfs_sql": udfs_sql}),
-                     "--project-dir", "."] + dbt_vars_flag,
-                    check=True, capture_output=True, env=dbt_env,
-                )
-                typer.echo(f"  ✅ Deployed {len(udf_files)} UDF(s): {', '.join(f.stem for f in udf_files)}")
-            except (FileNotFoundError, subprocess.CalledProcessError):
-                typer.echo("  ⚠️  UDF deploy skipped (dbt run-operation unavailable). Deploy manually or use --pure-sql mode.")
+            # Resolve Jinja placeholders — run_query receives raw SQL, not Jinja
+            expanded_prof = _expand_env_prefix(prof, config)
+            target_catalog = expanded_prof.get("catalog", "main")
+            target_schema = expanded_prof.get("schema", "default")
+
+            # Separate SQL UDFs from Python/Pandas UDFs — warehouses that don't
+            # support LANGUAGE PYTHON would otherwise block all UDF deployment
+            sql_files = [f for f in udf_files if "LANGUAGE PYTHON" not in f.read_text().upper()]
+            py_files = [f for f in udf_files if "LANGUAGE PYTHON" in f.read_text().upper()]
+
+            def _deploy_udf_batch(files: list[Path], label: str) -> bool:
+                sql = "\n".join(f.read_text() for f in files)
+                sql = sql.replace("{{ target.catalog }}", target_catalog)
+                sql = sql.replace("{{ target.schema }}", target_schema)
+                try:
+                    subprocess.run(
+                        ["dbt", "run-operation", "deploy_udfs",
+                         "--args", yaml.dump({"udfs_sql": sql}),
+                         "--project-dir", "."] + dbt_vars_flag,
+                        check=True, capture_output=True, text=True, env=dbt_env,
+                    )
+                    typer.echo(f"  ✅ Deployed {label}: {', '.join(f.stem for f in files)}")
+                    return True
+                except subprocess.CalledProcessError as e:
+                    output = (e.stdout or "") + (e.stderr or "")
+                    typer.echo(f"  ❌ {label} deploy failed:")
+                    for line in output.strip().splitlines()[-10:]:
+                        typer.echo(f"     {line}")
+                    return False
+                except FileNotFoundError:
+                    typer.echo("  ⚠️  UDF deploy skipped (dbt not found).")
+                    return False
+
+            ok = True
+            if sql_files:
+                ok = _deploy_udf_batch(sql_files, "SQL UDF(s)")
+            if not ok:
+                raise typer.Exit(1)
+            if py_files:
+                py_ok = _deploy_udf_batch(py_files, "Python UDF(s)")
+                if not py_ok:
+                    typer.echo("  💡 Python UDFs require a Pro or Serverless SQL warehouse.")
+                    typer.echo("     Check your warehouse type, or deploy Python UDFs via a cluster.")
 
     # Run dbt seed (load CSV source data into tables)
     seed_dir = Path("dbt/seeds")
@@ -245,6 +277,17 @@ def deploy(
         subprocess.run(["dbt", "run", "--project-dir", "."] + dbt_vars_flag, check=True, env=dbt_env)
     except FileNotFoundError:
         typer.echo("💡 Tip: install dbt-databricks with poetry if needed")
+
+    # Auto-generate DAB workflow YAML (always up-to-date with latest graph)
+    try:
+        graph = build_graph(config)
+        wf = build_workflow(config, graph)
+        wf_path = Path(f"resources/jobs/{wf.name}.yml")
+        wf_path.parent.mkdir(parents=True, exist_ok=True)
+        wf_path.write_text(wf.to_databricks_yml())
+        typer.echo(f"📋 DAB workflow → {wf_path}")
+    except Exception as exc:
+        typer.echo(f"  ⚠️  Workflow YAML skipped: {exc}")
 
     typer.echo("🎉 Deploy complete! Run 'forge diff' to see graph changes.")
 
@@ -319,6 +362,9 @@ def explain(
     ddl: str = typer.Option(DDL_DEFAULT, "--ddl", help="Path to DDL file or directory"),
     mermaid_flag: bool = typer.Option(False, "--mermaid", help="Output Mermaid provenance diagram"),
     full: bool = typer.Option(False, "--full", help="Show full detail including upstream checks"),
+    light: bool = typer.Option(False, "--light", help="Lightweight view: expressions + columns only"),
+    version_filter: Optional[str] = typer.Option(None, "--version", help="Filter to specific methodology version (e.g. v2)"),
+    origin_flag: bool = typer.Option(False, "--origin", help="Show data origin / source provenance"),
     json_flag: bool = typer.Option(False, "--json", help="Output JSON for scripting"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Write output to file"),
 ):
@@ -349,13 +395,17 @@ def explain(
         typer.echo(f"❌ {tree['error']}")
         raise typer.Exit(1)
 
+    # Apply version filter — prune nodes that don't match
+    if version_filter:
+        tree = _filter_tree_by_version(tree, version_filter)
+
     if json_flag:
         import json
         result = json.dumps(tree, indent=2, default=str)
     elif mermaid_flag:
         result = render_provenance_tree(tree, mermaid=True)
     else:
-        result = render_provenance_tree(tree, full=full)
+        result = render_provenance_tree(tree, full=full, light=light, show_origin=origin_flag)
 
     if output:
         Path(output).parent.mkdir(parents=True, exist_ok=True)
@@ -363,6 +413,19 @@ def explain(
         typer.echo(f"✅ Written to {output}")
     else:
         typer.echo(result)
+
+
+def _filter_tree_by_version(tree: dict, version: str) -> dict:
+    """Recursively prune nodes that don't match the given version."""
+    if "error" in tree:
+        return tree
+    filtered = dict(tree)
+    filtered["upstream"] = [
+        _filter_tree_by_version(child, version)
+        for child in tree.get("upstream", [])
+        if child.get("version") == version or child.get("upstream")
+    ]
+    return filtered
 
 # =============================================
 # CODEGEN – type-safe Python SDK from dbt schema
