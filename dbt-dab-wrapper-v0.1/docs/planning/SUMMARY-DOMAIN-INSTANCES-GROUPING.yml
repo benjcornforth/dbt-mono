@@ -3,6 +3,7 @@
 #   dbt-dab-wrapper — Domain-Based Model Instances
 #   Date: 23 March 2026
 #   Status: Phase 1 COMPLETE ✅ | Subfolder grouping DONE ✅ | Deploy DONE ✅
+#           Domain Source Routing DONE ✅ | Per-Domain Workflows DONE ✅
 #   Goal: Same model runs in many domains (EU, US, APAC) in different schemas
 #         with different source files — no code duplication.
 #   Rule: Users edit ONLY forge.yml + dbt/ddl/. Everything else generated.
@@ -88,10 +89,36 @@ auto_documentation:
   - After every change: run `forge guide`
   - forge guide has been run — domain section available
 
+recent_changes:
+  domain_source_routing:
+    status: ✅ DONE
+    date: 2026-03-23
+    description: >
+      Added domain_sources: key in DDL YAML. Each domain instance can read
+      from its own source (e.g. raw_customers_eu for EU). Supports string
+      (single source override) and dict (join source override).
+    example: |
+      # In dbt/ddl/bronze/staging/stg_customers.yml
+      models:
+        stg_customers:
+          source: raw_customers
+          domain_sources:
+            eu: raw_customers_eu
+            us: raw_customers_us
+    verified: "forge compile → stg_customers_eu.sql reads from {{ ref('raw_customers_eu') }}"
+
+  per_domain_workflows:
+    status: ✅ DONE
+    date: 2026-03-23
+    description: >
+      Each domain gets its own Databricks workflow (PROCESS_demo_eu, PROCESS_demo_us, etc.)
+      for parallel scheduling. Opt-out with domain_workflows: shared in forge.yml.
+    code: build_domain_workflows() in workflow.py
+    verified: "forge workflow → 3 separate workflows with 11 tasks each"
+
 next_action:
-  - Phase 1 is complete (subfolder grouping + domain_layers + deploy)
-  - Remaining Phase 2 work: graph domain tags, workflow domain tasks, teardown --domain flag
-  - Phase 3: domain source routing
-  - Phase 4: migration tooling
+  - Remaining work: graph domain tags, teardown --domain flag
+  - Domain Config Merge (unlocks per-domain broadcast/quarantine/materialization)
+  - Migration tooling for domain instances
 
 last_updated: 2026-03-23

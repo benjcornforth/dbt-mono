@@ -52,7 +52,7 @@ domains:
   apac:
     schema_suffix: "_apac"
 
-domain_layers: [bronze, silver, gold]
+domain_layers: [bronze, silver]  
 
 # =============================================
 # PROFILES – multi-environment, multi-platform

@@ -1,0 +1,13 @@
+# customer_clean.yml — Cleaning model (domain instances auto-generated)
+# No domain_sources needed — refs stg_customers_eu/us/apac automatically.
+models:
+  customer_clean:
+    description: "Clean customer data with quarantine"
+    source: stg_customers
+    materialized: table
+    quarantine: "email IS NULL OR revenue < 0"
+    columns:
+      customer_id:  { type: int, required: true, unique: true }
+      email:        { type: string, required: true }
+      country:      { type: string }
+      revenue:      { type: "decimal(10,2)" }

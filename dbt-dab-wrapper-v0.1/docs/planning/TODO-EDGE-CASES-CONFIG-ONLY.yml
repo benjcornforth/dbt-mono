@@ -95,6 +95,29 @@ edge_cases_to_solve:
       - DDL: parameters.date_range
       - forge.yml: domains.eu.parameters.date_range: "last_7_days"
 
+  # ── ✅ WORKS TODAY (newly implemented) ─────────────────────────
+
+  - id: domain-source-routing
+    priority: 8
+    verdict: ✅ WORKS TODAY
+    title: Each domain reads from its own source file
+    effort: XS
+    how_to_solve:
+      - In DDL YAML, add domain_sources: { eu: raw_customers_eu, us: raw_customers_us }
+      - Each domain instance compiles with the correct source ref
+      - Supports string (single source) and dict (join source override)
+    test_command: forge compile && grep "from" dbt/models/demo/bronze/eu/stg_customers_eu.sql
+
+  - id: per-domain-workflows
+    priority: 9
+    verdict: ✅ WORKS TODAY
+    title: Each domain gets its own parallel Databricks workflow
+    effort: XS
+    how_to_solve:
+      - Default behavior: separate workflows (PROCESS_demo_eu, PROCESS_demo_us, etc.)
+      - Opt-out: domain_workflows: shared in forge.yml
+    test_command: forge workflow   # shows 3 separate workflows
+
 highest_leverage_unlock:
   name: Domain Config Merge (unlocks the 3 PARTIAL cases)
   effort: S (20 lines in compile_all())

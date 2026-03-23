@@ -702,3 +702,62 @@ def build_workflow(
         schema=schema,
         compute_type=compute_type,
     )
+
+
+def build_domain_workflows(
+    forge_config: dict,
+    graph: dict,
+) -> list[Workflow]:
+    """Build one Databricks Workflow per domain.
+
+    Each workflow contains only the models suffixed with that domain
+    (e.g. ``stg_customers_eu``, ``customer_clean_eu``), plus any shared
+    (non-domain) models they depend on.
+
+    Returns a list of Workflow objects — one per domain defined in
+    ``forge_config["domains"]``.  Falls back to a single shared workflow
+    if no domains are configured or ``domain_workflows: shared`` is set.
+    """
+    domains = forge_config.get("domains", {})
+    domain_layers = forge_config.get("domain_layers", [])
+    mode = forge_config.get("domain_workflows", "separate")  # "separate" | "shared"
+
+    if not domains or mode == "shared":
+        return [build_workflow(forge_config, graph)]
+
+    workflows: list[Workflow] = []
+    contracts = graph.get("contracts", {})
+    edges = graph.get("edges", [])
+
+    for domain_name in domains:
+        suffix = f"_{domain_name}"
+
+        # Filter contracts: keep domain-specific models for this domain + shared models
+        domain_cids: set[str] = set()
+        for cid, contract in contracts.items():
+            model = contract["dataset"]["name"]
+            # Include this domain's instances
+            if model.endswith(suffix):
+                domain_cids.add(cid)
+            # Include shared models (no domain suffix for any domain)
+            elif not any(model.endswith(f"_{d}") for d in domains):
+                domain_cids.add(cid)
+
+        # Filter edges to only those between included contracts
+        domain_edges = [e for e in edges
+                        if e["from"] in domain_cids and e["to"] in domain_cids]
+
+        # Build a scoped graph
+        domain_graph = {
+            "contracts": {cid: contracts[cid] for cid in domain_cids if cid in contracts},
+            "edges": domain_edges,
+        }
+
+        # Build the workflow with a domain-suffixed name
+        domain_config = {**forge_config}
+        domain_config["_workflow_suffix"] = suffix
+        wf = build_workflow(domain_config, domain_graph)
+        wf.name = f"{wf.name}{suffix}"
+        workflows.append(wf)
+
+    return workflows

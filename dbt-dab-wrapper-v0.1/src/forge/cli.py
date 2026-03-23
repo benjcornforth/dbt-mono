@@ -35,7 +35,7 @@ from forge.graph import (
     render_provenance_tree,
 )
 from forge.type_safe import build_models, generate_sdk_file
-from forge.workflow import build_workflow, generate_bundle_config, run_bundle_command
+from forge.workflow import build_workflow, build_domain_workflows, generate_bundle_config, run_bundle_command
 from forge.teardown import (
     build_teardown_plan,
     build_backup,
@@ -336,12 +336,13 @@ def deploy(
     job_yaml_paths = []
     try:
         graph = build_graph(config)
-        wf = build_workflow(config, graph)
-        wf_path = Path(f"resources/jobs/{wf.name}.yml")
-        wf_path.parent.mkdir(parents=True, exist_ok=True)
-        wf_path.write_text(wf.to_databricks_yml())
-        job_yaml_paths.append(str(wf_path))
-        typer.echo(f"📋 DAB workflow → {wf_path}")
+        workflows = build_domain_workflows(config, graph)
+        for wf in workflows:
+            wf_path = Path(f"resources/jobs/{wf.name}.yml")
+            wf_path.parent.mkdir(parents=True, exist_ok=True)
+            wf_path.write_text(wf.to_databricks_yml())
+            job_yaml_paths.append(str(wf_path))
+            typer.echo(f"📋 DAB workflow → {wf_path}")
     except FileNotFoundError as exc:
         typer.echo(f"❌ {exc}")
         raise typer.Exit(code=1)
@@ -818,33 +819,39 @@ def workflow(
         config["environment"] = prof["_name"]
 
     graph = build_graph(config)
-    wf = build_workflow(config, graph)
+    workflows = build_domain_workflows(config, graph)
 
     if mermaid:
-        result = wf.to_mermaid()
+        result = "\n\n".join(wf.to_mermaid() for wf in workflows)
     elif dab:
-        result = wf.to_databricks_yml()
+        result = "\n---\n".join(wf.to_databricks_yml() for wf in workflows)
     else:
-        # Default: print task summary
-        result = yaml.dump(wf.to_dict(), sort_keys=False, default_flow_style=False)
+        result = "\n---\n".join(
+            yaml.dump(wf.to_dict(), sort_keys=False, default_flow_style=False)
+            for wf in workflows
+        )
 
-    # Default output path for --dab mode
+    # Default output path for --dab mode: write each workflow to its own file
     if dab and not output:
-        output = f"resources/jobs/{wf.name}.yml"
-
-    if output:
+        for wf in workflows:
+            wf_out = Path(f"resources/jobs/{wf.name}.yml")
+            wf_out.parent.mkdir(parents=True, exist_ok=True)
+            wf_out.write_text(wf.to_databricks_yml())
+            typer.echo(f"✅ Workflow written to {wf_out}")
+    elif output:
         Path(output).parent.mkdir(parents=True, exist_ok=True)
         Path(output).write_text(result)
         typer.echo(f"✅ Workflow written to {output}")
     else:
         typer.echo(result)
 
-    stages_used = [t.stage for t in wf.tasks]
-    stage_summary = " → ".join(dict.fromkeys(stages_used))  # unique, ordered
-    typer.echo(f"\n📊 Pipeline: {stage_summary} ({len(wf.tasks)} tasks)")
-    for task in wf.tasks:
-        deps = f" ← {', '.join(task.depends_on)}" if task.depends_on else ""
-        typer.echo(f"  [{task.stage}] {task.name}{deps}")
+    for wf in workflows:
+        stages_used = [t.stage for t in wf.tasks]
+        stage_summary = " → ".join(dict.fromkeys(stages_used))
+        typer.echo(f"\n📊 {wf.name}: {stage_summary} ({len(wf.tasks)} tasks)")
+        for task in wf.tasks:
+            deps = f" ← {', '.join(task.depends_on)}" if task.depends_on else ""
+            typer.echo(f"  [{task.stage}] {task.name}{deps}")
 
 
 # =============================================

@@ -802,6 +802,19 @@ def compile_all(
                 domain_def = {**model_def, "_domain": domain_name, "_domain_models": domain_model_names}
                 if base_schema:
                     domain_def["schema"] = f"{base_schema}{suffix}"
+
+                # Domain source routing: swap source per domain if domain_sources defined
+                # domain_sources.{domain}: "source_name"        → replaces source: key
+                # domain_sources.{domain}: {alias: source_name} → merges into sources: key (joins)
+                ds = model_def.get("domain_sources", {})
+                if domain_name in ds:
+                    ds_val = ds[domain_name]
+                    if isinstance(ds_val, str):
+                        domain_def["source"] = ds_val
+                    elif isinstance(ds_val, dict):
+                        merged = {**model_def.get("sources", {}), **ds_val}
+                        domain_def["sources"] = merged
+
                 domain_sql = compile_model(
                     instance_name, domain_def, forge_config=forge_config,
                     seed_names=seed_names, udf_languages=udf_lang_map,
@@ -1985,6 +1998,142 @@ def generate_agent_guide(
     lines.append("")
     lines.append("The wrapper hides the complex parts so you can focus on business logic in YAML.")
     lines.append("")
+
+    # ── Domains (Multi-Region / Multi-Tenant) ────
+    domains = forge_config.get("domains", {})
+    domain_layers = forge_config.get("domain_layers", [])
+    if domains:
+        domain_names = list(domains.keys())
+        lines.append("## Domains (Multi-Region / Multi-Tenant)")
+        lines.append("")
+        lines.append("This project deploys the **same models** into isolated, per-domain schemas.")
+        lines.append("Each domain gets its own tables, quarantine sidecars, and lineage — zero code duplication.")
+        lines.append("")
+        lines.append("### How it works")
+        lines.append("")
+        lines.append("One model definition → N domain instances at compile time:")
+        lines.append("")
+        lines.append("```")
+        lines.append("customer_clean.yml  ──forge compile──▶  customer_clean_eu.sql")
+        lines.append("                                        customer_clean_us.sql")
+        lines.append("                                        customer_clean_apac.sql")
+        lines.append("```")
+        lines.append("")
+        lines.append("Each instance writes to its own schema (e.g. `ben_demo_eu`, `ben_demo_us`).")
+        lines.append("Refs between domain instances are rewritten automatically —")
+        lines.append("`customer_orders_eu` refs `customer_clean_eu`, not the base model.")
+        lines.append("")
+
+        # Current domains
+        lines.append("### Your domains")
+        lines.append("")
+        lines.append("| Domain | Schema Suffix | Example Schema |")
+        lines.append("|--------|--------------|----------------|")
+        schema_pattern = forge_config.get("schema_pattern", "{id}")
+        base_example = schema_pattern.replace("{user}", "ben").replace("{id}", forge_config.get("id", "demo"))
+        for dname, dcfg in domains.items():
+            suffix = dcfg.get("schema_suffix", f"_{dname}")
+            lines.append(f"| `{dname}` | `{suffix}` | `{base_example}{suffix}` |")
+        lines.append("")
+
+        # Domain layers
+        if domain_layers:
+            non_domain = [l for l in forge_config.get("schemas", []) if l not in domain_layers]
+            lines.append("### Which layers are split by domain?")
+            lines.append("")
+            lines.append(f"**Bifurcated (per-domain instances):** {', '.join(f'`{l}`' for l in domain_layers)}")
+            lines.append("")
+            if non_domain:
+                lines.append(f"**Shared (single instance, all domains read from it):** {', '.join(f'`{l}`' for l in non_domain)}")
+                lines.append("")
+            lines.append("Models in shared layers are referenced by all domain instances.")
+            lines.append("For example, if bronze is shared, `customer_clean_eu` and `customer_clean_us`")
+            lines.append("both read from the same `stg_customers` table.")
+            lines.append("")
+
+        # Per-model opt-out
+        lines.append("### Opting a model out of domains")
+        lines.append("")
+        lines.append("If a model is in a bifurcated layer but should stay shared (e.g. a reference table),")
+        lines.append("add `domain: false` in its DDL YAML:")
+        lines.append("")
+        lines.append("```yaml")
+        lines.append("models:")
+        lines.append("  country_codes:")
+        lines.append("    domain: false            # stays shared — no EU/US/APAC copies")
+        lines.append("    source: raw_country_codes")
+        lines.append("    columns:")
+        lines.append("      code: { type: string, required: true }")
+        lines.append("```")
+        lines.append("")
+        lines.append("Downstream domain models that reference an opted-out model will correctly")
+        lines.append("ref the shared base table, not a non-existent domain instance.")
+        lines.append("")
+
+        # Domain source routing
+        lines.append("### Domain-specific ingestion (different source per domain)")
+        lines.append("")
+        lines.append("Each domain can read from its own source file (e.g. region-specific volumes).")
+        lines.append("Add `domain_sources:` to the model DDL:")
+        lines.append("")
+        lines.append("```yaml")
+        lines.append("models:")
+        lines.append("  stg_customers:")
+        lines.append("    source: raw_customers                  # default / fallback")
+        lines.append("    domain_sources:")
+        lines.append("      eu: raw_customers_eu                 # EU reads from EU volume")
+        lines.append("      us: raw_customers_us                 # US reads from US volume")
+        lines.append("      apac: raw_customers_apac             # APAC reads from APAC volume")
+        lines.append("    columns:")
+        lines.append("      customer_id: { type: int, required: true }")
+        lines.append("```")
+        lines.append("")
+        lines.append("Result: `stg_customers_eu.sql` reads from `raw_customers_eu`,")
+        lines.append("`stg_customers_us.sql` reads from `raw_customers_us`, etc.")
+        lines.append("")
+        lines.append("For join models, use a dict to override specific join sources:")
+        lines.append("")
+        lines.append("```yaml")
+        lines.append("  customer_orders:")
+        lines.append("    sources: { c: customer_clean, o: stg_orders }")
+        lines.append("    domain_sources:")
+        lines.append("      eu: { o: stg_orders_eu_only }        # override just the orders source for EU")
+        lines.append("```")
+        lines.append("")
+
+        # Per-domain workflows
+        domain_wf_mode = forge_config.get("domain_workflows", "separate")
+        lines.append("### Per-domain Databricks workflows")
+        lines.append("")
+        lines.append("Each domain gets its own Databricks workflow by default, so domains")
+        lines.append("run in parallel on separate schedules if needed.")
+        lines.append("")
+        lines.append(f"**Current mode:** `{domain_wf_mode}`")
+        lines.append("")
+        lines.append("| Mode | Behavior |")
+        lines.append("|------|----------|")
+        lines.append("| `separate` (default) | One workflow per domain: `PROCESS_demo_eu`, `PROCESS_demo_us`, etc. |")
+        lines.append("| `shared` | Single workflow containing all domain instances |")
+        lines.append("")
+        lines.append("To switch to a shared workflow, add to forge.yml:")
+        lines.append("")
+        lines.append("```yaml")
+        lines.append("domain_workflows: shared")
+        lines.append("```")
+        lines.append("")
+
+        # forge.yml config reference
+        lines.append("### forge.yml domain config")
+        lines.append("")
+        lines.append("```yaml")
+        lines.append("# In forge.yml:")
+        lines.append("domains:")
+        for dname, dcfg in domains.items():
+            suffix = dcfg.get("schema_suffix", f"_{dname}")
+            lines.append(f'  {dname}: {{ schema_suffix: "{suffix}" }}')
+        lines.append(f"domain_layers: {domain_layers}")
+        lines.append("```")
+        lines.append("")
 
     # ── How Migrations Work ──────────────────────
     lines.append("## How to Make Changes (Migrations)")

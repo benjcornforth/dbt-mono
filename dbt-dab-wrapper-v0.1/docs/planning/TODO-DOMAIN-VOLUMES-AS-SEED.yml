@@ -27,9 +27,14 @@ developer_todos:
 
   - id: reference-seed-for-volumes
     priority: 1
-    status: Ready to build
+    status: ✅ Superseded by domain_sources
     title: Create reference seed mapping domain → Volume path
     effort: S (½ day)
+    resolution: >
+      Instead of a separate reference seed CSV, domain source routing is now
+      handled via domain_sources: in the model DDL YAML. Each domain instance
+      gets its own source ref at compile time. Volume-backed sources can be
+      defined as normal dbt sources/seeds pointing to their Volume paths.
     example_seed:
       # dbt/ddl/bronze/seeds/domain_volumes.yml
       domain_volumes:
@@ -45,9 +50,14 @@ developer_todos:
 
   - id: domain-source-generation
     priority: 2
-    status: Ready to build
+    status: ✅ DONE (via domain_sources in DDL)
     title: Generate per-domain source definitions from Volumes
     effort: S (1 day)
+    resolution: >
+      Implemented as domain_sources: in compile_all(). Each domain instance
+      has its source swapped at compile time. The compiled SQL reads from
+      {{ ref('raw_customers_eu') }} for EU, {{ ref('raw_customers_us') }} for US, etc.
+      Volume-backed sources are standard dbt source definitions.
     how:
       - For EU instance: source('seed_eu', 'raw_customers') → reads from /Volumes/.../eu/raw/
       - forge compile creates _sources_eu.yml with external table definitions
@@ -66,27 +76,29 @@ developer_todos:
 
   - id: deploy-and-teardown
     priority: 4
-    status: Ready to build
+    status: ✅ Covered by existing deploy/teardown
     title: forge deploy/teardown handles domain Volumes safely
     effort: XS (½ day)
-    next_steps:
-      - forge deploy creates domain schemas + registers sources
-      - forge teardown archives data from each Volume-backed table (never deletes)
-      - Ends with "♻️ Re-instate: forge deploy"
+    resolution: >
+      Domain deploy and teardown already handle domain schemas and instances.
+      Volume-backed sources are just standard dbt sources — deploy/teardown
+      handles them the same as any other source.
 
 success_criteria:
-  - Add 3 domains + one reference seed
-  - forge deploy creates silver_eu.customer_summary reading from its Volume
-  - Graph shows domain + Volume path
-  - forge explain shows the exact Volume used
-  - forge teardown is safe (archives only)
+  - Add 3 domains + domain_sources in DDL YAML                                  # DONE
+  - forge compile generates per-domain SQL with correct source refs              # DONE
+  - forge deploy creates domain schemas + tables automatically                   # DONE
+  - forge teardown is safe (archives only)                                       # DONE
+  - Graph shows domain + Volume path                                             # Phase 2
+  - forge explain shows the exact source used per domain                         # Phase 2
 
 auto_documentation:
   - After every todo: run `forge guide`
-  - New section appears: "## HOW-TO: Domain Volumes as Seed Sources"
+  - Domain sections in guide updated with domain_sources documentation           # DONE
 
 next_action:
-  - Start with #1 today (reference seed for Volumes — 30 minutes)
-  - Run `forge guide` after each step
+  - Core domain source routing is DONE (domain_sources: in DDL YAML)
+  - Remaining: graph domain tags showing volume paths, explain showing domain source
+  - Volume paths are infrastructure config (Databricks side), not forge config
 
 last_updated: 2026-03-23

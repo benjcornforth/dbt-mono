@@ -170,6 +170,9 @@ sql/005_customer_summary.sql
 | **ODCS contracts** | Every model is an Open Data Contract Standard v3.0.0 node |
 | **Portability flags** | `postgres_compatible: true` in forge.yml → avoids Databricks-only SQL |
 | **SQL-only mode** | `--pure-sql` emits standalone SQL — no dbt install needed at runtime |
+| **Multi-domain (regions/tenants)** | `domains:` in forge.yml → same model compiles to `_eu`, `_us`, `_apac` instances in isolated schemas |
+| **Domain source routing** | `domain_sources:` per model → each domain reads from its own source (e.g. region-specific volumes) |
+| **Per-domain workflows** | Each domain gets its own Databricks workflow for parallel execution (opt-out with `domain_workflows: shared`) |
 
 ---
 
@@ -213,6 +216,74 @@ Macros (lineage, quarantine, prior_version, UDFs) live in the **dbt-dab-tools** 
 
 ---
 
+## Multi-Domain Pipelines (EU / US / APAC)
+
+Run the same model logic across multiple domains (regions, tenants, business units) — each in its own schema, with its own source data, running in parallel.
+
+### 1. Declare domains in forge.yml
+
+```yaml
+# forge.yml
+domains:
+  eu:   { schema_suffix: "_eu" }
+  us:   { schema_suffix: "_us" }
+  apac: { schema_suffix: "_apac" }
+domain_layers: [bronze, silver]   # which layers get domain instances
+```
+
+### 2. Compile generates per-domain instances
+
+```bash
+forge compile
+# Generates:
+#   stg_customers_eu.sql   → schema: ben_demo_eu
+#   stg_customers_us.sql   → schema: ben_demo_us
+#   stg_customers_apac.sql → schema: ben_demo_apac
+```
+
+Refs are rewritten automatically — `customer_orders_eu` references `customer_clean_eu`.
+
+### 3. Domain-specific sources (optional)
+
+Each domain can read from its own source (e.g. region-specific volumes):
+
+```yaml
+# dbt/ddl/bronze/staging/stg_customers.yml
+models:
+  stg_customers:
+    source: raw_customers              # default / fallback
+    domain_sources:
+      eu: raw_customers_eu             # EU reads from EU volume
+      us: raw_customers_us
+      apac: raw_customers_apac
+    columns:
+      customer_id: { type: int, required: true }
+```
+
+### 4. Per-domain workflows (default)
+
+Each domain gets its own Databricks workflow for parallel scheduling:
+
+```
+PROCESS_demo_eu   → stg_customers_eu → customer_clean_eu → ...
+PROCESS_demo_us   → stg_customers_us → customer_clean_us → ...
+PROCESS_demo_apac → stg_customers_apac → customer_clean_apac → ...
+```
+
+To collapse into a single workflow: `domain_workflows: shared` in forge.yml.
+
+### 5. Per-model opt-out
+
+Reference tables that should stay shared across all domains:
+
+```yaml
+models:
+  country_codes:
+    domain: false   # no EU/US/APAC copies — all domains ref this one
+```
+
+---
+
 ## Requirements
 
 - Python 3.10+
@@ -233,3 +304,5 @@ Deeper docs live in `docs/`:
 | `docs/GUIDE.md` | Full reference guide (all 18 sections) |
 | `docs/ROADMAP_REVIEW.md` | Architecture decisions + roadmap |
 | `docs/planning/` | Implementation specs + enablement audits |
+| `docs/examples/sales_project/` | Single-domain example project |
+| `docs/examples/multi_domain_project/` | Multi-domain (EU/US/APAC) example with `domain_sources` |

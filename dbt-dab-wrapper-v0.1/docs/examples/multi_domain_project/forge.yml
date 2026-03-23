@@ -1,0 +1,38 @@
+# forge.yml — Multi-domain project example
+# Same pipeline runs in EU, US, APAC — each in its own schema.
+name: regional_analytics
+scope: fd
+id: regional
+active_profile: dev
+
+catalog_pattern: "{env}_{scope}_{catalog}"
+schema_pattern: "{user}_{id}"
+
+catalogs: [bronze, silver]
+schemas: [bronze, silver]
+
+# ── Domains — one schema per region ──
+domains:
+  eu:   { schema_suffix: "_eu" }
+  us:   { schema_suffix: "_us" }
+  apac: { schema_suffix: "_apac" }
+
+# Which layers get per-domain instances (bronze + silver = everything)
+domain_layers: [bronze, silver]
+
+# Each domain gets its own Databricks workflow (default: separate)
+# Set to "shared" for a single workflow containing all domains:
+# domain_workflows: shared
+
+profiles:
+  dev:
+    platform: databricks
+    databricks_profile: DEFAULT
+    env: dev
+    catalog: bronze
+    compute: { type: serverless }
+
+features:
+  graph: true
+  quarantine: true
+  prior_version: true

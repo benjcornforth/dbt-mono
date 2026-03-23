@@ -779,13 +779,14 @@ implementation_plan:
       #   SELECT * FROM silver.ben_demo.customer_summary WHERE region = 'EU'
 
   total_effort: "4-6 days"
-  completed_effort: "Phase 1 done + Phase 2 partial (~2 days)"
-  remaining_effort: "~2-3.5 days (Phase 2 remainder + Phases 3-4)"
+  completed_effort: "Phases 1-3 done (~3.5 days)"
+  remaining_effort: "~1-2 days (graph tags, teardown --domain, migration tooling)"
   risk: Low
   notes: >
-    Phase 1 is COMPLETE. Phase 2 is PARTIAL — deploy + subfolder grouping done,
-    graph tags / workflow tasks / teardown scoping still needed.
-    Phases 3-4 are incremental and independently deployable.
+    Phase 1 is COMPLETE (domain-aware compile + subfolder grouping).
+    Phase 2 PARTIAL — deploy done, workflow done (per-domain), graph tags / teardown --domain still needed.
+    Phase 3 COMPLETE — domain_sources routing implemented and tested.
+    Phase 4 (migration tooling) is incremental and independently deployable.
 
 
 # ====================================================================
@@ -802,5 +803,7 @@ success_criteria:
   - "forge diff shows per-domain contract changes"                              # Phase 2
   - "forge migrate splits data from shared -> domain schemas"                   # Phase 4
   - "No DDL model changes required -- domains are infrastructure config only"   # DONE
+  - "Each domain reads from its own source (domain_sources:)"                   # DONE
+  - "Per-domain Databricks workflows for parallel execution"                    # DONE
 
 last_updated: 2026-03-23
