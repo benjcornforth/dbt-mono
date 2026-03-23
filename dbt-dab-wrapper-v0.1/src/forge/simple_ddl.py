@@ -229,8 +229,11 @@ def _compile_column_select(col_name: str, col_def: dict, alias: str | None = Non
     return f"    {ref}"
 
 
-def compile_model(model_name: str, model_def: dict, forge_config: dict | None = None, seed_names: set[str] | None = None) -> str:
-    """Compile a single model definition into a dbt SQL file."""
+def compile_model(model_name: str, model_def: dict, forge_config: dict | None = None, seed_names: set[str] | None = None, udf_languages: dict[str, str] | None = None) -> str:
+    """Compile a single model definition into a dbt SQL file.
+
+    udf_languages: optional {udf_name: language} lookup for rich lineage ops.
+    """
     lines: list[str] = []
 
     # Config block
@@ -291,8 +294,29 @@ def compile_model(model_name: str, model_def: dict, forge_config: dict | None = 
         entry: dict[str, Any] = {"name": col_name}
 
         if "udf" in col_def:
-            entry["expr"] = col_def["udf"]
-            entry["op"] = "UDF"
+            udf_call = col_def["udf"]
+            fn_name = udf_call.split("(")[0].strip()
+            entry["expr"] = udf_call
+            entry["udf_name"] = fn_name
+            # Determine specific UDF op type
+            _udf_langs = udf_languages or {}
+            raw_lang = _udf_langs.get(fn_name, "").upper()
+            if raw_lang == "PANDAS":
+                entry["op"] = "PANDAS_UDF"
+            elif raw_lang == "PYTHON":
+                entry["op"] = "PYTHON_UDF"
+            elif raw_lang:
+                entry["op"] = "SQL_UDF"
+            else:
+                entry["op"] = "EXTERNAL_UDF"
+            # Extract input column names from call args
+            paren_start = udf_call.find("(")
+            paren_end = udf_call.rfind(")")
+            if paren_start != -1 and paren_end != -1:
+                args_str = udf_call[paren_start + 1 : paren_end]
+                inputs = [a.strip() for a in args_str.split(",") if a.strip()]
+                if inputs:
+                    entry["inputs"] = inputs
         elif "expr" in col_def:
             entry["expr"] = col_def["expr"]
             # Detect op type from expression
@@ -624,8 +648,12 @@ def compile_all(
     if legacy_udfs.exists():
         legacy_udfs.unlink()
 
+    # Build UDF language lookup once for lineage enrichment
+    udf_lang_map = {n: d.get("language", "sql") for n, d in load_udfs(ddl_path, forge_config=forge_config).items()}
+
     for model_name, model_def in models.items():
-        sql = compile_model(model_name, model_def, forge_config=forge_config, seed_names=seed_names)
+        sql = compile_model(model_name, model_def, forge_config=forge_config, seed_names=seed_names,
+                            udf_languages=udf_lang_map)
         layer = model_def.get("layer", "default")
         sub_dir = output_dir / origin / layer
         sub_dir.mkdir(parents=True, exist_ok=True)
@@ -1602,14 +1630,14 @@ def generate_agent_guide(
     lines.append("forge explain customer_summary.total_revenue --full")
     lines.append("```")
     lines.append("")
-    lines.append("The explain tree shows: expression, UDF calls, checks,")
-    lines.append("git commit, version, and full upstream lineage.")
+    lines.append("The explain tree shows: expression, UDF calls (SQL/Python/Pandas),")
+    lines.append("checks, git commit, version, and full upstream lineage.")
     lines.append("")
 
     # ── How to Define UDFs ───────────────────────
     lines.append("## How to Define UDFs (Reusable Functions)")
     lines.append("")
-    lines.append("Add a `udfs:` block in `dbt/models.yml`:")
+    lines.append("Add a `udfs:` block in `dbt/ddl/00_udfs.yml`:")
     lines.append("")
     lines.append("### SQL UDF")
     lines.append("")
@@ -1628,6 +1656,43 @@ def generate_agent_guide(
     lines.append("      END")
     lines.append("```")
     lines.append("")
+    lines.append("### Python UDF")
+    lines.append("")
+    lines.append("```yaml")
+    lines.append("udfs:")
+    lines.append("  clean_email:")
+    lines.append("    language: python")
+    lines.append("    returns: string")
+    lines.append("    runtime_version: '3.11'")
+    lines.append("    handler: clean")
+    lines.append("    params:")
+    lines.append("      - { name: raw_email, type: string }")
+    lines.append("    body: |")
+    lines.append("      def clean(raw_email):")
+    lines.append("          if raw_email is None:")
+    lines.append("              return None")
+    lines.append("          return raw_email.strip().lower()")
+    lines.append("```")
+    lines.append("")
+    lines.append("### Pandas UDF (vectorized — fast on large batches)")
+    lines.append("")
+    lines.append("```yaml")
+    lines.append("udfs:")
+    lines.append("  average_score:")
+    lines.append("    language: pandas")
+    lines.append("    returns: double")
+    lines.append("    runtime_version: '3.11'")
+    lines.append("    handler: compute")
+    lines.append("    packages: [pandas, numpy]")
+    lines.append("    params:")
+    lines.append("      - { name: score_a, type: double }")
+    lines.append("      - { name: score_b, type: double }")
+    lines.append("    body: |")
+    lines.append("      import pandas as pd")
+    lines.append("      def compute(score_a: pd.Series, score_b: pd.Series) -> pd.Series:")
+    lines.append("          return (score_a + score_b) / 2.0")
+    lines.append("```")
+    lines.append("")
     lines.append("### Use in a column")
     lines.append("")
     lines.append("```yaml")
@@ -1637,13 +1702,17 @@ def generate_agent_guide(
     lines.append('      tier: { udf: "loyalty_tier(total_revenue)", description: "Loyalty tier" }')
     lines.append("```")
     lines.append("")
+    lines.append("Lineage automatically tracks UDF type (SQL_UDF / PYTHON_UDF / PANDAS_UDF)")
+    lines.append("and captures the input column values at runtime in `_lineage.columns[].inputs`.")
+    lines.append("")
     lines.append("### Manage UDFs")
     lines.append("")
     lines.append("| Command | What it does |")
     lines.append("|---------|-------------|")
-    lines.append("| `forge udfs` | Shows all defined UDFs |")
+    lines.append("| `forge udfs` | Shows all defined UDFs (🔵 SQL, 🟣 Python, 🟠 Pandas) |")
     lines.append("| `forge udfs --output udfs.sql` | Writes CREATE FUNCTION SQL |")
-    lines.append("| `forge compile` | Auto-generates `_udfs.sql` alongside models |")
+    lines.append("| `forge compile` | Auto-generates `dbt/functions/*.sql` per UDF |")
+    lines.append("| `forge explain model.col` | Shows full provenance including UDF type + inputs |")
     lines.append("")
 
     # ── UDF inventory ────────────────────────────
@@ -1655,15 +1724,37 @@ def generate_agent_guide(
             lines.append("| UDF | Language | Returns | Parameters |")
             lines.append("|-----|----------|---------|------------|")
             for uname, udef in udfs_defined.items():
-                lang = udef.get("language", "sql").upper()
+                raw_lang = udef.get("language", "sql").upper()
+                icon = "🟠" if raw_lang == "PANDAS" else ("🟣" if raw_lang == "PYTHON" else "🔵")
                 ret = udef.get("returns", "STRING")
                 params = udef.get("params", [])
                 param_str = ", ".join(
                     f"{p['name']}: {p['type']}" if isinstance(p, dict) else str(p)
                     for p in params
                 ) or "(none)"
-                lines.append(f"| `{uname}` | {lang} | {ret} | {param_str} |")
+                lines.append(f"| {icon} `{uname}` | {raw_lang} | {ret} | {param_str} |")
             lines.append("")
+
+    # ── Broadcast Hints ──────────────────────────
+    lines.append("## Broadcast Hints (Join Optimisation)")
+    lines.append("")
+    lines.append("On Databricks, broadcasting a small table makes joins fly.")
+    lines.append("Add one line to any join model:")
+    lines.append("")
+    lines.append("```yaml")
+    lines.append("models:")
+    lines.append("  customer_orders:")
+    lines.append("    sources:")
+    lines.append("      c: customer_clean    # small table")
+    lines.append("      o: stg_orders        # big table")
+    lines.append('    join: "c.customer_id = o.customer_id"')
+    lines.append("    broadcast: c            # ← one line")
+    lines.append("```")
+    lines.append("")
+    lines.append("Generates: `SELECT /*+ BROADCAST(c) */ ...`")
+    lines.append("")
+    lines.append("Multiple tables: `broadcast: [c, small_lookup]`")
+    lines.append("")
 
     # ── How Migrations Work ──────────────────────
     lines.append("## How to Make Changes (Migrations)")

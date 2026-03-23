@@ -617,11 +617,20 @@ def _add_sql_udf_nodes(
                         meta={"external": True},
                     )
 
+                # Parse input columns from call args
+                paren_start = udf_call.find("(")
+                paren_end = udf_call.rfind(")")
+                udf_inputs = []
+                if paren_start != -1 and paren_end != -1:
+                    args_str = udf_call[paren_start + 1 : paren_end]
+                    udf_inputs = [a.strip() for a in args_str.split(",") if a.strip()]
+
                 graph["edges"].append({
                     "from": udf_id,
                     "to": model_id,
                     "type": "udf_call",
-                    "description": f"UDF {fn_name} used in {model_name}.{col_name}",
+                    "description": f"UDF {fn_name}({', '.join(udf_inputs)}) → {model_name}.{col_name}",
+                    **({"meta": {"inputs": udf_inputs, "output": col_name}} if udf_inputs else {}),
                 })
 
 
@@ -845,7 +854,6 @@ def walk_column_lineage(
         udf_call_str = col_def["udf"]
         fn_name = udf_call_str.split("(")[0].strip()
         expression = udf_call_str
-        op = "UDF"
         # Extract arg columns from the call
         import re
         args = re.findall(r"\(([^)]*)\)", udf_call_str)
@@ -853,11 +861,33 @@ def walk_column_lineage(
             source_columns = [a.strip() for a in args[0].split(",") if a.strip()]
         if fn_name in udfs:
             udf_def = udfs[fn_name]
-            udf_calls.append({
+            raw_lang = udf_def.get("language", "sql").upper()
+            is_pandas = raw_lang == "PANDAS"
+            language = "PYTHON" if is_pandas else raw_lang
+            op = "PANDAS_UDF" if is_pandas else ("PYTHON_UDF" if language == "PYTHON" else "SQL_UDF")
+            udf_entry: dict[str, Any] = {
                 "name": fn_name,
                 "description": udf_def.get("description", ""),
-                "language": udf_def.get("language", "sql").upper(),
+                "language": language,
                 "returns": udf_def.get("returns", "STRING"),
+                "vectorized": is_pandas,
+            }
+            if udf_def.get("runtime_version"):
+                udf_entry["runtime_version"] = udf_def["runtime_version"]
+            if udf_def.get("handler"):
+                udf_entry["handler"] = udf_def["handler"]
+            if udf_def.get("packages"):
+                udf_entry["packages"] = list(udf_def["packages"])
+            udf_calls.append(udf_entry)
+        else:
+            # External UDF — not defined locally
+            op = "EXTERNAL_UDF"
+            udf_calls.append({
+                "name": fn_name,
+                "description": "External UDF (not defined in this project)",
+                "language": "UNKNOWN",
+                "returns": col_def.get("type", "UNKNOWN"),
+                "external": True,
             })
     elif "expr" in col_def:
         expression = col_def["expr"]
@@ -985,9 +1015,17 @@ def _render_provenance_terminal(
 
         # UDFs
         for udf in tree.get("udf_calls", []):
-            lines.append(f"├─ UDF: {udf['name']}() → {udf['returns']}  [{udf['language']}]")
+            icon = "🟠" if udf.get("vectorized") else ("🟣" if udf["language"] == "PYTHON" else ("🔵" if udf["language"] in ("SQL", "UNKNOWN") else "⚪"))
+            ext = " (external)" if udf.get("external") else ""
+            lines.append(f"├─ {icon} UDF: {udf['name']}() → {udf['returns']}  [{udf['language']}]{ext}")
             if full and udf.get("description"):
                 lines.append(f"│    {udf['description']}")
+            if full and udf.get("runtime_version"):
+                lines.append(f"│    Runtime: Python {udf['runtime_version']}")
+            if full and udf.get("packages"):
+                lines.append(f"│    Packages: {', '.join(udf['packages'])}")
+            if full and udf.get("handler"):
+                lines.append(f"│    Handler: {udf['handler']}")
 
         # Git + deploy
         lines.append(f"├─ Git commit: {tree['git_commit']}")
@@ -1009,7 +1047,9 @@ def _render_provenance_terminal(
         lines.append(f"{indent}│  expr: {tree['expression']}  [{tree['op']}]")
         if tree.get("udf_calls"):
             for udf in tree["udf_calls"]:
-                lines.append(f"{indent}│  UDF: {udf['name']}()")
+                icon = "🟠" if udf.get("vectorized") else ("🟣" if udf.get("language") == "PYTHON" else "🔵")
+                ext = " (ext)" if udf.get("external") else ""
+                lines.append(f"{indent}│  {icon} {udf['name']}() [{udf.get('language', 'SQL')}]{ext}")
         if tree.get("checks") and full:
             for chk in tree["checks"]:
                 icon = "🔴" if chk["severity"] == "error" else "🟡"
