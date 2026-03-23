@@ -653,24 +653,68 @@ implementation_plan:
 
   phase_1:
     name: "Domain-aware compile"
+    status: DONE
     effort: "1-2 days"
+    completed: 2026-03-23
+    commit: "ed6e82c (schema bifurcation by client)"
     files_changed:
       - src/forge/simple_ddl.py (compile_all, compile_model)
+      - forge.yml (domains config added)
     delivers:
-      - "domains: section in forge.yml"
-      - "compile_all() generates {model}_{domain}.sql per model per domain"
-      - "Hardcoded schema in each domain instance config block"
-      - "Domain tag in config for dbt selection"
-      - "Domain instances included in schema.yml for testing"
+      - "domains: section in forge.yml"                                   # DONE
+      - "compile_all() generates {model}_{domain}.sql per model per domain" # DONE
+      - "Hardcoded schema in each domain instance config block"            # DONE
+      - "Domain tag in config for dbt selection"                           # DONE
+      - "Domain instances included in schema.yml for testing"              # DONE
+      - "Ref rewriting scoped to domain layers only (_domain_models)"      # DONE
+      - "domain_layers configurable -- bifurcation at bronze/silver/gold"  # DONE -- tested all 3
+    what_was_implemented:
+      _resolve_base_schema:
+        location: src/forge/simple_ddl.py (L233)
+        purpose: >
+          Resolves the concrete schema name for a given layer using
+          schema_pattern from forge.yml (e.g. "ben_demo"). Used to
+          compute domain-specific schemas like "ben_demo_eu".
+      compile_model_changes:
+        location: src/forge/simple_ddl.py (L269)
+        details:
+          - "Reads _domain from model_def -> adds tags=['eu'] to config block"
+          - "Reads _domain_models set to scope ref rewriting correctly"
+          - "_ref_or_source() rewrites ref('model') -> ref('model_eu') only for models in domain layers"
+      compile_all_domain_loop:
+        location: src/forge/simple_ddl.py (L714)
+        details:
+          - "Loads domains and domain_layers from forge_config"
+          - "Pre-computes domain_model_names set for ref scoping"
+          - "After default models, loops domains to generate {model}_{domain}.sql"
+          - "Clones model_def, sets hardcoded schema and _domain/_domain_models"
+          - "Merges domain instances into all_models for schema.yml generation"
+      forge_yml_config:
+        location: forge.yml
+        added: |
+          domains:
+            eu:  { schema_suffix: "_eu" }
+            us:  { schema_suffix: "_us" }
+            apac: { schema_suffix: "_apac" }
+          domain_layers: [silver, gold]
+    bugs_fixed:
+      - issue: "Ref rewriting was applied to ALL upstream models, including shared bronze"
+        fix: "Added _domain_models set — only models whose layer is in domain_layers get suffixed"
+        example: "customer_clean_eu correctly refs shared stg_customers (bronze) but domain customer_orders_eu (silver)"
     validation: |
       forge compile
       ls dbt/models/demo/silver/
       # -> customer_clean.sql customer_clean_eu.sql customer_clean_us.sql ...
       cat dbt/models/demo/silver/customer_clean_eu.sql
       # -> schema='ben_demo_eu'
+    validated_scenarios:
+      - "BRONZE+ bifurcation: domain_layers=[bronze,silver,gold] — all layers get domain instances, refs rewritten throughout"
+      - "SILVER+ bifurcation: domain_layers=[silver,gold] — bronze shared, silver/gold get domain instances"
+      - "GOLD ONLY bifurcation: domain_layers=[gold] — only gold layer gets domain instances, refs to shared upstream"
 
   phase_2:
     name: "Deploy + graph + workflow integration"
+    status: NOT STARTED
     effort: "1 day"
     files_changed:
       - src/forge/cli.py (deploy -- add CREATE SCHEMA for domain schemas)
@@ -691,6 +735,7 @@ implementation_plan:
 
   phase_3:
     name: "Domain source routing"
+    status: NOT STARTED
     effort: "1 day"
     files_changed:
       - src/forge/simple_ddl.py (compile_model -- domain source refs)
@@ -705,6 +750,7 @@ implementation_plan:
 
   phase_4:
     name: "Migration tooling"
+    status: NOT STARTED
     effort: "1-2 days"
     files_changed:
       - src/forge/migrate.py (new module)
@@ -720,9 +766,11 @@ implementation_plan:
       #   SELECT * FROM silver.ben_demo.customer_summary WHERE region = 'EU'
 
   total_effort: "4-6 days"
+  completed_effort: "Phase 1 done (~1.5 days)"
+  remaining_effort: "~2.5-4 days (Phases 2-4)"
   risk: Low
   notes: >
-    Phase 1 alone delivers 80% of the value. Phases 2-4 are incremental.
+    Phase 1 delivers 80% of the value and is COMPLETE. Phases 2-4 are incremental.
     Each phase is independently deployable and testable.
 
 
@@ -731,14 +779,14 @@ implementation_plan:
 # ====================================================================
 
 success_criteria:
-  - "User adds domains: block to forge.yml (3 lines per domain)"
-  - "forge compile generates N .sql files per model per domain"
-  - "forge deploy creates domain schemas + tables automatically"
-  - "Graph shows each domain instance as its own contract node"
-  - "dbt test runs per-domain automatically"
-  - "forge teardown --wipe-all drops all domain schemas cleanly"
-  - "forge diff shows per-domain contract changes"
-  - "forge migrate splits data from shared -> domain schemas"
-  - "No DDL model changes required -- domains are infrastructure config only"
+  - "User adds domains: block to forge.yml (3 lines per domain)"               # DONE
+  - "forge compile generates N .sql files per model per domain"                 # DONE
+  - "forge deploy creates domain schemas + tables automatically"                # Phase 2
+  - "Graph shows each domain instance as its own contract node"                 # Phase 2 (auto via manifest)
+  - "dbt test runs per-domain automatically"                                    # DONE (schema.yml includes domain instances)
+  - "forge teardown --wipe-all drops all domain schemas cleanly"                # Phase 2
+  - "forge diff shows per-domain contract changes"                              # Phase 2
+  - "forge migrate splits data from shared -> domain schemas"                   # Phase 4
+  - "No DDL model changes required -- domains are infrastructure config only"   # DONE
 
 last_updated: 2026-03-23
