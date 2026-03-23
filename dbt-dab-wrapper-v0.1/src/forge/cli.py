@@ -76,7 +76,39 @@ app = typer.Typer(
 # =============================================
 # CONFIG FILE – the ONLY thing a child ever edits
 # =============================================
-CONFIG_FILE = Path("forge.yml")
+
+def _find_project_root(start: Path = None) -> Path:
+    """Find the directory containing forge.yml.
+    Searches: cwd → parent directories → immediate child directories.
+    Returns cwd as fallback if not found."""
+    current = (start or Path.cwd()).resolve()
+    # 1. Walk up from cwd
+    check = current
+    while True:
+        if (check / "forge.yml").exists():
+            return check
+        parent = check.parent
+        if parent == check:            # filesystem root
+            break
+        check = parent
+    # 2. Check immediate child directories (one level)
+    try:
+        candidates = [d for d in current.iterdir()
+                      if d.is_dir() and (d / "forge.yml").exists()]
+        if len(candidates) == 1:
+            return candidates[0]
+    except PermissionError:
+        pass
+    return current                     # fallback
+
+
+_PROJECT_ROOT = _find_project_root()
+CONFIG_FILE = _PROJECT_ROOT / "forge.yml"
+
+# Anchor cwd to project root so all relative paths (dbt/models, resources/, etc.) resolve correctly
+# even when `forge` is invoked from a parent or sibling directory.
+if _PROJECT_ROOT != Path.cwd():
+    os.chdir(_PROJECT_ROOT)
 
 # DDL can live in a file (dbt/models.yml) or a directory (dbt/ddl/)
 DDL_DEFAULT = "dbt/models.yml"

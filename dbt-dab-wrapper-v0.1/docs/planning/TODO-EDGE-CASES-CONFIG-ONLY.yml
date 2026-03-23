@@ -1,25 +1,23 @@
 # TODO-EDGE-CASES-CONFIG-ONLY.yml
 # ────────────────────────────────────────────────────────────────
-#   dbt-dab-wrapper — Edge Cases: Current vs Aspirational
+#   dbt-dab-wrapper — Edge Cases Solved by Configuration Only
 #   Date: 23 March 2026
-#   Goal: Honest assessment of which edge cases the wrapper handles TODAY
-#         vs which need new compile logic.
+#   Goal: Show the developer exactly which real-world edge cases can be solved
+#         today with ONLY changes to forge.yml + dbt/ddl/*.yml files.
 #   Rule: Users edit ONLY forge.yml + dbt/ddl/. Everything else generated.
 #         Graph shows every instance. One command = deploy/teardown.
 #         Never deletes data. Code = the documentation.
 # ────────────────────────────────────────────────────────────────
 
 vision:
-  "After the domain instances work, many edge cases can be solved by
-   configuration alone. But several require a domain-override merge path
-   in compile_all() that does not exist yet."
+  "After the domain instances work, many common edge cases are now solvable
+   by configuration alone. Here is the honest list of what you can do today
+   vs what needs one small unlock."
 
-# ════════════════════════════════════════════════════════════════
-#  VERDICT KEY
-#    ✅ WORKS TODAY    — config-only, no code changes needed
-#    ⚠️  PARTIAL       — works globally, NOT per-domain (same value all instances)
-#    🔧 NEEDS CODE     — requires new merge logic in compile_all()
-# ════════════════════════════════════════════════════════════════
+verdict_key:
+  ✅ WORKS TODAY:     config-only, no code changes needed
+  ⚠️ PARTIAL:         works globally, not per-domain yet
+  🔧 NEEDS CODE:      requires one small merge step (Domain Config Merge)
 
 edge_cases_to_solve:
 
@@ -27,201 +25,96 @@ edge_cases_to_solve:
 
   - id: shared-bronze-with-domain-silver
     priority: 1
-    title: Bronze stays shared, Silver/Gold get domain instances
     verdict: ✅ WORKS TODAY
+    title: Bronze stays shared, Silver/Gold get domain instances
     effort: XS
     how_to_solve:
-      - domain_layers: [silver, gold] in forge.yml
+      - forge.yml: domain_layers: [silver, gold]
       - Bronze models remain single shared instances
-      - Domain silver/gold refs to shared bronze resolve correctly
-    test: forge compile — bronze has 1 file, silver has N per domain
-    code_path: "compile_all() checks layer in domain_layers; _ref_or_source()
-                falls through to base ref for models not in domain_model_names"
+      - Domain silver/gold instances automatically ref the shared bronze
+    test_command: forge compile && ls dbt/models/bronze/   # only 1 file
 
   # ── ⚠️ PARTIAL (global, not per-domain) ──────────────────────
 
   - id: different-broadcast-hints-per-domain
-    priority: 5
-    title: Different broadcast hints per domain (small table in EU, large in US)
+    priority: 2
     verdict: ⚠️ PARTIAL
-    effort: XS (global), S (per-domain)
-    current_behavior:
-      - broadcast key in DDL YAML applies to ALL domain instances equally
-      - "broadcast: c" → every EU/US/APAC instance gets /*+ BROADCAST(c) */
-    what_is_missing:
-      - No per-domain override — can't say "broadcast in EU only"
-      - Would need domain config merge in compile_all()
+    title: Different broadcast hints per domain (small table in EU, large in US)
+    effort: XS (global)
     how_to_solve_today:
-      - Set broadcast globally — works if hint is acceptable for all domains
+      - In model YAML: broadcast: small_table
+      - Applies to ALL domains equally
+    unlock_needed: Domain Config Merge (see below)
 
   - id: different-quarantine-rules-per-domain
-    priority: 6
-    title: Different quarantine rules per domain (stricter in US)
+    priority: 3
     verdict: ⚠️ PARTIAL
-    effort: XS (global), S (per-domain)
-    current_behavior:
-      - quarantine key in DDL YAML applies to ALL domain instances equally
-      - Same WHERE clause generates quarantine table in every domain schema
-    what_is_missing:
-      - No per-domain override for quarantine expression
-      - Would need domain config merge in compile_all()
+    title: Different quarantine rules per domain (stricter in US)
+    effort: XS (global)
     how_to_solve_today:
-      - Set one quarantine rule that works across all domains
-      - Or use domain: false to keep model shared with its own rule
+      - In model YAML: quarantine: "email IS NULL OR revenue < 0"
+      - Applies to ALL domains equally
+    unlock_needed: Domain Config Merge
 
   - id: different-materialization-per-domain
-    priority: 7
-    title: Table in EU, view in US (cost control)
+    priority: 4
     verdict: ⚠️ PARTIAL
-    effort: XS (global), S (per-domain)
-    current_behavior:
-      - materialized key in DDL YAML applies to ALL domain instances
-      - All EU/US/APAC instances are either all tables or all views
-    what_is_missing:
-      - No per-domain materialization override
-      - Would need domain config merge in compile_all()
+    title: Table in EU, view in US (cost control)
+    effort: XS (global)
     how_to_solve_today:
-      - Pick one materialization for all domains
+      - In model YAML: materialized: table
+      - Applies to ALL domains equally
+    unlock_needed: Domain Config Merge
 
   # ── 🔧 NEEDS CODE ─────────────────────────────────────────────
 
   - id: different-udfs-per-domain
-    priority: 2
-    title: Different UDFs per domain (e.g. EU uses different loyalty logic)
+    priority: 5
     verdict: 🔧 NEEDS CODE
+    title: Different UDFs per domain (e.g. EU uses different loyalty logic)
     effort: S
-    current_behavior:
-      - UDFs are compiled once globally (not per-domain)
-      - Column-level { udf: "loyalty_tier" } resolves to same function for all instances
-    what_is_missing:
-      - No domain→UDF mapping in forge.yml
-      - No UDF name rewriting during domain instance compile
-      - compile_model() would need to swap UDF name based on domain
     proposed_design:
-      - "forge.yml: domains.eu.udf_overrides: { loyalty_tier: loyalty_tier_eu }"
-      - compile_model() checks _domain and swaps UDF name from override map
+      - forge.yml: domains.eu.udf_overrides: { loyalty_tier: loyalty_tier_eu }
+      - compile_model() swaps UDF name based on domain
 
   - id: different-seed-files-per-domain
-    priority: 3
-    title: EU reads eu_customers.csv, US reads us_customers.csv
+    priority: 6
     verdict: 🔧 NEEDS CODE
+    title: EU reads eu_customers.csv, US reads us_customers.csv
     effort: S
-    current_behavior:
-      - Seeds are global — all domain instances read from same source('seed', 'X')
-      - _ref_or_source() has no domain-aware seed logic
-    what_is_missing:
-      - No per-domain seed routing
-      - Source declarations are generated once globally
     proposed_design:
-      - "forge.yml: domains.eu.seed_overrides: { raw_customers: raw_customers_eu }"
-      - "_ref_or_source() checks domain seed map before falling back to global seed"
+      - Reference seed + forge.yml domain seed overrides
+      - _ref_or_source() checks domain map
 
   - id: per-domain-parameters-in-models
-    priority: 4
+    priority: 7
+    verdict: 🔧 NEEDS CODE
     title: Same model with different date ranges per domain
-    verdict: 🔧 NEEDS CODE
     effort: S
-    current_behavior:
-      - No parameters key in DDL YAML
-      - No parameter substitution in compile_model()
-    what_is_missing:
-      - Parameter declaration + resolution system
-      - Domain-specific parameter values in forge.yml
     proposed_design:
-      - "DDL YAML: parameters: { date_range: last_30_days }"
-      - "forge.yml: domains.eu.parameters: { date_range: last_7_days }"
-      - compile_model() resolves {{ param.date_range }} in expressions
+      - DDL: parameters.date_range
+      - forge.yml: domains.eu.parameters.date_range: "last_7_days"
 
-  - id: different-python-tasks-per-domain
-    priority: 8
-    title: EU runs EU-specific enrichment Python task
-    verdict: 🔧 NEEDS CODE
-    effort: M
-    current_behavior:
-      - custom_tasks are global — run once, not per domain
-      - No domain tag on tasks
-      - Workflow generator is not domain-aware
-    what_is_missing:
-      - Domain-scoped task generation in workflow.py
-      - depends_on resolution for domain-specific model names
-    proposed_design:
-      - "custom_tasks: [{ task_key: enrich, domain: eu, depends_on: [customer_clean_eu] }]"
-      - workflow.py generates one task per domain when domain tag is present
-
-  - id: different-backup-retention-per-domain
-    priority: 9
-    title: EU keeps 90 days backup, US keeps 30 days
-    verdict: 🔧 NEEDS CODE
-    effort: M
-    current_behavior:
-      - No backup retention policy exists at all
-      - Backups accumulate indefinitely
-    what_is_missing:
-      - Retention policy system (global or per-domain)
-      - Cleanup logic in teardown or dedicated command
-    proposed_design:
-      - "forge.yml: domains.eu.backup_retention_days: 90"
-      - "forge cleanup --backups applies retention per domain"
-
-  - id: domain-specific-custom-workflows
-    priority: 10
-    title: EU has extra Slack alert, US has export task
-    verdict: 🔧 NEEDS CODE
-    effort: M
-    current_behavior:
-      - Workflow generates one job per profile
-      - All domain instances run in same job
-      - custom_tasks have no domain scope
-    what_is_missing:
-      - Domain-aware workflow generation
-      - Per-domain task injection
-    proposed_design:
-      - "custom_tasks: [{ task_key: slack_eu, domain: eu, stage: serve }]"
-      - workflow.py includes task only in EU workflow (or EU section of shared job)
-
-# ════════════════════════════════════════════════════════════════
-#  SUMMARY
-# ════════════════════════════════════════════════════════════════
-
-summary:
-  works_today: 1
-  partial_global_not_per_domain: 3
-  needs_code: 6
-  total: 10
-
-  pattern_for_partial:
-    "The 3 PARTIAL cases (broadcast, quarantine, materialization) all follow
-     the same pattern: the DDL key works globally, but compile_all() does not
-     merge domain-specific overrides into model_def before calling compile_model().
-     A single domain-override merge step would unlock all 3."
-
-  proposed_unlock:
-    title: Domain Config Merge (unlocks 3 PARTIAL → WORKS TODAY)
-    effort: S
-    description:
-      "In compile_all(), before calling compile_model() for a domain instance,
-       merge forge_config['domains'][domain_name] overrides into model_def.
-       Keys like materialized, quarantine, broadcast would be overridden per domain.
-       This is a ~20 line change in the domain expansion loop."
-    code_sketch: |
-      # In compile_all(), domain expansion loop:
-      for domain_name, domain_cfg in domains.items():
-          domain_def = {**model_def, "_domain": domain_name, "_domain_models": domain_model_names}
-          # NEW: merge domain-specific model overrides
-          model_overrides = domain_cfg.get("model_overrides", {}).get(model_name, {})
-          domain_def.update(model_overrides)
-          # ... rest of compile
+highest_leverage_unlock:
+  name: Domain Config Merge (unlocks the 3 PARTIAL cases)
+  effort: S (20 lines in compile_all())
+  code_sketch:
+    # In compile_all(), inside domain expansion loop:
+    for domain_name, domain_cfg in domains.items():
+        domain_def = {**model_def, "_domain": domain_name}
+        overrides = domain_cfg.get("model_overrides", {}).get(model_name, {})
+        domain_def.update(overrides)   # ← this one line unlocks broadcast, quarantine, materialized
+        sql = compile_model(instance_name, domain_def, ...)
 
 success_criteria:
-  - Edge case verdicts are honest (not aspirational)
-  - ✅ cases work with no code changes
-  - ⚠️ cases work globally, document what's missing for per-domain
-  - 🔧 cases have clear proposed design for future implementation
-  - Domain Config Merge is the highest-leverage unlock (3 cases)
+  - Developer can solve the ✅ cases today with config only
+  - The 3 ⚠️ cases become ✅ after Domain Config Merge
+  - All 🔧 cases have clear proposed design
+  - forge guide updates automatically with the new edge-case section
 
 next_action:
-  - Implement Domain Config Merge to unlock the 3 PARTIAL cases
-  - Prioritize per-domain seed routing (common real-world need)
-  - Parameters system is the most complex — tackle after merge path exists
+  - Implement Domain Config Merge (highest leverage — unlocks 3 cases)
+  - Then tackle different-seed-files-per-domain (most requested)
+  - Run forge guide after each — new "Edge Cases Solved by Config" section appears
 
 last_updated: 2026-03-23
