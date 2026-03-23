@@ -1,5 +1,5 @@
 {{ config(
-    materialized='view', schema=var("schema_bronze"), database=var("catalog_bronze")
+    materialized='view', schema='ben_demo_us', database=var("catalog_bronze"), tags=['us']
 ) }}
 
 select

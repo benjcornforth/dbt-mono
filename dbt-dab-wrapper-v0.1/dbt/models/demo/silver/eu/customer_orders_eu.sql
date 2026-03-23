@@ -1,5 +1,5 @@
 {{ config(
-    materialized='table', schema=var("schema_silver"), database=var("catalog_silver"), meta={'version': 'v1'}
+    materialized='table', schema='ben_demo_eu', database=var("catalog_silver"), tags=['eu'], meta={'version': 'v1'}
 ) }}
 
 select /*+ BROADCAST(c) */
@@ -15,6 +15,6 @@ select /*+ BROADCAST(c) */
     o.line_total,
     o.order_date,
     {{ dbt_dab_tools.lineage_columns() }}
-from {{ ref('customer_clean') }} c
-inner join {{ ref('stg_orders') }} o
+from {{ ref('customer_clean_eu') }} c
+inner join {{ ref('stg_orders_eu') }} o
     on c.customer_id = o.customer_id

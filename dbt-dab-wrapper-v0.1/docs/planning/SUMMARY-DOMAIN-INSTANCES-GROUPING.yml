@@ -1,0 +1,78 @@
+# SUMMARY-DOMAIN-INSTANCES-GROUPING.yml
+# ────────────────────────────────────────────────────────────────
+#   dbt-dab-wrapper — Domain-Based Model Instances (Corrected Summary)
+#   Date: 23 March 2026
+#   Status: Phase 1 COMPLETE ✅ (flat suffix files) | Grouping is a proposal
+#   Goal: Same model runs in many domains (EU, US, APAC) in different schemas
+#         with different source files — no code duplication.
+#   Rule: Users edit ONLY forge.yml + dbt/ddl/. Everything else generated.
+#         Graph shows every instance. One command = deploy/teardown.
+#         Never deletes data. Code = the documentation.
+# ────────────────────────────────────────────────────────────────
+
+current_state:
+  how_instances_work_today:
+    - forge.yml has a domains: block (schema_suffix per domain)
+    - forge compile creates flat files with suffix: silver/customer_clean_eu.sql
+    - Each instance is a real dbt model (customer_clean_eu, customer_clean_us)
+    - Schema is hardcoded in the .sql file (ben_demo_eu)
+    - No subfolders yet — all files sit flat in the layer folder
+    - domain_layers configurable in forge.yml (bronze/silver/gold bifurcation works)
+      - e.g. domain_layers: [silver, gold] = only silver+ get domain instances
+      - bronze stays shared (raw ingestion)
+  why_flat_files_were_chosen:
+    - Avoids dbt naming conflict (model name derived from filename)
+    - Keeps dbt happy (filename = model name)
+    - Graph, workflow, tests, and teardown work automatically
+
+proposed_grouping:
+  name: "Per-domain subfolders (future enhancement after Phase 2)"
+  structure_we_want:
+    dbt/models/silver/
+    ├── eu/
+    │   └── customer_summary_eu.sql     # filename keeps suffix to avoid collision
+    ├── us/
+    │   └── customer_summary_us.sql
+    └── apac/
+        └── customer_summary_apac.sql
+  current_blocker:
+    - dbt derives model name from filename only
+    - Subfolders would create 3 models all named "customer_summary" → collision
+  solution_options:
+    - Option A (recommended): Keep filename as customer_summary_eu.sql inside silver/eu/ folder
+    - Option B: Use dbt alias config inside the file (more complex)
+  effort: S (1 day, after Phase 2)
+  benefit: "File explorer becomes self-documenting — open silver/eu/ to see EU logic"
+
+backup_and_teardown_impact:
+  backups:
+    - Unaffected by grouping choice
+    - Each instance (customer_summary_eu) gets its own row in _backup_archive
+    - Compact JSON array per table (one row per asset)
+    - forge teardown always archives domain instances separately
+
+  teardowns:
+    - Unaffected by grouping choice
+    - forge teardown lists each domain instance clearly
+    - Only removes orchestration + code (never data)
+    - Ends with "♻️ Re-instate any instance: forge deploy"
+    - --domain eu flag can scope teardown to one domain (future)
+
+success_criteria:
+  - Current flat approach works today (customer_clean_eu.sql)                     # Phase 1 — DONE
+  - forge explain customer_summary_eu works (shows domain + source)               # Phase 2+
+  - forge deploy creates domain schemas + tables automatically                    # Phase 2
+  - Graph shows each instance as its own node with domain badge                   # Phase 2
+  - forge teardown is safe (archives only, clear re-instate path)                 # Phase 1 — DONE
+
+auto_documentation:
+  - After every change: run `forge guide`
+  - New section appears automatically: "## HOW-TO: Multiple Instances per Domain"
+
+next_action:
+  - Phase 1 is already complete (flat suffix files + domain_layers support)
+  - Start Phase 2 (deploy + graph + workflow integration)
+  - After Phase 2, evaluate subfolder grouping as a nice-to-have
+  - Run `forge guide` now — the corrected grouping section appears instantly
+
+last_updated: 2026-03-23

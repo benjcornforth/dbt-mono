@@ -777,15 +777,19 @@ def compile_all(
                 domain_model_names.add(name)
 
     for model_name, model_def in models.items():
-        sql = compile_model(model_name, model_def, forge_config=forge_config, seed_names=seed_names,
-                            udf_languages=udf_lang_map, lineage_mode=lineage_mode,
-                            origin_tracking=origin_tracking)
         layer = model_def.get("layer", "default")
         sub_dir = output_dir / origin / layer
         sub_dir.mkdir(parents=True, exist_ok=True)
-        out_path = sub_dir / f"{model_name}.sql"
-        out_path.write_text(sql)
-        results[model_name] = out_path
+        is_bifurcated = domains and layer in domain_layers
+
+        # Default instance: skip if this layer is fully bifurcated into domains
+        if not is_bifurcated:
+            sql = compile_model(model_name, model_def, forge_config=forge_config, seed_names=seed_names,
+                                udf_languages=udf_lang_map, lineage_mode=lineage_mode,
+                                origin_tracking=origin_tracking)
+            out_path = sub_dir / f"{model_name}.sql"
+            out_path.write_text(sql)
+            results[model_name] = out_path
 
         # Domain instances: generate one .sql per (model x domain)
         if domains and layer in domain_layers:
@@ -801,13 +805,18 @@ def compile_all(
                     seed_names=seed_names, udf_languages=udf_lang_map,
                     lineage_mode=lineage_mode, origin_tracking=origin_tracking,
                 )
-                out_path = sub_dir / f"{instance_name}.sql"
+                domain_dir = sub_dir / domain_name
+                domain_dir.mkdir(parents=True, exist_ok=True)
+                out_path = domain_dir / f"{instance_name}.sql"
                 out_path.write_text(domain_sql)
                 results[instance_name] = out_path
                 domain_models[instance_name] = domain_def
 
     # Merge domain instances into models for schema.yml generation
-    all_models = {**models, **domain_models}
+    # Exclude default instances of fully bifurcated layers
+    base_models = {k: v for k, v in models.items()
+                   if not (domains and v.get("layer", "default") in domain_layers)}
+    all_models = {**base_models, **domain_models}
 
     # Generate schema.yml (includes domain instances)
     schema_yml = compile_schema_yml(all_models)
