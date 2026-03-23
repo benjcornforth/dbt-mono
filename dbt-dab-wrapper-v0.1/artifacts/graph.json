@@ -1,0 +1,702 @@
+{
+  "apiVersion": "odcs/v3.0.0",
+  "kind": "DataContractGraph",
+  "metadata": {
+    "forge_version": "0.2.0",
+    "project": "dbt-forge",
+    "generated_at": "2026-03-22T23:15:53.059738+00:00",
+    "git_commit": "16b8eb9",
+    "compute_type": "serverless",
+    "catalog": "main",
+    "schema": "default"
+  },
+  "contracts": {
+    "model.dbt-forge.stg_customers": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "stg_customers",
+        "domain": "default",
+        "type": "table",
+        "description": "Model from models/stg_customers.sql",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [],
+        "dimension_summary": {}
+      },
+      "lineage": {
+        "materialization": "view",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "16b8eb9",
+        "generated_at": "2026-03-22T23:15:53.059738+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [],
+      "_meta": {
+        "sql_file": "models/stg_customers.sql",
+        "sql_hash": "c98fd6211940"
+      },
+      "_content_hash": "7f002c7ee47a"
+    },
+    "model.dbt-forge.stg_orders": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "stg_orders",
+        "domain": "default",
+        "type": "table",
+        "description": "Model from models/stg_orders.sql",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [],
+        "dimension_summary": {}
+      },
+      "lineage": {
+        "materialization": "view",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "16b8eb9",
+        "generated_at": "2026-03-22T23:15:53.059738+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [],
+      "_meta": {
+        "sql_file": "models/stg_orders.sql",
+        "sql_hash": "9336071820cf"
+      },
+      "_content_hash": "613d91eb4b9f"
+    },
+    "model.dbt-forge.customer_clean": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "customer_clean",
+        "domain": "default",
+        "type": "table",
+        "description": "Model from models/customer_clean.sql",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [],
+        "dimension_summary": {}
+      },
+      "lineage": {
+        "materialization": "view",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "16b8eb9",
+        "generated_at": "2026-03-22T23:15:53.059738+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [],
+      "_meta": {
+        "sql_file": "models/customer_clean.sql",
+        "sql_hash": "fe23e16cca15"
+      },
+      "_content_hash": "c0511b81bf1f"
+    },
+    "model.dbt-forge.customer_summary": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "customer_summary",
+        "domain": "default",
+        "type": "table",
+        "description": "Model from models/customer_summary.sql",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [],
+        "dimension_summary": {}
+      },
+      "lineage": {
+        "materialization": "view",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "16b8eb9",
+        "generated_at": "2026-03-22T23:15:53.059738+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [],
+      "_meta": {
+        "sql_file": "models/customer_summary.sql",
+        "sql_hash": "29bf28d25c64"
+      },
+      "_content_hash": "f3af4d8b1df1"
+    },
+    "model.dbt-forge._udfs": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "_udfs",
+        "domain": "default",
+        "type": "table",
+        "description": "Model from models/_udfs.sql",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [],
+        "dimension_summary": {}
+      },
+      "lineage": {
+        "materialization": "view",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "16b8eb9",
+        "generated_at": "2026-03-22T23:15:53.059738+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [],
+      "_meta": {
+        "sql_file": "models/_udfs.sql",
+        "sql_hash": "4d021a3981da"
+      },
+      "_content_hash": "f58a8ac938e5"
+    },
+    "model.dbt-forge.customer_orders": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "customer_orders",
+        "domain": "default",
+        "type": "table",
+        "description": "Model from models/customer_orders.sql",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [],
+        "dimension_summary": {}
+      },
+      "lineage": {
+        "materialization": "view",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "16b8eb9",
+        "generated_at": "2026-03-22T23:15:53.059738+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [],
+      "_meta": {
+        "sql_file": "models/customer_orders.sql",
+        "sql_hash": "de1fb34a80e5"
+      },
+      "_content_hash": "736d818990c3"
+    },
+    "model.dbt-forge.stg_customers_v_previous": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "stg_customers_v_previous",
+        "domain": "default",
+        "type": "table",
+        "description": "Prior deployment version of stg_customers",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [],
+        "dimension_summary": {}
+      },
+      "lineage": {
+        "materialization": "table",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "16b8eb9",
+        "generated_at": "2026-03-22T23:15:53.059738+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [
+        "prior_version",
+        "auto-generated"
+      ],
+      "_meta": {
+        "parent_model": "model.dbt-forge.stg_customers"
+      },
+      "_content_hash": "d75575936d7e"
+    },
+    "model.dbt-forge.stg_orders_v_previous": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "stg_orders_v_previous",
+        "domain": "default",
+        "type": "table",
+        "description": "Prior deployment version of stg_orders",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [],
+        "dimension_summary": {}
+      },
+      "lineage": {
+        "materialization": "table",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "16b8eb9",
+        "generated_at": "2026-03-22T23:15:53.059738+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [
+        "prior_version",
+        "auto-generated"
+      ],
+      "_meta": {
+        "parent_model": "model.dbt-forge.stg_orders"
+      },
+      "_content_hash": "1e100636dbdc"
+    },
+    "model.dbt-forge.customer_clean_v_previous": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "customer_clean_v_previous",
+        "domain": "default",
+        "type": "table",
+        "description": "Prior deployment version of customer_clean",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [],
+        "dimension_summary": {}
+      },
+      "lineage": {
+        "materialization": "table",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "16b8eb9",
+        "generated_at": "2026-03-22T23:15:53.059738+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [
+        "prior_version",
+        "auto-generated"
+      ],
+      "_meta": {
+        "parent_model": "model.dbt-forge.customer_clean"
+      },
+      "_content_hash": "d00e6056ab7e"
+    },
+    "model.dbt-forge.customer_summary_v_previous": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "customer_summary_v_previous",
+        "domain": "default",
+        "type": "table",
+        "description": "Prior deployment version of customer_summary",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [],
+        "dimension_summary": {}
+      },
+      "lineage": {
+        "materialization": "table",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "16b8eb9",
+        "generated_at": "2026-03-22T23:15:53.059738+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [
+        "prior_version",
+        "auto-generated"
+      ],
+      "_meta": {
+        "parent_model": "model.dbt-forge.customer_summary"
+      },
+      "_content_hash": "64e2fd8ce985"
+    },
+    "model.dbt-forge._udfs_v_previous": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "_udfs_v_previous",
+        "domain": "default",
+        "type": "table",
+        "description": "Prior deployment version of _udfs",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [],
+        "dimension_summary": {}
+      },
+      "lineage": {
+        "materialization": "table",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "16b8eb9",
+        "generated_at": "2026-03-22T23:15:53.059738+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [
+        "prior_version",
+        "auto-generated"
+      ],
+      "_meta": {
+        "parent_model": "model.dbt-forge._udfs"
+      },
+      "_content_hash": "6d5fceeddc38"
+    },
+    "model.dbt-forge.customer_orders_v_previous": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "customer_orders_v_previous",
+        "domain": "default",
+        "type": "table",
+        "description": "Prior deployment version of customer_orders",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [],
+        "dimension_summary": {}
+      },
+      "lineage": {
+        "materialization": "table",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "16b8eb9",
+        "generated_at": "2026-03-22T23:15:53.059738+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [
+        "prior_version",
+        "auto-generated"
+      ],
+      "_meta": {
+        "parent_model": "model.dbt-forge.customer_orders"
+      },
+      "_content_hash": "d1fee650104b"
+    },
+    "udf.dbt-forge.loyalty_tier": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "loyalty_tier",
+        "domain": "default",
+        "type": "function",
+        "description": "Assigns GOLD/SILVER/BRONZE based on revenue",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [],
+        "dimension_summary": {}
+      },
+      "lineage": {
+        "materialization": "function",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "16b8eb9",
+        "generated_at": "2026-03-22T23:15:53.059738+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [
+        "sql_udf",
+        "lang:sql"
+      ],
+      "_meta": {
+        "language": "SQL",
+        "returns": "string",
+        "params": "revenue: decimal(18,2)"
+      },
+      "_content_hash": "11cad37a5900"
+    },
+    "check.dbt-forge.customer_summary.revenue_non_negative": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "revenue_non_negative",
+        "domain": "default",
+        "type": "quality",
+        "description": "Check: revenue_non_negative (range, error)",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [
+          {
+            "type": "range",
+            "description": "revenue_non_negative",
+            "column": "total_revenue",
+            "dimension": "accuracy"
+          }
+        ],
+        "dimension_summary": {
+          "accuracy": 1
+        }
+      },
+      "lineage": {
+        "materialization": "check",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "16b8eb9",
+        "generated_at": "2026-03-22T23:15:53.059738+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [
+        "check",
+        "type:range",
+        "severity:error"
+      ],
+      "_meta": {
+        "check_type": "range",
+        "severity": "error",
+        "column": "total_revenue",
+        "model": "customer_summary"
+      },
+      "_content_hash": "a2187ca6dc57"
+    },
+    "check.dbt-forge.customer_summary.data_is_fresh": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "data_is_fresh",
+        "domain": "default",
+        "type": "quality",
+        "description": "Check: data_is_fresh (recency, warn)",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [
+          {
+            "type": "recency",
+            "description": "data_is_fresh",
+            "column": "last_order_date",
+            "dimension": "accuracy"
+          }
+        ],
+        "dimension_summary": {
+          "accuracy": 1
+        }
+      },
+      "lineage": {
+        "materialization": "check",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "16b8eb9",
+        "generated_at": "2026-03-22T23:15:53.059738+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [
+        "check",
+        "type:recency",
+        "severity:warn"
+      ],
+      "_meta": {
+        "check_type": "recency",
+        "severity": "warn",
+        "column": "last_order_date",
+        "model": "customer_summary"
+      },
+      "_content_hash": "cf15a07a418a"
+    },
+    "check.dbt-forge.customer_summary.has_customers": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "has_customers",
+        "domain": "default",
+        "type": "quality",
+        "description": "Check: has_customers (row_count, error)",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [
+          {
+            "type": "row_count",
+            "description": "has_customers",
+            "column": "",
+            "dimension": "accuracy"
+          }
+        ],
+        "dimension_summary": {
+          "accuracy": 1
+        }
+      },
+      "lineage": {
+        "materialization": "check",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "16b8eb9",
+        "generated_at": "2026-03-22T23:15:53.059738+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [
+        "check",
+        "type:row_count",
+        "severity:error"
+      ],
+      "_meta": {
+        "check_type": "row_count",
+        "severity": "error",
+        "column": null,
+        "model": "customer_summary"
+      },
+      "_content_hash": "1e31734915fd"
+    }
+  },
+  "edges": [
+    {
+      "from": "model.dbt-forge.raw_customers",
+      "to": "model.dbt-forge.stg_customers",
+      "type": "ref",
+      "description": "raw_customers \u2192 stg_customers"
+    },
+    {
+      "from": "model.dbt-forge.raw_orders",
+      "to": "model.dbt-forge.stg_orders",
+      "type": "ref",
+      "description": "raw_orders \u2192 stg_orders"
+    },
+    {
+      "from": "model.dbt-forge.stg_customers",
+      "to": "model.dbt-forge.customer_clean",
+      "type": "ref",
+      "description": "stg_customers \u2192 customer_clean"
+    },
+    {
+      "from": "model.dbt-forge.customer_orders",
+      "to": "model.dbt-forge.customer_summary",
+      "type": "ref",
+      "description": "customer_orders \u2192 customer_summary"
+    },
+    {
+      "from": "model.dbt-forge.customer_clean",
+      "to": "model.dbt-forge.customer_orders",
+      "type": "ref",
+      "description": "customer_clean \u2192 customer_orders"
+    },
+    {
+      "from": "model.dbt-forge.stg_orders",
+      "to": "model.dbt-forge.customer_orders",
+      "type": "ref",
+      "description": "stg_orders \u2192 customer_orders"
+    },
+    {
+      "from": "model.dbt-forge.stg_customers",
+      "to": "model.dbt-forge.stg_customers_v_previous",
+      "type": "prior_version",
+      "description": "stg_customers \u2192 prior version snapshot"
+    },
+    {
+      "from": "model.dbt-forge.stg_orders",
+      "to": "model.dbt-forge.stg_orders_v_previous",
+      "type": "prior_version",
+      "description": "stg_orders \u2192 prior version snapshot"
+    },
+    {
+      "from": "model.dbt-forge.customer_clean",
+      "to": "model.dbt-forge.customer_clean_v_previous",
+      "type": "prior_version",
+      "description": "customer_clean \u2192 prior version snapshot"
+    },
+    {
+      "from": "model.dbt-forge.customer_summary",
+      "to": "model.dbt-forge.customer_summary_v_previous",
+      "type": "prior_version",
+      "description": "customer_summary \u2192 prior version snapshot"
+    },
+    {
+      "from": "model.dbt-forge._udfs",
+      "to": "model.dbt-forge._udfs_v_previous",
+      "type": "prior_version",
+      "description": "_udfs \u2192 prior version snapshot"
+    },
+    {
+      "from": "model.dbt-forge.customer_orders",
+      "to": "model.dbt-forge.customer_orders_v_previous",
+      "type": "prior_version",
+      "description": "customer_orders \u2192 prior version snapshot"
+    },
+    {
+      "from": "udf.dbt-forge.loyalty_tier",
+      "to": "model.dbt-forge.customer_summary",
+      "type": "udf_call",
+      "description": "UDF loyalty_tier used in customer_summary.tier"
+    },
+    {
+      "from": "model.dbt-forge.customer_summary",
+      "to": "check.dbt-forge.customer_summary.revenue_non_negative",
+      "type": "check",
+      "description": "customer_summary validated by revenue_non_negative"
+    },
+    {
+      "from": "model.dbt-forge.customer_summary",
+      "to": "check.dbt-forge.customer_summary.data_is_fresh",
+      "type": "check",
+      "description": "customer_summary validated by data_is_fresh"
+    },
+    {
+      "from": "model.dbt-forge.customer_summary",
+      "to": "check.dbt-forge.customer_summary.has_customers",
+      "type": "check",
+      "description": "customer_summary validated by has_customers"
+    }
+  ]
+}

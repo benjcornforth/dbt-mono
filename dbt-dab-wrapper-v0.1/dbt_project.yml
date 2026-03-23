@@ -16,7 +16,7 @@ profile: 'dbt_forge'
 # =============================================
 # PATHS - business logic in dbt/, tooling in dbt-tools/
 # =============================================
-model-paths: ["dbt/models"]
+model-paths: ["dbt/models", "dbt/sources"]
 seed-paths: ["dbt/seeds"]
 test-paths: ["dbt/tests"]
 analysis-paths: ["dbt/analysis"]
@@ -39,7 +39,7 @@ vars:
   methodology_version: "v1"
 
 # =============================================
-# MODEL DEFAULTS - Unity Catalog aware
+# MODEL DEFAULTS
 # =============================================
 models:
   dbt_forge:

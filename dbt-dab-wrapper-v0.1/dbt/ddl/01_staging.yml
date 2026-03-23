@@ -1,0 +1,26 @@
+# ── Staging layer: raw → typed + lineage ──────────
+models:
+
+  stg_customers:
+    description: "Staged customers with typed columns and lineage provenance"
+    source: raw_customers
+    columns:
+      customer_id:  { type: int, required: true, unique: true, description: "Unique customer identifier" }
+      first_name:   { type: string }
+      last_name:    { type: string }
+      email:        { type: string, description: "Customer email (may be null in raw data)" }
+      signup_date:  { type: date, cast: true }
+      country:      { type: string }
+      revenue:      { type: "decimal(10,2)", cast: true }
+
+  stg_orders:
+    description: "Staged orders with computed line_total and lineage provenance"
+    source: raw_orders
+    columns:
+      order_id:     { type: int, required: true, unique: true, description: "Unique order identifier" }
+      customer_id:  { type: int, required: true, description: "FK to customers" }
+      product:      { type: string }
+      quantity:     { type: int }
+      unit_price:   { type: "decimal(10,2)", cast: true }
+      line_total:   { expr: "quantity * unit_price" }
+      order_date:   { type: date, cast: true }

@@ -1,0 +1,24 @@
+# ── Enrich layer: join + transform ──────────
+models:
+
+  customer_orders:
+    description: "Joined clean customers with their orders"
+    sources:
+      c: customer_clean
+      o: stg_orders
+    join: "c.customer_id = o.customer_id"
+    layer: silver
+    materialized: table
+    version: v1
+    columns:
+      customer_id:  { from: c }
+      first_name:   { from: c }
+      last_name:    { from: c }
+      email:        { from: c }
+      country:      { from: c }
+      order_id:     { from: o, required: true, unique: true }
+      product:      { from: o }
+      quantity:     { from: o }
+      unit_price:   { from: o }
+      line_total:   { from: o }
+      order_date:   { from: o }

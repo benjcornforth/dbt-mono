@@ -1,0 +1,28 @@
+version: 2
+sources:
+- name: seed
+  description: Seed data loaded by dbt seed
+  schema: '{{ target.schema }}'
+  tables:
+  - name: raw_customers
+    description: Raw customer data loaded from CSV
+    columns:
+    - name: customer_id
+      description: Unique customer identifier
+    - name: first_name
+    - name: last_name
+    - name: email
+    - name: signup_date
+    - name: country
+    - name: revenue
+  - name: raw_orders
+    description: Raw order data loaded from CSV
+    columns:
+    - name: order_id
+      description: Unique order identifier
+    - name: customer_id
+      description: FK to raw_customers
+    - name: product
+    - name: quantity
+    - name: unit_price
+    - name: order_date

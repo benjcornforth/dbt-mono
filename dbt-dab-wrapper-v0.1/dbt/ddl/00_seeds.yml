@@ -1,0 +1,22 @@
+# ── Seed data: CSV source tables ──────────
+seeds:
+  raw_customers:
+    description: "Raw customer data loaded from CSV"
+    columns:
+      customer_id:  { type: int, description: "Unique customer identifier" }
+      first_name:   { type: string }
+      last_name:    { type: string }
+      email:        { type: string }
+      signup_date:  { type: date }
+      country:      { type: string }
+      revenue:      { type: "decimal(10,2)" }
+
+  raw_orders:
+    description: "Raw order data loaded from CSV"
+    columns:
+      order_id:     { type: int, description: "Unique order identifier" }
+      customer_id:  { type: int, description: "FK to raw_customers" }
+      product:      { type: string }
+      quantity:     { type: int }
+      unit_price:   { type: "decimal(10,2)" }
+      order_date:   { type: date }

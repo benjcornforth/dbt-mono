@@ -1,0 +1,14 @@
+# ── Reusable functions (SQL-first) ──────────
+udfs:
+  loyalty_tier:
+    description: "Assigns GOLD/SILVER/BRONZE based on revenue"
+    language: sql
+    returns: string
+    params:
+      - { name: revenue, type: "decimal(18,2)" }
+    body: |
+      CASE
+        WHEN revenue >= 1000 THEN 'GOLD'
+        WHEN revenue >=  500 THEN 'SILVER'
+        ELSE 'BRONZE'
+      END

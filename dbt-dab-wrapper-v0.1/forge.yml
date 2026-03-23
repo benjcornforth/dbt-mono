@@ -20,7 +20,7 @@ active_profile: dev
 # Set skip_env_prefix: [prd, prod] to control which envs get bare schema names.
 
 catalog_pattern: "{env}_{scope}_{catalog}"     # → dev_fd_bronze, prd_fd_meta (always prefixed)
-schema_pattern:  "{env}_{id}"           # → dev_myproject (prd → myproject)
+schema_pattern:  "{user}_{id}"    # → dev_ben_demo (prd → demo)
 skip_env_prefix: [prd, prod]               # these envs drop {env}_ from schemas only
 
 # =============================================
@@ -53,7 +53,7 @@ schemas:
 profiles:
   dev:
     platform: databricks
-    databricks_profile: DEFAULT
+    databricks_profile: dev
     env: dev
     catalog: bronze                  # default catalog for this profile
     compute:

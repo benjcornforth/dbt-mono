@@ -1,13 +1,5 @@
--- =============================================
--- dbt/models/customer_orders.sql
--- =============================================
--- Joins clean customers with their orders.
--- Multi-source lineage: stg_orders + customer_clean.
--- This model demonstrates lineage across multiple refs.
-
 {{ config(
-    materialized='table',
-    meta={'version': 'v1'}
+    materialized='table', meta={'version': 'v1'}
 ) }}
 
 select

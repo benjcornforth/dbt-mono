@@ -17,6 +17,7 @@
 # A child types: forge setup → forge deploy → done.
 # An engineer sees every line explained.
 
+import os
 import typer
 import yaml
 from pathlib import Path
@@ -38,18 +39,17 @@ from forge.workflow import build_workflow
 from forge.simple_ddl import (
     compile_all,
     compile_all_pure_sql,
+    compile_all_udfs,
     apply_all_migrations,
     apply_all_migrations_dry_run,
     generate_agent_guide,
     compile_checks_sql,
-    compile_all_udfs,
     load_udfs,
 )
 from forge.compute_resolver import (
     resolve_profile,
     resolve_connection,
     resolve_model_schema,
-    get_schema_variables,
     _expand_env_prefix,
     generate_profiles_yml,
     read_databrickscfg,
@@ -66,6 +66,24 @@ app = typer.Typer(
 # CONFIG FILE – the ONLY thing a child ever edits
 # =============================================
 CONFIG_FILE = Path("forge.yml")
+
+# DDL can live in a file (dbt/models.yml) or a directory (dbt/ddl/)
+DDL_DEFAULT = "dbt/models.yml"
+
+
+def _resolve_ddl(ddl: str) -> Path:
+    """Resolve DDL path: dbt/ddl/ directory wins over dbt/models.yml file."""
+    p = Path(ddl)
+    # Auto-detect: prefer dbt/ddl/ directory if it exists
+    ddl_dir = Path("dbt/ddl")
+    if ddl_dir.is_dir():
+        return ddl_dir
+    # If user passed explicit path and it exists, use it
+    if p.exists():
+        return p
+    return p  # fall back (caller checks .exists())
+
+
 DEFAULT_CONFIG = {
     "name": "my_project",
     "active_profile": "dev",
@@ -167,28 +185,64 @@ def deploy(
     if conn.host:
         typer.echo(f"  🔗 Host: {conn.host}")
 
-    # Deploy UDFs first (dbt best practice: functions must exist before models reference them)
-    ddl_path = Path("dbt/models.yml")
+    # Build env with resolved connection so dbt's {{ env_var(...) }} finds them
+    dbt_env = os.environ.copy()
+    if conn.host:
+        dbt_env["DBT_DATABRICKS_HOST"] = conn.host
+    if conn.token:
+        dbt_env["DBT_DATABRICKS_TOKEN"] = conn.token
+    if conn.http_path:
+        dbt_env["DBT_DATABRICKS_HTTP_PATH"] = conn.http_path
+
+    # Auto-regenerate profiles.yml so dbt uses current forge.yml settings
+    generate_profiles_yml(config, output_path=Path("profiles.yml"))
+
+    # Build dbt vars (lineage provenance only — catalog/schema resolved at compile time)
+    dbt_vars = {
+        "git_commit": config.get("git_commit", "local"),
+        "compute_type": conn.compute_type or "serverless",
+    }
+    dbt_vars_flag = ["--vars", yaml.dump(dbt_vars)]
+
+    # Compile DDL → models + functions + sources
+    ddl_path = _resolve_ddl(DDL_DEFAULT)
     if ddl_path.exists():
-        udfs = compile_all_udfs(ddl_path)
-        if udfs:
+        compile_all(ddl_path, Path("dbt/models"), forge_config=config)
+        typer.echo("  ✅ Compiled models, functions, sources")
+
+    # Deploy UDFs first (functions must exist before models reference them)
+    functions_dir = Path("dbt/functions")
+    if functions_dir.is_dir():
+        udf_files = sorted(functions_dir.glob("*.sql"))
+        if udf_files:
             typer.echo("🔧 Deploying UDFs via dbt run-operation...")
-            udfs_sql = "\n".join(udfs.values())
+            udfs_sql = "\n".join(f.read_text() for f in udf_files)
             try:
                 subprocess.run(
                     ["dbt", "run-operation", "deploy_udfs",
                      "--args", yaml.dump({"udfs_sql": udfs_sql}),
-                     "--project-dir", "."],
-                    check=True, capture_output=True,
+                     "--project-dir", "."] + dbt_vars_flag,
+                    check=True, capture_output=True, env=dbt_env,
                 )
-                typer.echo(f"  ✅ Deployed {len(udfs)} UDF(s): {', '.join(udfs.keys())}")
+                typer.echo(f"  ✅ Deployed {len(udf_files)} UDF(s): {', '.join(f.stem for f in udf_files)}")
             except (FileNotFoundError, subprocess.CalledProcessError):
                 typer.echo("  ⚠️  UDF deploy skipped (dbt run-operation unavailable). Deploy manually or use --pure-sql mode.")
+
+    # Run dbt seed (load CSV source data into tables)
+    seed_dir = Path("dbt/seeds")
+    if seed_dir.exists() and any(seed_dir.glob("*.csv")):
+        typer.echo("🌱 Seeding source data...")
+        try:
+            subprocess.run(["dbt", "seed", "--project-dir", "."] + dbt_vars_flag, check=True, env=dbt_env)
+        except subprocess.CalledProcessError as e:
+            typer.echo(f"  ⚠️  Seed failed (exit {e.returncode}). Check seed CSV files.")
+        except FileNotFoundError:
+            pass
 
     # Run dbt (SQL-only models – zero cold starts on serverless)
     typer.echo("✅ Running dbt...")
     try:
-        subprocess.run(["dbt", "run", "--project-dir", "."], check=True)
+        subprocess.run(["dbt", "run", "--project-dir", "."] + dbt_vars_flag, check=True, env=dbt_env)
     except FileNotFoundError:
         typer.echo("💡 Tip: install dbt-databricks with poetry if needed")
 
@@ -262,7 +316,7 @@ def diff(
 @app.command()
 def explain(
     model_dot_column: str = typer.Argument(..., help="Model.column to explain (e.g. customer_summary.total_revenue)"),
-    ddl: str = typer.Option("dbt/models.yml", "--ddl", help="Path to models.yml DDL file"),
+    ddl: str = typer.Option(DDL_DEFAULT, "--ddl", help="Path to DDL file or directory"),
     mermaid_flag: bool = typer.Option(False, "--mermaid", help="Output Mermaid provenance diagram"),
     full: bool = typer.Option(False, "--full", help="Show full detail including upstream checks"),
     json_flag: bool = typer.Option(False, "--json", help="Output JSON for scripting"),
@@ -276,11 +330,11 @@ def explain(
         raise typer.Exit(1)
 
     model_name, column_name = parts
-    ddl_path = Path(ddl)
-    dbt_dir = ddl_path.parent
+    ddl_path = _resolve_ddl(ddl)
+    dbt_dir = ddl_path.parent if ddl_path.is_file() else ddl_path.parent
 
     if not ddl_path.exists():
-        typer.echo(f"❌ {ddl} not found.")
+        typer.echo(f"❌ {ddl} not found. Create dbt/models.yml or dbt/ddl/ directory.")
         raise typer.Exit(1)
 
     if not CONFIG_FILE.exists():
@@ -452,15 +506,15 @@ def python_task(
 # =============================================
 @app.command()
 def compile(
-    ddl: str = typer.Option("dbt/models.yml", "--ddl", help="Path to models.yml DDL file"),
+    ddl: str = typer.Option(DDL_DEFAULT, "--ddl", help="Path to DDL file or directory"),
     output: str = typer.Option("dbt/models", "--output", "-o", help="Output directory for SQL files"),
     pure_sql: bool = typer.Option(False, "--pure-sql", help="Emit standalone SQL (no dbt/Jinja). Runs directly on SQL warehouse."),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Forge profile (from forge.yml profiles:)"),
 ):
-    """forge compile → turns models.yml into SQL + schema.yml (no SQL needed)"""
-    ddl_path = Path(ddl)
+    """forge compile → turns DDL into SQL + schema.yml (no SQL needed)"""
+    ddl_path = _resolve_ddl(ddl)
     if not ddl_path.exists():
-        typer.echo(f"❌ {ddl} not found. Create it or run 'forge setup' first!")
+        typer.echo(f"❌ {ddl} not found. Create dbt/models.yml or dbt/ddl/ directory.")
         raise typer.Exit(1)
 
     if pure_sql:
@@ -499,19 +553,28 @@ def compile(
 
     # Standard dbt mode
     output_dir = Path(output)
-    results = compile_all(ddl_path, output_dir)
+    config = yaml.safe_load(CONFIG_FILE.read_text()) if CONFIG_FILE.exists() else None
+    results = compile_all(ddl_path, output_dir, forge_config=config)
 
     for name, path in results.items():
         if name == "_schema":
             typer.echo(f"  📋 schema.yml → {path}")
-        elif name == "_udfs":
-            typer.echo(f"  🔧 _udfs.sql → {path}")
+        elif name == "_sources":
+            typer.echo(f"  📦 _sources.yml → {path}")
+        elif name.startswith("_udf_"):
+            typer.echo(f"  🔧 {path.name} → {path}")
         else:
             typer.echo(f"  ✅ {name}.sql → {path}")
 
     model_count = len([k for k in results if not k.startswith("_")])
-    udf_note = " + UDFs" if "_udfs" in results else ""
-    typer.echo(f"🎉 Compiled {model_count} models{udf_note} from {ddl}. Run 'forge deploy' next.")
+    udf_count = len([k for k in results if k.startswith("_udf_")])
+    extras = []
+    if udf_count:
+        extras.append(f"{udf_count} UDFs → dbt/functions/")
+    if "_sources" in results:
+        extras.append("sources → dbt/sources/")
+    extra_note = f" + {', '.join(extras)}" if extras else ""
+    typer.echo(f"🎉 Compiled {model_count} models{extra_note} from {ddl_path}. Run 'forge deploy' next.")
 
 
 # =============================================
@@ -519,17 +582,17 @@ def compile(
 # =============================================
 @app.command()
 def migrate(
-    ddl: str = typer.Option("dbt/models.yml", "--ddl", help="Path to models.yml DDL file"),
+    ddl: str = typer.Option(DDL_DEFAULT, "--ddl", help="Path to DDL file or directory"),
     migrations: str = typer.Option("dbt/migrations", "--migrations", "-m", help="Migrations directory"),
     recompile: bool = typer.Option(True, help="Recompile SQL after migrating"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without applying"),
 ):
     """forge migrate → applies migration YAMLs to models.yml + recompiles"""
-    ddl_path = Path(ddl)
+    ddl_path = _resolve_ddl(ddl)
     mig_dir = Path(migrations)
 
     if not ddl_path.exists():
-        typer.echo(f"❌ {ddl} not found. Create models.yml first!")
+        typer.echo(f"❌ {ddl} not found. Create dbt/models.yml or dbt/ddl/ directory.")
         raise typer.Exit(1)
 
     if not mig_dir.exists():
@@ -563,8 +626,9 @@ def migrate(
                 typer.echo(f"    → {model}: {c}")
 
     if recompile:
-        output_dir = ddl_path.parent / "models"
-        compile_all(ddl_path, output_dir)
+        output_dir = ddl_path.parent / "models" if ddl_path.is_file() else ddl_path.parent / "models"
+        config = yaml.safe_load(CONFIG_FILE.read_text()) if CONFIG_FILE.exists() else None
+        compile_all(ddl_path, output_dir, forge_config=config)
         typer.echo(f"🔄 Recompiled SQL from updated {ddl}")
 
     typer.echo(f"🎉 Applied {len(results)} migration(s). Run 'forge deploy' next.")
@@ -576,7 +640,7 @@ def migrate(
 @app.command()
 def guide(
     output: str = typer.Option(".instructions.md", "--output", "-o", help="Output file path"),
-    ddl: str = typer.Option("dbt/models.yml", "--ddl", help="Path to models.yml DDL file"),
+    ddl: str = typer.Option(DDL_DEFAULT, "--ddl", help="Path to DDL file or directory"),
 ):
     """forge guide → generates a project-specific agent guide / onboarding doc"""
     if not CONFIG_FILE.exists():
@@ -584,7 +648,7 @@ def guide(
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
-    ddl_path = Path(ddl) if Path(ddl).exists() else None
+    ddl_path = _resolve_ddl(ddl) if _resolve_ddl(ddl).exists() else None
     output_path = Path(output)
 
     generate_agent_guide(config, ddl_path=ddl_path, output_path=output_path)
@@ -597,18 +661,18 @@ def guide(
 # =============================================
 @app.command()
 def udfs(
-    ddl: str = typer.Option("dbt/models.yml", "--ddl", help="Path to models.yml DDL file"),
+    ddl: str = typer.Option(DDL_DEFAULT, "--ddl", help="Path to DDL file or directory"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Write UDF SQL to file"),
 ):
-    """forge udfs → shows and compiles UDFs defined in models.yml"""
-    ddl_path = Path(ddl)
+    """forge udfs → shows and compiles UDFs defined in DDL"""
+    ddl_path = _resolve_ddl(ddl)
     if not ddl_path.exists():
         typer.echo(f"❌ {ddl} not found.")
         raise typer.Exit(1)
 
     udf_defs = load_udfs(ddl_path)
     if not udf_defs:
-        typer.echo("📋 No UDFs defined in models.yml. Add a udfs: block to get started.")
+        typer.echo("📋 No UDFs defined. Add a udfs: block to your DDL to get started.")
         return
 
     compiled = compile_all_udfs(ddl_path)
@@ -646,12 +710,12 @@ def udfs(
 # =============================================
 @app.command()
 def validate(
-    ddl: str = typer.Option("dbt/models.yml", "--ddl", help="Path to models.yml DDL file"),
+    ddl: str = typer.Option(DDL_DEFAULT, "--ddl", help="Path to DDL file or directory"),
     model: Optional[str] = typer.Option(None, "--model", "-m", help="Validate one model only"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Write check SQL to file"),
 ):
     """forge validate → shows checks defined for each model"""
-    ddl_path = Path(ddl)
+    ddl_path = _resolve_ddl(ddl)
     if not ddl_path.exists():
         typer.echo(f"❌ {ddl} not found.")
         raise typer.Exit(1)
@@ -659,7 +723,7 @@ def validate(
     results = compile_checks_sql(ddl_path, model_filter=model)
 
     if not results:
-        typer.echo("📋 No checks defined in models.yml. Add a checks: block to get started.")
+        typer.echo("📋 No checks defined. Add a checks: block to your DDL to get started.")
         return
 
     total_checks = 0
@@ -711,9 +775,9 @@ def dev_up(
     typer.echo(f"  📦 Dev schema: {dev_schema}")
 
     # Compile models first
-    ddl_path = Path("dbt/models.yml")
+    ddl_path = _resolve_ddl(DDL_DEFAULT)
     if ddl_path.exists():
-        compile_all(ddl_path, Path("dbt/models"))
+        compile_all(ddl_path, Path("dbt/models"), forge_config=config)
         typer.echo("  ✅ Compiled models")
 
     # Run dbt with schema override
@@ -742,27 +806,36 @@ def dev_up(
 
 @app.command(name="dev")
 def dev(
-    ddl: str = typer.Option("dbt/models.yml", "--ddl", help="Path to models.yml DDL file"),
+    ddl: str = typer.Option(DDL_DEFAULT, "--ddl", help="Path to DDL file or directory"),
     output: str = typer.Option("dbt/models", "--output", "-o", help="Output directory for SQL files"),
     poll_interval: float = typer.Option(1.0, "--poll", help="Seconds between file change polls"),
 ):
-    """forge dev → watches models.yml, auto-compiles on save"""
-    ddl_path = Path(ddl)
+    """forge dev → watches DDL files, auto-compiles on save"""
+    ddl_path = _resolve_ddl(ddl)
     if not ddl_path.exists():
-        typer.echo(f"❌ {ddl} not found. Create models.yml first!")
+        typer.echo(f"❌ {ddl} not found. Create dbt/models.yml or dbt/ddl/ directory.")
         raise typer.Exit(1)
 
     output_dir = Path(output)
-    typer.echo(f"👀 Watching {ddl} for changes (Ctrl+C to stop)...")
+    typer.echo(f"👀 Watching {ddl_path} for changes (Ctrl+C to stop)...")
     typer.echo(f"   Auto-compiles → {output_dir}/")
     typer.echo("")
 
     import time
-    last_mtime = ddl_path.stat().st_mtime
+
+    def _get_mtime() -> float:
+        """Get latest mtime across all DDL files (supports dir or single file)."""
+        if ddl_path.is_dir():
+            mtimes = [f.stat().st_mtime for f in ddl_path.glob("*.yml")]
+            return max(mtimes) if mtimes else 0
+        return ddl_path.stat().st_mtime
+
+    last_mtime = _get_mtime()
 
     # Initial compile
     try:
-        results = compile_all(ddl_path, output_dir)
+        config = yaml.safe_load(CONFIG_FILE.read_text()) if CONFIG_FILE.exists() else None
+        results = compile_all(ddl_path, output_dir, forge_config=config)
         model_count = len([k for k in results if k != "_schema"])
         typer.echo(f"  ✅ Initial compile: {model_count} models")
     except Exception as e:
@@ -771,12 +844,12 @@ def dev(
     try:
         while True:
             time.sleep(poll_interval)
-            current_mtime = ddl_path.stat().st_mtime
+            current_mtime = _get_mtime()
             if current_mtime != last_mtime:
                 last_mtime = current_mtime
                 typer.echo(f"  🔄 Change detected — recompiling...")
                 try:
-                    results = compile_all(ddl_path, output_dir)
+                    results = compile_all(ddl_path, output_dir, forge_config=config)
                     model_count = len([k for k in results if k != "_schema"])
                     typer.echo(f"  ✅ Compiled {model_count} models")
                 except Exception as e:

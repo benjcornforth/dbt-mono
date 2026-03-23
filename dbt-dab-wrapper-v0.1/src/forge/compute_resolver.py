@@ -203,8 +203,8 @@ def resolve_connection(
     )
 
     if platform == "databricks":
-        # Try databrickscfg profile first
-        dbr_profile = profile.get("databricks_profile")
+        # Try databrickscfg profile first (fall back to forge profile name)
+        dbr_profile = profile.get("databricks_profile") or profile.get("_name", "DEFAULT")
         if dbr_profile:
             try:
                 creds = read_databrickscfg(dbr_profile, cfg_path=cfg_path)
