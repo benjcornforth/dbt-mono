@@ -40,6 +40,21 @@ schemas:
   - gold
 
 # =============================================
+# DOMAINS — multi-instance model support
+# =============================================
+# Each domain generates a separate .sql file per model with a suffixed schema.
+# domain_layers controls which layers get domain instances (bronze stays shared).
+domains:
+  eu:
+    schema_suffix: "_eu"
+  us:
+    schema_suffix: "_us"
+  apac:
+    schema_suffix: "_apac"
+
+domain_layers: [silver, gold]
+
+# =============================================
 # PROFILES – multi-environment, multi-platform
 # =============================================
 # Each profile can reference a ~/.databrickscfg profile

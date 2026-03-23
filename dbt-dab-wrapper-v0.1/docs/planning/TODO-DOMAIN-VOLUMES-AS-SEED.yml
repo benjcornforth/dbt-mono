@@ -1,0 +1,92 @@
+# TODO-DOMAIN-VOLUMES-AS-SEED.yml
+# ────────────────────────────────────────────────────────────────
+#   dbt-dab-wrapper — Domain-Based Instances with Domain Volumes
+#   Date: 23 March 2026
+#   Goal: Each domain (EU, US, APAC) has its own Unity Catalog Volume
+#         for raw data arrival. A reference seed maps domain → Volume path.
+#         Same model logic runs in different schemas with domain-specific files.
+#   Rule: Users edit ONLY forge.yml + dbt/ddl/. Everything else generated.
+#         Graph shows every instance. One command = deploy/teardown.
+#         Never deletes data. Code = the documentation.
+# ────────────────────────────────────────────────────────────────
+
+vision:
+  "EU data arrives in /Volumes/main/silver_eu/raw/, US in /Volumes/main/silver_us/raw/.
+   The same customer_summary model runs in silver_eu and silver_us, each reading its own Volume.
+   No duplicated YAML. Graph shows domain badge + exact Volume path."
+
+is_this_possible:
+  answer: "Yes — very clean and governed"
+  why:
+    - Unity Catalog Volumes are the recommended way to store files inside Databricks
+    - Reference seed table maps domain → volume_path
+    - Domain-aware compile already generates separate models per domain
+    - Provenance and graph automatically include the Volume path
+
+developer_todos:
+
+  - id: reference-seed-for-volumes
+    priority: 1
+    status: Ready to build
+    title: Create reference seed mapping domain → Volume path
+    effort: S (½ day)
+    example_seed:
+      # dbt/ddl/bronze/seeds/domain_volumes.yml
+      domain_volumes:
+        eu:
+          volume_path: "/Volumes/main/silver_eu/raw/"
+        us:
+          volume_path: "/Volumes/main/silver_us/raw/"
+        apac:
+          volume_path: "/Volumes/main/silver_apac/raw/"
+    next_steps:
+      - Add the seed CSV or YAML
+      - forge compile generates domain-specific source definitions pointing to the Volume
+
+  - id: domain-source-generation
+    priority: 2
+    status: Ready to build
+    title: Generate per-domain source definitions from Volumes
+    effort: S (1 day)
+    how:
+      - For EU instance: source('seed_eu', 'raw_customers') → reads from /Volumes/.../eu/raw/
+      - forge compile creates _sources_eu.yml with external table definitions
+    next_steps:
+      - Update compile_model() to replace source refs for domain instances
+
+  - id: graph-and-provenance-update
+    priority: 3
+    status: Ready to build
+    title: Show Volume path in graph and provenance
+    effort: XS (½ day)
+    next_steps:
+      - _lineage struct includes volume_path
+      - forge explain customer_summary_eu.total_revenue shows "from Volume /Volumes/main/silver_eu/raw/"
+      - Graph node has Volume icon
+
+  - id: deploy-and-teardown
+    priority: 4
+    status: Ready to build
+    title: forge deploy/teardown handles domain Volumes safely
+    effort: XS (½ day)
+    next_steps:
+      - forge deploy creates domain schemas + registers sources
+      - forge teardown archives data from each Volume-backed table (never deletes)
+      - Ends with "♻️ Re-instate: forge deploy"
+
+success_criteria:
+  - Add 3 domains + one reference seed
+  - forge deploy creates silver_eu.customer_summary reading from its Volume
+  - Graph shows domain + Volume path
+  - forge explain shows the exact Volume used
+  - forge teardown is safe (archives only)
+
+auto_documentation:
+  - After every todo: run `forge guide`
+  - New section appears: "## HOW-TO: Domain Volumes as Seed Sources"
+
+next_action:
+  - Start with #1 today (reference seed for Volumes — 30 minutes)
+  - Run `forge guide` after each step
+
+last_updated: 2026-03-23

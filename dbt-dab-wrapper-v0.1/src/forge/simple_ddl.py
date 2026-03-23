@@ -70,6 +70,7 @@
 
 from __future__ import annotations
 
+import getpass
 import re
 from pathlib import Path
 from typing import Any
@@ -229,6 +230,42 @@ def _compile_column_select(col_name: str, col_def: dict, alias: str | None = Non
     return f"    {ref}"
 
 
+def _resolve_base_schema(forge_config: dict, layer: str) -> str:
+    """Resolve the concrete schema name for a layer (e.g. 'ben_demo').
+
+    Used by domain expansion to compute domain schemas like 'ben_demo_eu'.
+    """
+    profile_name = forge_config.get("active_profile", "dev")
+    profiles = forge_config.get("profiles", {})
+    profile = profiles.get(profile_name, {})
+
+    # If profile has explicit schemas dict, use it
+    if isinstance(profile.get("schemas"), dict):
+        return profile["schemas"].get(layer, profile.get("schema", layer))
+
+    # Otherwise expand via pattern
+    schema_pattern = forge_config.get("schema_pattern", "{user}_{id}")
+    env = profile.get("env", "dev")
+    project_id = forge_config.get("id", forge_config.get("name", "project")).replace("-", "_")
+    scope = forge_config.get("scope", "").replace("-", "_")
+    raw_user = getpass.getuser()
+    user = re.sub(r"[^a-z0-9]+", "_", raw_user.lower()).strip("_")
+    skip_envs = set(forge_config.get("skip_env_prefix", ["prd", "prod"]))
+
+    result = schema_pattern
+    if env in skip_envs:
+        result = result.replace("{env}_", "").replace("{env}", "")
+    else:
+        result = result.replace("{env}", env)
+    result = result.replace("{id}", project_id)
+    result = result.replace("{scope}", scope)
+    result = result.replace("{user}", user)
+    result = result.replace("{schema}", layer)
+    while "__" in result:
+        result = result.replace("__", "_")
+    return result.strip("_")
+
+
 def compile_model(model_name: str, model_def: dict, forge_config: dict | None = None, seed_names: set[str] | None = None, udf_languages: dict[str, str] | None = None, lineage_mode: str = "full", origin_tracking: bool = True) -> str:
     """Compile a single model definition into a dbt SQL file.
 
@@ -259,6 +296,11 @@ def compile_model(model_name: str, model_def: dict, forge_config: dict | None = 
         config_parts.append(f"database='{model_catalog}'")
     elif layer:
         config_parts.append(f'database=var("catalog_{layer}")')
+
+    # Domain tag (set by domain expansion in compile_all)
+    domain = model_def.get("_domain")
+    if domain:
+        config_parts.append(f"tags=['{domain}']")
 
     if version:
         config_parts.append(f"meta={{'version': '{version}'}}")
@@ -374,10 +416,17 @@ def compile_model(model_name: str, model_def: dict, forge_config: dict | None = 
 
     # FROM clause
     _seeds = seed_names or set()
+    # Models that also have domain instances (for ref rewriting)
+    _domain_models = model_def.get("_domain_models", set())
 
     def _ref_or_source(name: str) -> str:
         if name in _seeds:
             return f"{{{{ source('seed', '{name}') }}}}"
+        # Domain instances ref domain-specific upstream models
+        # but only if the upstream model also has domain instances
+        if domain and name in _domain_models:
+            domain_ref = f"{name}_{domain}"
+            return f"{{{{ ref('{domain_ref}') }}}}"
         return f"{{{{ ref('{name}') }}}}"
 
     if is_join:
@@ -713,6 +762,20 @@ def compile_all(
     lineage_mode = lineage_cfg.get("mode", "full")
     origin_tracking = lineage_cfg.get("origin_tracking", True)
 
+    # Domain config
+    domains = (forge_config or {}).get("domains", {})
+    domain_layers = set((forge_config or {}).get("domain_layers", list((forge_config or {}).get("schemas", []))))
+
+    # Track domain instances for schema.yml generation
+    domain_models: dict[str, dict] = {}
+
+    # Pre-compute which models are in domain layers (for ref rewriting)
+    domain_model_names: set[str] = set()
+    if domains:
+        for name, mdef in models.items():
+            if mdef.get("layer", "default") in domain_layers:
+                domain_model_names.add(name)
+
     for model_name, model_def in models.items():
         sql = compile_model(model_name, model_def, forge_config=forge_config, seed_names=seed_names,
                             udf_languages=udf_lang_map, lineage_mode=lineage_mode,
@@ -724,8 +787,30 @@ def compile_all(
         out_path.write_text(sql)
         results[model_name] = out_path
 
-    # Generate schema.yml
-    schema_yml = compile_schema_yml(models)
+        # Domain instances: generate one .sql per (model x domain)
+        if domains and layer in domain_layers:
+            base_schema = _resolve_base_schema(forge_config, layer) if forge_config else None
+            for domain_name, domain_cfg in domains.items():
+                suffix = domain_cfg.get("schema_suffix", f"_{domain_name}")
+                instance_name = f"{model_name}_{domain_name}"
+                domain_def = {**model_def, "_domain": domain_name, "_domain_models": domain_model_names}
+                if base_schema:
+                    domain_def["schema"] = f"{base_schema}{suffix}"
+                domain_sql = compile_model(
+                    instance_name, domain_def, forge_config=forge_config,
+                    seed_names=seed_names, udf_languages=udf_lang_map,
+                    lineage_mode=lineage_mode, origin_tracking=origin_tracking,
+                )
+                out_path = sub_dir / f"{instance_name}.sql"
+                out_path.write_text(domain_sql)
+                results[instance_name] = out_path
+                domain_models[instance_name] = domain_def
+
+    # Merge domain instances into models for schema.yml generation
+    all_models = {**models, **domain_models}
+
+    # Generate schema.yml (includes domain instances)
+    schema_yml = compile_schema_yml(all_models)
     schema_path = schema_output or (output_dir / "schema.yml")
     schema_path.write_text(schema_yml)
     results["_schema"] = schema_path

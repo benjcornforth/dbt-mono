@@ -1,114 +1,744 @@
 # TODO-DOMAIN-BASED-MODEL-INSTANCES.yml
-# ────────────────────────────────────────────────────────────────
-#   dbt-dab-wrapper — Developer TODO: Domain-Based Multiple Instances
+# -------------------------------------------------------------------
+#   dbt-forge -- Developer TODO: Domain-Based Multiple Model Instances
 #   Date: 23 March 2026
 #   Goal: Support multiple instances of the **same model** in different schemas
 #         (one schema per domain/region/tenant) and ingest slightly different files
-#         driven by a reference table/seed — all while staying child-simple.
-#   Rule: Users edit ONLY wrapper.yml + dbt/ddl/. Everything else generated.
+#         driven by a reference table/seed -- all while staying child-simple.
+#   Rule: Users edit ONLY forge.yml + dbt/ddl/. Everything else generated.
 #         Graph shows every instance as its own node. One command = deploy/teardown.
 #         Never deletes data. Code = the documentation.
-# ────────────────────────────────────────────────────────────────
+# -------------------------------------------------------------------
 
-vision:
-  "Same model logic (e.g. customer_summary) runs in many domains (EU, US, APAC)
-   each in its own schema (e.g. silver_eu, silver_us) and each ingests its own
-   slightly different source files based on a simple reference seed/table.
-   No code duplication. Graph shows every instance clearly. One command deploys all."
+vision: >
+  Same model logic (e.g. customer_summary) runs in many domains (EU, US, APAC)
+  each in its own schema (e.g. silver_eu, silver_us) and each ingests its own
+  slightly different source files based on a simple reference seed/table.
+  No code duplication. Graph shows every instance clearly. One command deploys all.
 
 is_this_possible:
-  answer: "Yes — 100% possible and very clean with the existing folder + schema pattern system."
-  why_easy:
-    - Schema names are already driven by wrapper.yml patterns
-    - Folder structure (ddl/silver/) already maps to schemas
-    - Reference seeds are already supported in ddl/bronze/seeds/
-    - Graph and provenance already track per-model assets
+  answer: "Yes -- achievable with targeted changes to 5 forge modules."
+  why_achievable:
+    - Schema names already driven by forge.yml patterns (schema_pattern, catalog_pattern)
+    - compile_model() already injects schema/catalog via config block -- can be parameterised per domain
+    - Graph contracts already keyed by string ID -- can include domain qualifier
+    - Teardown iterates contracts.items() -- domain instances auto-included
+    - Reference seeds already supported in ddl/bronze/seeds/
 
-developer_todos:
 
-  - id: domain-schemas-in-wrapper-yml
-    priority: 1
-    status: Ready to build
-    title: Define domains and their schemas in wrapper.yml
-    effort: S (½ day)
-    justification: >
-      A child should be able to say “run this model in EU schema and US schema”
-      without touching any model YAML.
-    next_steps:
-      - Add to wrapper.yml:
-          domains:
-            eu:
-              schema_suffix: "_eu"
-            us:
-              schema_suffix: "_us"
-            apac:
-              schema_suffix: "_apac"
-      - Compiler automatically creates schemas: silver_eu, silver_us, etc.
-      - forge deploy creates separate tables: silver_eu.customer_summary, silver_us.customer_summary
+# ====================================================================
+# SECTION 1: ARCHITECTURE ANALYSIS
+# ====================================================================
 
-  - id: reference-seed-for-file-ingestion
-    priority: 2
-    status: Ready to build
-    title: Let models ingest different files via a reference seed/table
-    effort: S (1 day)
-    justification: >
-      Each domain ingests slightly different source files (e.g. different S3 paths or filenames).
-      Use a simple reference seed to drive this — no code changes per instance.
-    next_steps:
-      - Create a reference seed in ddl/bronze/seeds/domain_files.yml:
-          domain_files:
-            eu:
-              file_path: "s3://bucket/eu_customers_*.csv"
-            us:
-              file_path: "s3://bucket/us_customers_*.csv"
-      - In the model YAML (once):
-          source: raw_customers
-          reference_seed: domain_files
-          file_pattern: "{{ domain.file_path }}"
-      - Compiler creates separate source definitions per domain
-      - Graph shows each instance with its own source file path
+architecture_analysis:
 
-  - id: instance-graph-and-provenance
-    priority: 3
-    status: Ready to build
-    title: Show each domain instance in the graph + provenance
-    effort: XS (½ day)
-    justification: >
-      Graph must clearly show silver_eu.customer_summary vs silver_us.customer_summary.
-      wrapper explain must show the exact domain and reference file used.
-    next_steps:
-      - Instance name = model_name + domain (e.g. customer_summary_eu)
-      - Add domain + reference_seed to _lineage struct
-      - forge explain customer_summary_eu.total_revenue shows "domain: eu, file: s3://.../eu_customers.csv"
-      - forge diff highlights changes per domain
+  current_model_lifecycle:
+    description: >
+      DDL YAML -> load_ddl() -> compile_model() -> .sql -> dbt run -> manifest.json
+      -> build_graph() -> build_workflow() -> DAB deploy/teardown.
+      Each stage has 1:1 assumptions that block N instances.
 
-  - id: deploy-and-teardown-per-domain
-    priority: 4
-    status: Ready to build
-    title: forge deploy / teardown works per domain (safe, no data loss)
-    effort: XS (½ day)
-    justification: >
-      Each domain instance gets its own backup in _backup_archive and its own re-instate path.
-      Follows the exact safe-teardown philosophy we just shipped.
-    next_steps:
-      - forge deploy creates tables in the correct domain schema
-      - forge teardown lists each domain separately
-      - Ends with "To re-instate EU instance: forge deploy"
+    stage_1_ddl_loading:
+      file: src/forge/simple_ddl.py
+      function: load_raw_ddl()
+      how_it_works: >
+        Reads dbt/ddl/{layer}/{model}.yml. Top-level folder = layer.
+        Model names must be globally unique -- _merge_section() raises
+        ValueError on duplicates.
+      hard_coded: "model_name must be unique across entire project"
+      impact: "Cannot have customer_clean in silver_eu AND silver_us as same name"
+
+    stage_2_compilation:
+      file: src/forge/simple_ddl.py
+      function: compile_model() (line 232)
+      how_it_works: >
+        Generates config block with schema=var("schema_{layer}") and
+        database=var("catalog_{layer}"). Layer comes from DDL folder.
+        One schema per layer.
+      config_block_example: |
+        {{ config(
+            materialized='table',
+            schema=var("schema_silver"),      # resolves to 'ben_demo'
+            database=var("catalog_silver"),    # resolves to 'dev_fd_silver'
+        ) }}
+      hard_coded: "one schema per layer -- no per-instance variation"
+      injection_point: >
+        If domain is known at compile time, replace var("schema_silver")
+        with literal schema='ben_demo_eu' -- or var("schema_silver_eu").
+
+    stage_3_compile_all_loop:
+      file: src/forge/simple_ddl.py
+      function: compile_all() (line 665)
+      how_it_works: >
+        Iterates models.items() and writes one .sql per model to
+        {output_dir}/{origin}/{layer}/{model_name}.sql.
+        No concept of "do this again for each domain."
+      hard_coded: "one .sql file per model definition"
+      injection_point: >
+        Wrap the model loop in a domain loop: for each domain, generate
+        {model_name}_{domain}.sql with domain-specific schema.
+
+    stage_4_dbt_vars:
+      file: src/forge/compute_resolver.py
+      function: get_schema_variables()
+      how_it_works: >
+        Builds dbt vars dict: {schema_bronze: "ben_demo", catalog_silver: "dev_fd_silver", ...}
+        Layer-keyed, not domain-keyed. No schema_silver_eu.
+      hard_coded: "vars are layer-keyed only"
+      injection_point: >
+        Emit additional vars per domain: schema_silver_eu=ben_demo_eu.
+        Only needed if using var() approach; not needed if schemas are hardcoded.
+
+    stage_5_graph:
+      file: src/forge/graph.py
+      function: build_graph()
+      how_it_works: >
+        Contract IDs are model.{project}.{model_name}. Built from manifest.json
+        node names. If compile generates customer_clean_eu as a real dbt model,
+        the manifest will contain model.dbt_forge.customer_clean_eu and the
+        graph will pick it up automatically.
+      hard_coded: "contract_id has no domain dimension -- but doesn't need one if model name includes domain"
+      injection_point: >
+        If domain instances are real separate .sql files (customer_clean_eu.sql),
+        graph works automatically. Just tag with domain: eu in metadata.
+
+    stage_6_workflow:
+      file: src/forge/workflow.py
+      function: build_workflow()
+      how_it_works: >
+        Assigns models to stages (ingest/stage/clean/enrich/serve) by name
+        prefix + depth. Generates DAB task: dbt run --select {model_name}.
+        If customer_clean_eu is a real model, it gets its own task.
+      hard_coded: "single workflow for all models"
+      injection_point: >
+        For per-domain workflows: group tasks by domain tag, generate
+        PROCESS_{id}_eu / PROCESS_{id}_us. Or keep single workflow with
+        domain-tagged tasks.
+
+    stage_7_teardown:
+      file: src/forge/teardown.py
+      function: build_teardown_plan()
+      how_it_works: >
+        Iterates graph contracts to build asset list. Each model contract
+        becomes a TeardownAsset. --wipe-all drops tables + schemas.
+        Works automatically if domain instances are real contracts.
+      hard_coded: "none -- already iterates all contracts dynamically"
+      injection_point: >
+        Add --domain eu flag to scope teardown to one domain.
+        Add domain schemas to the wipe-all schema drop list.
+
+  bottleneck_summary:
+    - "model_name uniqueness -- one DDL YAML = one model = one .sql file"
+    - "schema = layer-based -- no per-instance schema at compile time"
+    - "compile_all() loops models once -- no domain expansion loop"
+    - "dbt_vars are layer-keyed (schema_silver) not instance-keyed (schema_silver_eu)"
+    - "workflow has no per-domain task grouping or scoping"
+
+
+# ====================================================================
+# SECTION 2: APPROACH OPTIONS -- RANKED
+# ====================================================================
+
+approaches:
+
+  # ------------------------------------------------
+  # OPTION A: Domain-aware compile (RECOMMENDED)
+  # ------------------------------------------------
+  option_a:
+    name: "Domain-aware compile -- forge generates N .sql files per model"
+    complexity: Medium
+    recommended: true
+
+    summary: >
+      User declares domains in forge.yml. compile_all() loops over domains and
+      emits one .sql file per (model x domain) with hardcoded schema in config().
+      Each domain instance is a real dbt model -- graph, workflow, teardown, test
+      all work automatically. No runtime var tricks. No dbt macro changes.
+
+    user_experience: |
+      # forge.yml -- add this section
+      domains:
+        eu:
+          schema_suffix: "_eu"      # silver schema -> ben_demo_eu
+        us:
+          schema_suffix: "_us"
+        apac:
+          schema_suffix: "_apac"
+      domain_layers: [silver, gold]  # bronze stays shared (raw ingestion layer)
+
+      # That's it. Run:
+      forge compile     # generates customer_clean.sql, customer_clean_eu.sql, etc.
+      forge deploy      # deploys all instances
+
+    what_compile_generates: |
+      # For customer_clean in silver layer with 3 domains:
+      dbt/models/demo/silver/customer_clean.sql            # default instance
+      dbt/models/demo/silver/customer_clean_eu.sql         # EU instance
+      dbt/models/demo/silver/customer_clean_us.sql         # US instance
+      dbt/models/demo/silver/customer_clean_apac.sql       # APAC instance
+
+      # EU instance has hardcoded schema:
+      {{ config(materialized='table', schema='ben_demo_eu', database=var("catalog_silver")) }}
+      -- ...same SQL body as default...
+
+      # Default instance uses var() as before:
+      {{ config(materialized='table', schema=var("schema_silver"), database=var("catalog_silver")) }}
+
+    code_changes:
+
+      compile_all_in_simple_ddl:
+        file: src/forge/simple_ddl.py
+        function: compile_all() -- line 665
+        effort: "M (1 day)"
+        change: |
+          After the existing model loop, add domain expansion:
+
+          domains = (forge_config or {}).get("domains", {})
+          domain_layers = set((forge_config or {}).get("domain_layers", list(domains.keys())))
+
+          for model_name, model_def in models.items():
+              # ... existing compile (default instance) ...
+
+              # Domain instances
+              layer = model_def.get("layer", "default")
+              if domains and layer in domain_layers:
+                  for domain_name, domain_cfg in domains.items():
+                      suffix = domain_cfg.get("schema_suffix", f"_{domain_name}")
+                      instance_name = f"{model_name}_{domain_name}"
+                      # Clone model_def with hardcoded domain schema
+                      domain_def = {**model_def}
+                      base_schema = _resolve_base_schema(forge_config, layer)
+                      domain_def["schema"] = f"{base_schema}{suffix}"
+                      domain_def["_domain"] = domain_name  # for lineage
+
+                      sql = compile_model(instance_name, domain_def, ...)
+                      out_path = sub_dir / f"{instance_name}.sql"
+                      out_path.write_text(sql)
+                      results[instance_name] = out_path
+
+        notes: >
+          _resolve_base_schema() calls _expand_env_prefix() to get the concrete
+          schema for the layer (e.g. "ben_demo"), then appends the domain suffix.
+          This means domain schemas are HARDCODED strings at compile time --
+          no var() indirection -- which makes them simple and debuggable.
+
+      compile_model_domain_tag:
+        file: src/forge/simple_ddl.py
+        function: compile_model()
+        effort: "XS (1 hour)"
+        change: |
+          If model_def has "_domain", add tag to config:
+            config_parts.append(f"tags=['{model_def['_domain']}']")
+          And include domain in the _lineage struct:
+            lineage_parts["domain"] = model_def["_domain"]
+
+      schema_yml_domain_entries:
+        file: src/forge/simple_ddl.py
+        function: compile_schema_yml()
+        effort: "S (2 hours)"
+        change: >
+          Domain instances need entries in schema.yml for tests to run.
+          compile_schema_yml() already iterates models dict. Domain instances
+          will be in the models dict under their instance names (customer_clean_eu).
+          May need to add them to the models dict in compile_all() before calling
+          compile_schema_yml().
+
+      graph_py:
+        file: src/forge/graph.py
+        effort: "XS (mostly automatic)"
+        change: >
+          If domain instances are real dbt models, build_graph() picks them up
+          from manifest.json automatically. Contract ID becomes
+          model.dbt_forge.customer_clean_eu. No code changes needed.
+          Optional: add domain tag to contract metadata for filtering.
+
+      workflow_py:
+        file: src/forge/workflow.py
+        effort: "S (half day)"
+        change: >
+          Domain instances appear as individual models. _assign_stage()
+          matches by prefix (clean_ -> clean stage). customer_clean_eu still
+          starts with "customer_clean" -- stage detection works.
+          Option: group by domain for clarity in DAB UI:
+            task_key: clean_customer_clean_eu
+          Option: generate per-domain workflows:
+            PROCESS_demo_eu, PROCESS_demo_us
+
+      teardown_py:
+        file: src/forge/teardown.py
+        effort: "XS (automatic)"
+        change: >
+          Already iterates contracts.items(). Domain instances are contracts.
+          --wipe-all: add domain schemas to the drop list:
+            for domain_name, domain_cfg in domains.items():
+              schema = f"{base_schema}{domain_cfg['schema_suffix']}"
+              qualified_schema = f"{catalog}.{schema}"
+
+      compute_resolver_py:
+        file: src/forge/compute_resolver.py
+        effort: "XS (optional)"
+        change: >
+          Only needed if using var() approach (not recommended).
+          If hardcoding schemas, no changes required.
+          If var() approach: emit schema_silver_eu, schema_silver_us, etc.
+
+    pros:
+      - "Zero DDL changes -- domains are infrastructure config, not model logic"
+      - "Each instance is a real dbt model -- full test, doc, lineage support"
+      - "Graph shows every instance as its own contract node"
+      - "Teardown, backup, wipe-all work automatically via contracts"
+      - "dbt run --select customer_clean_eu -- works for debugging one domain"
+      - "No runtime complexity -- schemas resolve at compile time"
+      - "generate_schema_name macro still works (handles the default instance)"
+
+    cons:
+      - "NxM generated .sql files (N models x M domains) -- but all gitignored"
+      - "dbt partial_parse cache invalidated when domains are added/removed"
+      - "Domain schemas need CREATE SCHEMA IF NOT EXISTS (add to deploy)"
+
+  # ------------------------------------------------
+  # OPTION B: Runtime vars -- multiple dbt runs
+  # ------------------------------------------------
+  option_b:
+    name: "Runtime domain via dbt vars -- single .sql file, N dbt runs"
+    complexity: Low (code) / High (operations)
+    recommended: false
+
+    summary: >
+      Single .sql per model. Domain passed as --vars at runtime. The
+      generate_schema_name macro appends domain suffix. forge deploy
+      runs dbt N times, once per domain.
+
+    how_it_works: |
+      # Model .sql unchanged -- uses var("schema_silver") as before.
+      # generate_schema_name.sql macro checks var("domain"):
+
+      {% macro generate_schema_name(custom_schema_name, node) %}
+        {% set domain = var("domain", "") %}
+        {% if custom_schema_name is not none %}
+          {% if domain != "" %}
+            {{ custom_schema_name }}_{{ domain }}
+          {% else %}
+            {{ custom_schema_name }}
+          {% endif %}
+        {% else %}
+          {{ target.schema }}
+        {% endif %}
+      {% endmacro %}
+
+      # forge deploy loop:
+      for domain in domains:
+        dbt run --vars '{"domain": "eu", ...}'
+
+    pros:
+      - "Minimal code changes -- macro + CLI deploy loop"
+      - "Single .sql per model -- no file proliferation"
+      - "Works today with 20 lines of code"
+
+    cons:
+      - "Graph only sees ONE model node -- no per-domain visibility"
+      - "N sequential dbt runs -- SLOW for many domains"
+      - "dbt test/docs don't know about domain instances"
+      - "Teardown can't enumerate domain instances from manifest"
+      - "Harder to debug -- which domain failed?"
+      - "Can't dbt run --select customer_clean_eu directly"
+      - "forge diff can't show per-domain contract changes"
+
+  # ------------------------------------------------
+  # OPTION C: DDL-level instances
+  # ------------------------------------------------
+  option_c:
+    name: "Instance block in DDL YAML -- per-model instance overrides"
+    complexity: Medium-High
+    recommended: false
+
+    summary: >
+      Each DDL model.yml can declare instances: with per-instance overrides
+      (different schema, source filter, column mappings). Most flexible
+      but violates "DDL = model logic only" principle.
+
+    ddl_example: |
+      # dbt/ddl/silver/customer_clean.yml
+      source: stg_customers
+      columns:
+        customer_id: { type: int, not_null: true }
+        email: { type: string, udf: "clean_email(email)" }
+      instances:
+        eu:
+          schema_suffix: "_eu"
+          source_filter: "region = 'EU'"
+        us:
+          schema_suffix: "_us"
+          source_filter: "region = 'US'"
+
+    pros:
+      - "Maximum flexibility -- per-instance WHERE clauses, column overrides"
+      - "Explicit -- developer sees exactly what each instance does differently"
+
+    cons:
+      - "Violates 'DDL is model logic only' -- infrastructure leaks into DDL"
+      - "More complex DDL YAML for non-technical users"
+      - "Different SQL per instance = harder to test and reason about"
+      - "Couples domain routing to model definition = harder to add domains later"
+
+  recommendation: >
+    OPTION A (domain-aware compile) is recommended. It keeps DDL clean,
+    domains are pure infrastructure config, and dbt sees real models --
+    so tests, docs, graph, workflow, teardown all work automatically.
+
+
+# ====================================================================
+# SECTION 3: DOMAIN-SPECIFIC SOURCE ROUTING
+# ====================================================================
+
+domain_source_routing:
+  description: >
+    Each domain ingests different source files (e.g. EU customers from one
+    S3 path, US customers from another). The system needs to route each
+    domain instance to its correct source without duplicating model logic.
+
+  recommended_approach:
+    name: "Reference seed + per-domain source definitions"
+    how_it_works: |
+      # 1. User creates a reference seed CSV
+      # dbt/seeds/domain_sources.csv
+      domain,source_name,file_path
+      eu,raw_customers,s3://data-lake/eu/customers/
+      us,raw_customers,s3://data-lake/us/customers/
+      apac,raw_customers,s3://data-lake/apac/customers/
+      eu,raw_orders,s3://data-lake/eu/orders/
+      us,raw_orders,s3://data-lake/us/orders/
+
+      # 2. compile_all() generates per-domain source definitions
+      # dbt/sources/_sources_eu.yml
+      sources:
+        - name: seed_eu
+          tables:
+            - name: raw_customers
+              external:
+                location: "s3://data-lake/eu/customers/"
+                file_format: parquet
+
+      # 3. Domain instance models ref the domain source
+      # customer_clean_eu.sql uses source('seed_eu', 'raw_customers')
+      # customer_clean_us.sql uses source('seed_us', 'raw_customers')
+
+    implementation_in_compile_model: |
+      # In compile_model(), when _domain is set, replace source reference:
+      # Default: {{ ref('stg_customers') }} or {{ source('seed', 'raw_customers') }}
+      # Domain:  {{ ref('stg_customers_eu') }} or {{ source('seed_eu', 'raw_customers') }}
+
+      # This means domain instances reference domain-specific upstream models.
+      # In bronze (shared) layer, source remains the same.
+      # In silver+ (domain) layers, refs point to domain instances.
+
+    alternative_source_approaches:
+      - name: "Unity Catalog volumes"
+        description: >
+          Each domain schema has its own UC volume:
+          /Volumes/{catalog}/{schema_eu}/raw_data/ -> EU files
+          /Volumes/{catalog}/{schema_us}/raw_data/ -> US files
+          Source definitions point to domain-specific volumes.
+          Works with COPY INTO and Auto Loader.
+        effort: "Low -- Databricks config only, no forge changes"
+
+      - name: "Databricks external locations"
+        description: >
+          External locations map domain schemas to cloud paths.
+          CREATE TABLE ... LOCATION 's3://...' per domain.
+          No forge changes -- just Databricks governance config.
+        effort: "Low -- infrastructure config"
+
+
+# ====================================================================
+# SECTION 4: BULK MIGRATION OVERHEAD & TOOLING
+# ====================================================================
+
+bulk_migration:
+
+  scenario: >
+    An existing project has 50 tables in a single shared schema (silver.ben_demo).
+    Introducing domains means creating 3 domain schemas and migrating data:
+    silver.ben_demo -> { silver.ben_demo_eu, silver.ben_demo_us, silver.ben_demo_apac }.
+    Data may be partitioned by region or fully replicated.
+
+  overhead_analysis:
+
+    schema_creation:
+      overhead: Trivial
+      automated: true
+      description: >
+        forge deploy already handles CREATE SCHEMA IF NOT EXISTS.
+        Domain expansion adds N domain schemas. ~0.1s per schema on Databricks.
+      action: "No manual steps -- forge deploy handles it"
+
+    table_creation:
+      overhead: Trivial
+      automated: true
+      description: >
+        forge compile generates .sql per domain instance. forge deploy runs
+        dbt run which creates empty tables automatically.
+      action: "No manual steps -- forge deploy handles it"
+
+    data_migration:
+      overhead: Medium to High -- depends on volume and strategy
+      automated: partially (needs new forge migrate command)
+      strategies:
+
+        ctas_with_filter:
+          name: "CTAS with row filter (partitioned)"
+          description: >
+            CREATE TABLE silver.ben_demo_eu.customer_summary AS
+            SELECT * FROM silver.ben_demo.customer_summary WHERE region = 'EU'
+          effort: "One SQL per (table x domain)"
+          pros: ["Simple", "One-shot", "Fast for <1TB tables"]
+          cons: ["Full table scan of source", "Doubles storage during migration"]
+          best_for: "When data should be partitioned by domain (different rows per domain)"
+
+        deep_clone:
+          name: "Delta Deep Clone (replicated)"
+          description: >
+            CREATE TABLE silver.ben_demo_eu.customer_summary
+            DEEP CLONE silver.ben_demo.customer_summary
+          effort: "One SQL per (table x domain)"
+          pros: ["Fastest", "Preserves Delta history", "No row-level scan"]
+          cons: ["Copies ALL rows -- no filtering", "Databricks-only"]
+          best_for: "When every domain gets identical data (replicas)"
+
+        insert_incremental:
+          name: "INSERT INTO (incremental)"
+          description: >
+            INSERT INTO silver.ben_demo_eu.customer_summary
+            SELECT * FROM silver.ben_demo.customer_summary
+            WHERE region = 'EU' AND updated_at > '{{last_migration}}'
+          pros: ["Can be run repeatedly", "Only moves new rows"]
+          cons: ["Requires tracking last migration timestamp"]
+          best_for: "Ongoing sync from shared -> domain tables"
+
+        dbt_full_refresh:
+          name: "dbt --full-refresh (simplest)"
+          description: >
+            After compile generates domain instances, run:
+            forge deploy --full-refresh
+            This rebuilds all tables from upstream sources.
+          pros: ["Zero custom SQL", "Fully automated", "Uses existing pipeline"]
+          cons: ["Source data must already be domain-partitioned upstream"]
+          best_for: "Greenfield projects or when reprocessing from raw is cheap"
+
+    referential_integrity:
+      overhead: Low
+      description: >
+        Domain instances within the same domain reference each other correctly
+        because compile_all() rewrites refs to domain-suffixed names:
+          ref('stg_customers') -> ref('stg_customers_eu')
+        Cross-domain refs (unusual but possible) require explicit configuration.
+
+    testing:
+      overhead: Trivial
+      description: >
+        Since domain instances are real dbt models, existing dbt tests run
+        per-instance automatically:
+          dbt test --select customer_clean_eu
+          dbt test --select tag:eu   (all EU models)
+        No test code duplication needed.
+
+    rollback:
+      overhead: Low
+      description: >
+        forge backup snapshots all domain instances (contracts-based).
+        forge restore --snapshot {timestamp} restores everything.
+        forge teardown --wipe-all --domain eu drops only EU schemas/tables.
+
+  recommended_migration_plan:
+    steps:
+      - step: 1
+        action: "Add domains: block to forge.yml"
+        risk: None
+        notes: "No data movement. Just configuration."
+
+      - step: 2
+        action: "forge compile"
+        risk: None
+        notes: "Generates N .sql files per model. Review dbt/models/ output."
+
+      - step: 3
+        action: "forge deploy (creates empty schemas + tables)"
+        risk: Low
+        notes: "Creates new schemas like ben_demo_eu, ben_demo_us. No data moved."
+
+      - step: 4
+        action: "Run migration SQL (CTAS/INSERT INTO/deep clone)"
+        risk: Medium
+        notes: >
+          Use forge migrate --split-by region or manual SQL.
+          Always run on a non-prod environment first.
+
+      - step: 5
+        action: "forge diff -- verify all instances match expected contracts"
+        risk: None
+        notes: "Confirms tables exist with correct schemas in all domains."
+
+      - step: 6
+        action: "Run dbt test --select tag:eu, tag:us, tag:apac"
+        risk: None
+        notes: "Validates data quality per domain."
+
+      - step: 7
+        action: "Update upstream pipelines to target domain-specific sources"
+        risk: Medium
+        notes: "Route ingestion to domain-specific paths/volumes."
+
+      - step: 8
+        action: "Validate, then teardown old shared schema"
+        risk: High
+        notes: "forge teardown --wipe-all on old schema. Only after validation."
+
+  recommended_tooling:
+
+    forge_builtin:
+      - tool: "forge compile"
+        purpose: "Generates domain instance .sql files automatically"
+      - tool: "forge deploy"
+        purpose: "Creates domain schemas + runs dbt for all instances"
+      - tool: "forge diff"
+        purpose: "Shows per-domain contract changes"
+      - tool: "forge teardown --wipe-all"
+        purpose: "Cleans up all domain schemas"
+      - tool: "forge backup --data"
+        purpose: "Archives all domain tables before migration"
+
+    new_forge_command:
+      name: "forge migrate"
+      description: >
+        Generates and optionally executes migration SQL to split data from
+        a shared schema into domain-specific schemas.
+      flags:
+        - flag: "--split-by region"
+          purpose: "Partition rows by column value"
+        - flag: "--deep-clone"
+          purpose: "Use Delta deep clone (full replica)"
+        - flag: "--dry-run"
+          purpose: "Show SQL without executing"
+        - flag: "--domain eu"
+          purpose: "Migrate only one domain"
+        - flag: "--source-schema ben_demo"
+          purpose: "Override source schema (for migration from legacy)"
+      effort: "M (1-2 days)"
+      priority: "Build after Phase 1 (domain compile) works"
+
+    databricks_infra:
+      - tool: "SQL Warehouse (serverless)"
+        purpose: "Run migration CTAS/INSERT statements at scale"
+        why: "Auto-scales, handles TB-scale migrations, no cluster management"
+
+      - tool: "Unity Catalog"
+        purpose: "Governance, lineage, access control per domain schema"
+        why: "Already the default in forge. Domain schemas get UC lineage free."
+
+      - tool: "Delta Live Tables"
+        purpose: "Ongoing domain data sync with expectations"
+        when: "If domains need continuous sync from a shared source"
+        caveat: "Separate from dbt -- adds operational complexity"
+
+      - tool: "Volumes"
+        purpose: "Domain-specific file ingestion paths"
+        why: "/Volumes/{catalog}/{domain_schema}/raw/ gives clean file routing"
+
+
+# ====================================================================
+# SECTION 5: IMPLEMENTATION PLAN (PHASED)
+# ====================================================================
+
+implementation_plan:
+
+  phase_1:
+    name: "Domain-aware compile"
+    effort: "1-2 days"
+    files_changed:
+      - src/forge/simple_ddl.py (compile_all, compile_model)
+    delivers:
+      - "domains: section in forge.yml"
+      - "compile_all() generates {model}_{domain}.sql per model per domain"
+      - "Hardcoded schema in each domain instance config block"
+      - "Domain tag in config for dbt selection"
+      - "Domain instances included in schema.yml for testing"
+    validation: |
+      forge compile
+      ls dbt/models/demo/silver/
+      # -> customer_clean.sql customer_clean_eu.sql customer_clean_us.sql ...
+      cat dbt/models/demo/silver/customer_clean_eu.sql
+      # -> schema='ben_demo_eu'
+
+  phase_2:
+    name: "Deploy + graph + workflow integration"
+    effort: "1 day"
+    files_changed:
+      - src/forge/cli.py (deploy -- add CREATE SCHEMA for domain schemas)
+      - src/forge/graph.py (tag domain in contract metadata)
+      - src/forge/workflow.py (domain tasks)
+      - src/forge/teardown.py (domain schema drops in --wipe-all)
+    delivers:
+      - "CREATE SCHEMA IF NOT EXISTS for each domain schema during deploy"
+      - "Each domain instance = distinct graph contract with domain tag"
+      - "Workflow DAG has per-domain tasks"
+      - "Teardown --wipe-all includes domain schemas"
+      - "forge diff shows per-domain changes"
+    validation: |
+      forge deploy
+      # -> creates ben_demo_eu, ben_demo_us schemas
+      forge diff
+      # -> shows eu/us/apac instances separately
+
+  phase_3:
+    name: "Domain source routing"
+    effort: "1 day"
+    files_changed:
+      - src/forge/simple_ddl.py (compile_model -- domain source refs)
+      - src/forge/simple_ddl.py (compile_sources_yml -- per-domain sources)
+    delivers:
+      - "Reference seed (domain_sources.csv) maps domain -> source path"
+      - "Per-domain source YAML generated automatically"
+      - "Domain instance refs point to domain-specific upstream models"
+    validation: |
+      # dbt/sources/_sources_eu.yml exists with EU file paths
+      # customer_clean_eu.sql references source('seed_eu', 'raw_customers')
+
+  phase_4:
+    name: "Migration tooling"
+    effort: "1-2 days"
+    files_changed:
+      - src/forge/migrate.py (new module)
+      - src/forge/cli.py (forge migrate command)
+    delivers:
+      - "forge migrate --split-by region generates CTAS SQL"
+      - "forge migrate --deep-clone generates Delta clone SQL"
+      - "forge migrate --execute runs on Databricks"
+      - "forge migrate --dry-run previews SQL"
+    validation: |
+      forge migrate --split-by region --dry-run
+      # -> shows INSERT INTO silver.ben_demo_eu.customer_summary
+      #   SELECT * FROM silver.ben_demo.customer_summary WHERE region = 'EU'
+
+  total_effort: "4-6 days"
+  risk: Low
+  notes: >
+    Phase 1 alone delivers 80% of the value. Phases 2-4 are incremental.
+    Each phase is independently deployable and testable.
+
+
+# ====================================================================
+# SECTION 6: SUCCESS CRITERIA
+# ====================================================================
 
 success_criteria:
-  - A child adds 3 domains in wrapper.yml + one reference seed and runs forge deploy once
-  - Sees 3 separate tables (silver_eu.customer_summary, silver_us.customer_summary, etc.)
-  - Graph shows 3 distinct nodes with domain badges
-  - forge explain shows the exact file ingested for that domain
-  - forge teardown is safe (archives only, never deletes data)
-
-auto_documentation:
-  - After every todo: run `forge guide`
-  - New section appears automatically: "## HOW-TO: Multiple Instances per Domain (Different Schemas + Different Files)"
-
-next_action:
-  - Start with #1 today (domains in wrapper.yml — 30 minutes)
-  - Run `forge guide` after each step — the new HOW-TO section appears instantly
-  - Share this TODO with the developer
+  - "User adds domains: block to forge.yml (3 lines per domain)"
+  - "forge compile generates N .sql files per model per domain"
+  - "forge deploy creates domain schemas + tables automatically"
+  - "Graph shows each domain instance as its own contract node"
+  - "dbt test runs per-domain automatically"
+  - "forge teardown --wipe-all drops all domain schemas cleanly"
+  - "forge diff shows per-domain contract changes"
+  - "forge migrate splits data from shared -> domain schemas"
+  - "No DDL model changes required -- domains are infrastructure config only"
 
 last_updated: 2026-03-23
