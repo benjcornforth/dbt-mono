@@ -8,6 +8,7 @@
 # Every step is reversible. Re-instate = forge deploy.
 #
 # Asset handling:
+#   📦 ARCHIVE — All table data saved to _teardown_archive (JSON rows)
 #   ✅ REMOVE  — DAB job definitions (orchestration only)
 #   ✅ REMOVE  — UDFs (functions are code, always redeployable)
 #   🔒 PRESERVE — Tables, views, schemas, data (NEVER touched)
@@ -80,6 +81,8 @@ class TeardownPlan:
 
     # ── Serialisation ─────────────────────────────────
 
+    archive_table: str | None = None   # fully qualified _teardown_archive table
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "teardown": {
@@ -89,6 +92,10 @@ class TeardownPlan:
                 "project": self.project,
                 "scope": self.scope,
                 "id": self.project_id,
+                "archive": {
+                    "table": self.archive_table,
+                    "note": "All table data is archived as JSON rows before any changes",
+                } if self.archive_table else None,
                 "removes": [
                     {k: v for k, v in {
                         "type": a.asset_type,
@@ -106,7 +113,7 @@ class TeardownPlan:
                 },
                 "backup": {
                     "directory": self.backup_dir,
-                    "note": "Workflow YAML is copied before removal",
+                    "note": "Workflow YAML + table data archived before removal",
                 },
                 "steps": [
                     {k: v for k, v in {
@@ -145,6 +152,10 @@ class TeardownPlan:
                 lines.append(f"    • {a.asset_type}: {a.name}{method}")
         else:
             lines.append("  📋 Nothing to remove.")
+
+        if self.archive_table:
+            lines.append("")
+            lines.append(f"  📦 ARCHIVES all table data to: {self.archive_table}")
 
         lines.append("")
         tables = [a.name for a in self.preserves if a.asset_type == "table"]
@@ -296,9 +307,60 @@ def build_teardown_plan(
         note="Schemas are preserved. Use forge dev-down for dev schema cleanup.",
     ))
 
+    # ── Build archive table name ─────────────────────
+    ops_catalog = _resolve_catalog(catalog_pattern, env, scope, "operations")
+    ops_schema = _resolve_schema(schema_pattern, env, project_id, scope)
+    archive_table = f"{ops_catalog}.{ops_schema}._teardown_archive"
+
+    # Collect qualified table names for archive
+    default_catalog = _resolve_catalog(catalog_pattern, env, scope, profile.get("catalog", "bronze"))
+    default_schema = ops_schema  # same schema pattern
+    table_names_qualified: list[tuple[str, str]] = []  # (short_name, qualified_name)
+    for a in preserves:
+        if a.asset_type == "table":
+            table_names_qualified.append((a.name, f"{default_catalog}.{default_schema}.{a.name}"))
+
     # ── Build steps ───────────────────────────────────
     steps: list[TeardownStep] = []
     step_num = 0
+
+    # Step: Create archive table (if not exists)
+    step_num += 1
+    steps.append(TeardownStep(
+        step=step_num,
+        name="create_archive_table",
+        action="sql",
+        statements=[
+            f"CREATE TABLE IF NOT EXISTS {archive_table} ("
+            f"  table_name STRING,"
+            f"  project STRING,"
+            f"  environment STRING,"
+            f"  archived_at TIMESTAMP,"
+            f"  row_data STRING"
+            f") USING DELTA",
+        ],
+    ))
+
+    # Step: Archive all table data as JSON rows
+    if table_names_qualified:
+        archive_stmts: list[str] = []
+        for short_name, qualified_name in table_names_qualified:
+            archive_stmts.append(
+                f"INSERT INTO {archive_table} "
+                f"SELECT '{short_name}' AS table_name, "
+                f"'{project_name}' AS project, "
+                f"'{env}' AS environment, "
+                f"current_timestamp() AS archived_at, "
+                f"to_json(struct(*)) AS row_data "
+                f"FROM {qualified_name}"
+            )
+        step_num += 1
+        steps.append(TeardownStep(
+            step=step_num,
+            name="archive_table_data",
+            action="sql",
+            statements=archive_stmts,
+        ))
 
     # Step: Backup workflow YAML
     if Path(wf_path).exists():
@@ -342,7 +404,8 @@ def build_teardown_plan(
         action="log",
         message=(
             f"✅ Teardown complete.\n"
-            f"📋 Tables preserved: {', '.join(table_names)}\n"
+            f"� Table data archived to: {archive_table}\n"
+            f"�📋 Tables preserved: {', '.join(table_names)}\n"
             f"🔒 Schemas preserved (use forge dev-down for dev schemas)\n"
             f"📦 Backup: {backup_dir}/\n"
             f"♻️  To re-instate: forge deploy"
@@ -360,6 +423,7 @@ def build_teardown_plan(
         preserves=preserves,
         steps=steps,
         backup_dir=backup_dir,
+        archive_table=archive_table,
     )
 
 
