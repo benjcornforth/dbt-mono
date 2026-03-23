@@ -13,7 +13,7 @@ catalog_pattern: "{env}_{scope}_{catalog}"     # → dev_sales_bronze
 schema_pattern:  "{user}_{id}"                 # → ben_sales
 skip_env_prefix: [prd, prod]
 
-catalogs: [bronze, silver]
+catalogs: [bronze, silver, meta]
 schemas:  [bronze, silver, gold]
 
 # ── Profiles ──
@@ -68,3 +68,10 @@ lineage:
 
 portability:
   postgres_compatible: true
+
+# ── Python Tasks ──
+python_tasks:
+  ingest_from_volume:
+    stage: ingest
+    description: "Reads files from landing Volume → raw tables"
+    template: ingest

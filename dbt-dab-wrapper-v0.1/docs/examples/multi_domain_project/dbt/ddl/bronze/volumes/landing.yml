@@ -1,0 +1,9 @@
+# ── Landing volume — per-domain file drop zones ─────────
+# Each domain gets its own Volume instance (landing_eu, landing_us, etc.)
+# Files land here for the Python ingestion task to pick up.
+volumes:
+  landing:
+    description: "Landing zone for inbound data files"
+    type: managed
+    layer: bronze
+    domain: true

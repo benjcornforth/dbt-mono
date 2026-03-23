@@ -1,13 +1,11 @@
 # stg_customers.yml — Domain-aware staging model
-# Each domain reads from its own source via domain_sources.
+# Each domain automatically reads from its own raw_customers instance
+# (raw_customers_eu, raw_customers_us, raw_customers_apac) because
+# raw_customers is managed_by: python with domain: true.
 models:
   stg_customers:
     description: "Staged customers — one instance per domain"
-    source: raw_customers                    # default / fallback
-    domain_sources:
-      eu: raw_customers_eu                   # EU reads from EU volume
-      us: raw_customers_us                   # US reads from US volume
-      apac: raw_customers_apac              # APAC reads from APAC volume
+    source: raw_customers
     columns:
       customer_id:  { type: int, required: true, unique: true }
       email:        { type: string }

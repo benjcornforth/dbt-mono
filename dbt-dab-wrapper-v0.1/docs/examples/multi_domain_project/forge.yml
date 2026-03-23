@@ -8,7 +8,7 @@ active_profile: dev
 catalog_pattern: "{env}_{scope}_{catalog}"
 schema_pattern: "{user}_{id}"
 
-catalogs: [bronze, silver]
+catalogs: [bronze, silver, meta]
 schemas: [bronze, silver]
 
 # ── Domains — one schema per region ──
@@ -36,3 +36,10 @@ features:
   graph: true
   quarantine: true
   prior_version: true
+
+# ── Python Tasks ──
+python_tasks:
+  ingest_from_volume:
+    stage: ingest
+    description: "Reads files from landing Volume → raw tables"
+    template: ingest

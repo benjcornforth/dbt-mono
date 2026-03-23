@@ -1,0 +1,16 @@
+# ── Raw order data — managed by Python ───────────────────
+# Schema is created by forge; rows are populated by the
+# ingest_from_volume Python task reading from the landing Volume.
+# domain: true → one table per domain (raw_orders_eu, etc.)
+models:
+  raw_orders:
+    description: "Raw order data ingested from Volume"
+    managed_by: python
+    domain: true
+    columns:
+      order_id:     { type: int, description: "Unique order identifier" }
+      customer_id:  { type: int }
+      product:      { type: string }
+      quantity:     { type: int }
+      unit_price:   { type: "decimal(10,2)" }
+      order_date:   { type: date }

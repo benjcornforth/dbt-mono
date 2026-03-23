@@ -7,15 +7,20 @@
 
 ## What You'll Build
 
-A five-model pipeline that takes raw customer and order CSVs and produces
-a customer summary with loyalty tiers, data quality checks, quarantine
-for bad rows, and full column-level lineage.
+A five-model pipeline that takes raw customer and order files, ingests them
+from a Unity Catalog Volume, and produces a customer summary with loyalty
+tiers, data quality checks, quarantine for bad rows, full column-level
+lineage, and config-driven Volume ingestion.
 
 ```
-raw_customers.csv ─┐
-                   ├─▶ stg_customers ─▶ customer_clean ─┐
-raw_orders.csv ────┴─▶ stg_orders    ──────────────────┴─▶ customer_orders ─▶ customer_summary
-                                                                                     ↳ tier (UDF)
+  Volume (landing)
+       │
+  ingest_from_volume.py
+       ↓
+  raw_customers ─┐
+                 ├─▶ stg_customers ─▶ customer_clean ─┐
+  raw_orders ────┴─▶ stg_orders    ──────────────────┴─▶ customer_orders ─▶ customer_summary
+                                                                                   ↳ tier (UDF)
 ```
 
 **Time to complete:** ~15 minutes.
@@ -47,7 +52,9 @@ This creates:
 forge.yml                 ← project config (YOU edit)
 dbt/ddl/                  ← model definitions (YOU edit)
 dbt/models/               ← generated SQL (never edit)
-dbt/seeds/                ← CSV seed files (you place here)
+dbt/seeds/                ← config seeds only (ingestion_config.csv)
+python/                   ← Python tasks (YOU edit)
+sample_data/              ← sample CSVs to upload to Volumes
 ```
 
 ---
@@ -88,27 +95,20 @@ databricks configure --profile DEFAULT
 
 ---
 
-## Step 3 — Define Your Seeds (Raw Data)
+## Step 3 — Define Raw Data Models (Managed by Python)
 
-Place your CSV files in `dbt/seeds/`:
+Raw data arrives via Volume ingestion, not CSV seeds. Declare the
+schema so forge can create the tables — rows are populated by the
+Python ingestion task.
 
-```
-dbt/seeds/raw_customers.csv
-dbt/seeds/raw_orders.csv
-```
-
-Then declare them in DDL YAML so forge knows their columns and origin:
-
-**`dbt/ddl/bronze/seeds/raw_customers.yml`**
+**`dbt/ddl/bronze/models/raw_customers.yml`**
 
 ```yaml
-seeds:
+models:
   raw_customers:
-    description: "Raw customer data loaded from CSV seed"
-    origin:
-      type: seed
-      path: dbt/seeds/raw_customers.csv
-      format: csv
+    description: "Raw customer data ingested from Volume"
+    managed_by: python
+    domain: false
     columns:
       customer_id:  { type: int, description: "Unique customer identifier" }
       first_name:   { type: string }
@@ -119,13 +119,27 @@ seeds:
       revenue:      { type: "decimal(10,2)" }
 ```
 
-The `origin:` block tells `forge explain` where this data physically comes from.
+**Key options:**
+- `managed_by: python` — forge creates the table schema (DDL) but the Python
+  ingestion task populates it. No SELECT SQL is generated.
+- `domain: false` — single shared table (set `true` for per-domain tables)
+
+Sample data files are in `sample_data/`. After deploying, upload them
+to the landing Volume:
+
+```bash
+# After forge deploy creates the Volume:
+databricks fs cp sample_data/raw_customers.csv dbfs:/Volumes/bronze/ben_sales/landing/customers_20240101.csv
+databricks fs cp sample_data/raw_orders.csv    dbfs:/Volumes/bronze/ben_sales/landing/orders_20240101.csv
+```
+
+Then run the ingestion task to load them into the raw tables.
 
 ---
 
 ## Step 4 — Define Staging Models (Bronze Layer)
 
-Staging models read from seeds, apply types, and add lineage.
+Staging models read from the raw tables, apply types, and add lineage.
 No SQL — just list your columns:
 
 **`dbt/ddl/bronze/staging/stg_customers.yml`**
@@ -146,7 +160,7 @@ models:
 ```
 
 **Key options:**
-- `source: raw_customers` — reads from the seed you defined
+- `source: raw_customers` — reads from the raw model populated by ingestion
 - `required: true` — generates a not_null test
 - `unique: true` — generates a unique test
 - `cast: true` — wraps the column in `CAST()` for type safety
@@ -324,7 +338,174 @@ Forge generates the CREATE FUNCTION SQL and wires it through lineage.
 
 ---
 
-## Step 9 — Compile & Deploy
+## Step 9 — Define a Volume (Landing Zone)
+
+Declare a Unity Catalog Volume so forge can create it:
+
+**`dbt/ddl/bronze/volumes/landing.yml`**
+
+```yaml
+volumes:
+  landing:
+    description: "Landing zone for inbound data files"
+    type: managed
+    layer: bronze
+    domain: false
+```
+
+**Key options:**
+- `type: managed` — Unity Catalog manages storage (use `external` + `location:` for ADLS/S3)
+- `layer: bronze` — sets the catalog context
+- `domain: false` — single shared volume (set `true` for per-domain volumes)
+
+`forge compile` generates `CREATE VOLUME IF NOT EXISTS` SQL.
+
+---
+
+## Step 10 — Set Up Ingestion Config (Seed)
+
+The ingestion pipeline is config-driven. Define the config seed in the
+**meta** catalog so it's shared across the project:
+
+**`dbt/ddl/meta/seeds/ingestion_config.yml`**
+
+```yaml
+seeds:
+  ingestion_config:
+    description: "File-matching rules for Volume ingestion"
+    domain: false
+    catalog: meta
+    schema: config
+    origin:
+      type: seed
+      path: dbt/seeds/ingestion_config.csv
+      format: csv
+    columns:
+      config_id:      { type: int, required: true, unique: true }
+      ingest_type:    { type: string, required: true }
+      source_name:    { type: string, required: true }
+      target_model:   { type: string, required: true }
+      volume_name:    { type: string }
+      file_regex:     { type: string }
+      file_format:    { type: string }
+      has_header:     { type: boolean }
+      delimiter:      { type: string }
+      active:         { type: boolean }
+```
+
+Then provide the CSV data at **`dbt/seeds/ingestion_config.csv`**:
+
+```csv
+config_id,ingest_type,source_name,target_model,volume_name,file_regex,file_format,has_header,delimiter,active
+1,volume,customer_feed,raw_customers,landing,"^customers_.*\.csv$",csv,true,",",true
+2,volume,order_feed,raw_orders,landing,"^orders_.*\.csv$",csv,true,",",true
+```
+
+Each row maps a file pattern to a target model. Add new rows — not code —
+to start ingesting new files.
+
+**Don't forget:** add `meta` to the `catalogs:` list in forge.yml:
+
+```yaml
+catalogs: [bronze, silver, meta]
+```
+
+---
+
+## Step 11 — Define the File Manifest (Python-Managed)
+
+Track every ingested file for dedup and auditing:
+
+**`dbt/ddl/bronze/models/file_manifest.yml`**
+
+```yaml
+models:
+  file_manifest:
+    description: "Tracks files ingested from Volumes"
+    managed_by: python
+    domain: false
+    columns:
+      file_path:       { type: string, required: true }
+      file_name:       { type: string, required: true }
+      model_name:      { type: string, required: true }
+      domain:          { type: string }
+      file_format:     { type: string }
+      row_count:       { type: int }
+      file_size_bytes: { type: int }
+      checksum:        { type: string }
+      ingested_at:     { type: timestamp, required: true }
+      status:          { type: string }
+```
+
+**Key options:**
+- `managed_by: python` — forge creates the table schema (DDL) but a Python task populates it
+- No SQL generated — just CREATE TABLE + schema.yml tests
+- Forge codegen produces a Pydantic class `FileManifest` for type-safe writes
+
+---
+
+## Step 12 — Write the Python Ingestion Task
+
+Scaffold the task from the built-in template:
+
+```bash
+forge python-task ingest_from_volume --template ingest
+```
+
+Or drop in your own at **`python/ingest_from_volume.py`**:
+
+```python
+from forge.python_task import ForgeTask
+from forge.type_safe import build_models
+
+def main():
+    task = ForgeTask()
+    spark = task.spark_session()
+    models = build_models()
+
+    # 1. Read config from meta catalog
+    config_table = task.table("ingestion_config", {"catalog": "meta", "schema": "config"})
+    configs = [
+        models.IngestionConfig(**r.asDict())
+        for r in spark.table(config_table).collect()
+        if r.active and r.ingest_type == "volume"
+    ]
+
+    # 2. Dedup via file manifest
+    manifest_table = task.table("file_manifest")
+    try:
+        existing = {r.file_path for r in spark.table(manifest_table).select("file_path").collect()}
+    except Exception:
+        existing = set()
+
+    # 3. Ingest new files
+    for cfg in configs:
+        for f in task.list_volume(cfg.volume_name):
+            if f["path"] in existing:
+                continue
+            df = spark.read.format(cfg.file_format or "csv").load(f["path"])
+            task.write_table_with_lineage(cfg.target_model, df, source_path=f["path"], validate=True)
+
+if __name__ == "__main__":
+    main()
+```
+
+Register it in forge.yml:
+
+```yaml
+python_tasks:
+  ingest_from_volume:
+    stage: ingest
+    description: "Reads files from landing Volume → raw tables"
+    template: ingest
+```
+
+The task runs as a Databricks notebook task in the generated workflow,
+before `dbt seed` and `dbt run`.
+
+---
+
+## Step 13 — Compile & Deploy
 
 ```bash
 # Generate SQL + schema tests from your YAML
@@ -340,6 +521,9 @@ forge deploy
 **What `forge compile` produces:**
 
 ```
+dbt/models/sales/bronze/raw_customers.sql   ← CREATE TABLE (managed_by: python)
+dbt/models/sales/bronze/raw_orders.sql
+dbt/models/sales/bronze/file_manifest.sql
 dbt/models/sales/bronze/stg_customers.sql
 dbt/models/sales/bronze/stg_orders.sql
 dbt/models/sales/silver/customer_clean.sql
@@ -354,7 +538,7 @@ You never edit these files — they're regenerated on every `forge compile`.
 
 ---
 
-## Step 10 — Inspect Your Pipeline
+## Step 14 — Inspect Your Pipeline
 
 ```bash
 # See the full pipeline DAG
@@ -431,27 +615,38 @@ forge guide
 sales_project/
 ├── forge.yml                          ← project config (YOU edit)
 ├── HOW-TO.md                          ← this guide
+├── python/                            ← Python tasks (YOU edit)
+│   └── ingest_from_volume.py          ← Volume ingestion task
+├── sample_data/                       ← sample files to upload to Volume
+│   ├── raw_customers.csv
+│   └── raw_orders.csv
 └── dbt/
     ├── ddl/                           ← model definitions (YOU edit)
     │   ├── 00_udfs.yml                ← UDF definitions
     │   ├── bronze/
-    │   │   ├── seeds/
-    │   │   │   ├── raw_customers.yml  ← seed declarations
-    │   │   │   └── raw_orders.yml
-    │   │   └── staging/
-    │   │       ├── stg_customers.yml  ← staging models
-    │   │       └── stg_orders.yml
+    │   │   ├── models/
+    │   │   │   ├── raw_customers.yml   ← raw tables (managed_by: python)
+    │   │   │   ├── raw_orders.yml
+    │   │   │   └── file_manifest.yml   ← ingestion audit (managed_by: python)
+    │   │   ├── staging/
+    │   │   │   ├── stg_customers.yml   ← staging models
+    │   │   │   └── stg_orders.yml
+    │   │   └── volumes/
+    │   │       └── landing.yml        ← Volume declaration
+    │   ├── meta/
+    │   │   └── seeds/
+    │   │       └── ingestion_config.yml ← ingestion rules (seed in meta catalog)
     │   └── silver/
-    │       ├── customer_clean.yml     ← cleaning + quarantine
-    │       ├── customer_orders.yml    ← joins
-    │       └── customer_summary.yml   ← aggregations + UDFs + checks
+    │       ├── customer_clean.yml      ← cleaning + quarantine
+    │       ├── customer_orders.yml     ← joins
+    │       └── customer_summary.yml    ← aggregations + UDFs + checks
     ├── models/                        ← generated SQL (never edit)
-    └── seeds/                         ← your CSV files
-        ├── raw_customers.csv
-        └── raw_orders.csv
+    └── seeds/
+        └── ingestion_config.csv       ← ingestion rules data
 ```
 
-**The rule:** you edit files in `dbt/ddl/` and `forge.yml`. Everything else is generated.
+**The rule:** you edit files in `dbt/ddl/`, `python/`, and `forge.yml`.
+Raw data arrives via Volumes — not CSV seeds. Everything else is generated.
 
 ---
 
@@ -468,6 +663,10 @@ sales_project/
 | Check data quality | `forge validate` |
 | What changed? | `forge diff` |
 | Generate standalone SQL | `forge compile --pure-sql` |
+| Scaffold Python task | `forge python-task my_task --template ingest` |
+| Add ingestion source | Add a row to `dbt/seeds/ingestion_config.csv` |
+| Upload sample data | `databricks fs cp sample_data/*.csv dbfs:/Volumes/...` |
+| Declare a Volume | Add a YAML in `dbt/ddl/{layer}/volumes/` |
 | Safe teardown | `forge teardown` |
 | Dev isolation | `forge dev-up` |
 | Regenerate guide | `forge guide` |

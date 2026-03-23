@@ -1,12 +1,10 @@
 # ── Staged orders (domain instances auto-generated) ──────────
+# raw_orders is managed_by: python with domain: true — each domain
+# automatically reads from its own instance (raw_orders_eu, etc.)
 models:
   stg_orders:
     description: "Staged orders with computed line_total"
     source: raw_orders
-    domain_sources:
-      eu: raw_orders_eu
-      us: raw_orders_us
-      apac: raw_orders_apac
     columns:
       order_id:     { type: int, required: true, unique: true }
       customer_id:  { type: int, required: true }

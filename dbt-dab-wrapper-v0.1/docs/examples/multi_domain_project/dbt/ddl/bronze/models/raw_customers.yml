@@ -1,0 +1,15 @@
+# ── Raw customer data — managed by Python ────────────────
+# Schema is created by forge; rows are populated by the
+# ingest_from_volume Python task reading from the landing Volume.
+# domain: true → one table per domain (raw_customers_eu, etc.)
+# Upload sample_data/ CSVs to each domain's landing Volume.
+models:
+  raw_customers:
+    description: "Raw customer data ingested from Volume"
+    managed_by: python
+    domain: true
+    columns:
+      customer_id:  { type: int, description: "Unique customer identifier" }
+      email:        { type: string }
+      country:      { type: string }
+      revenue:      { type: "decimal(10,2)" }

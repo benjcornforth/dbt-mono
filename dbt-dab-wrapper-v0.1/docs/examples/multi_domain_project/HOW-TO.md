@@ -9,16 +9,15 @@
 ## What You'll Build
 
 The same four-model pipeline from the sales project, but deployed three
-times — once per region — each with isolated schemas and source data:
+times — once per region — each with isolated schemas and Volumes:
 
 ```
-                    ┌─ stg_customers_eu ─▶ customer_clean_eu ─▶ customer_orders_eu ─▶ customer_summary_eu
-raw_customers_eu  ──┤
-raw_customers_us  ──┼─ stg_customers_us ─▶ customer_clean_us ─▶ customer_orders_us ─▶ customer_summary_us
-raw_customers_apac──┤
-                    └─ stg_customers_apac─▶ customer_clean_apac─▶ customer_orders_apac─▶ customer_summary_apac
+  landing_eu  ─▶ ingest ─▶ raw_customers_eu ─▶ stg_customers_eu ─▶ customer_clean_eu ─▶ customer_orders_eu ─▶ customer_summary_eu
+  landing_us  ─▶ ingest ─▶ raw_customers_us ─▶ stg_customers_us ─▶ customer_clean_us ─▶ customer_orders_us ─▶ customer_summary_us
+  landing_apac─▶ ingest ─▶ raw_customers_apac─▶ stg_customers_apac─▶ customer_clean_apac─▶ customer_orders_apac─▶ customer_summary_apac
 ```
 
+Raw data arrives via per-domain Volumes and is ingested by a Python task.
 Each domain runs in its own Databricks workflow (`PROCESS_regional_eu`,
 `PROCESS_regional_us`, `PROCESS_regional_apac`) for parallel execution.
 
@@ -54,46 +53,43 @@ domain_layers: [bronze, silver]
 
 ---
 
-## Step 2 — Define Domain-Specific Sources
+## Step 2 — Define Raw Data Models (Per-Domain)
 
-If each region reads from its own raw data (e.g. separate Unity Catalog
-volumes), add `domain_sources:` to the model DDL:
+Raw data arrives via Volume ingestion, not CSV seeds. Declare `managed_by: python`
+models with `domain: true` so forge creates per-domain raw tables:
 
-**`dbt/ddl/bronze/staging/stg_customers.yml`**
+**`dbt/ddl/bronze/models/raw_customers.yml`**
 
 ```yaml
 models:
-  stg_customers:
-    description: "Staged customers — one instance per domain"
-    source: raw_customers                    # default / fallback
-    domain_sources:
-      eu: raw_customers_eu                   # EU reads from EU volume
-      us: raw_customers_us                   # US reads from US volume
-      apac: raw_customers_apac              # APAC reads from APAC volume
+  raw_customers:
+    description: "Raw customer data ingested from Volume"
+    managed_by: python
+    domain: true
     columns:
-      customer_id:  { type: int, required: true, unique: true }
+      customer_id:  { type: int, description: "Unique customer identifier" }
       email:        { type: string }
       country:      { type: string }
-      revenue:      { type: "decimal(10,2)", cast: true }
+      revenue:      { type: "decimal(10,2)" }
 ```
 
 **What this does:**
-- `stg_customers_eu.sql` reads from `{{ ref('raw_customers_eu') }}`
-- `stg_customers_us.sql` reads from `{{ ref('raw_customers_us') }}`
-- `stg_customers_apac.sql` reads from `{{ ref('raw_customers_apac') }}`
+- `domain: true` → forge creates `raw_customers_eu`, `raw_customers_us`, `raw_customers_apac`
+- `managed_by: python` → the Python ingestion task populates rows; forge manages the schema
+- No `domain_sources:` needed on staging models — domain ref rewriting handles it automatically
 
-Without `domain_sources:`, all three domains read from the same `raw_customers`.
+Sample data files are in `sample_data/`. After deploying, upload them
+to each domain's landing Volume:
 
-### For join models
-
-Override specific join sources per domain with a dict:
-
-```yaml
-  customer_orders:
-    sources: { c: customer_clean, o: stg_orders }
-    domain_sources:
-      eu: { o: stg_orders_eu_special }       # override just the orders source for EU
+```bash
+databricks fs cp sample_data/raw_customers_eu.csv dbfs:/Volumes/bronze/ben_regional_eu/landing_eu/customers_20240101.csv
+databricks fs cp sample_data/raw_customers_us.csv dbfs:/Volumes/bronze/ben_regional_us/landing_us/customers_20240101.csv
 ```
+
+> **Note:** `domain_sources:` is still available for advanced cases where
+> domain-specific routing differs from the default bifurcation pattern
+> (e.g. overriding a single join source per domain). For simple Volume
+> ingestion, `managed_by: python` with `domain: true` handles everything.
 
 ---
 
@@ -127,7 +123,125 @@ an upstream model in a bifurcated layer.
 
 ---
 
-## Step 4 — Compile & Inspect
+## Step 4 — Add Volume Ingestion (Per-Domain)
+
+### 4a. Declare a landing Volume
+
+**`dbt/ddl/bronze/volumes/landing.yml`**
+
+```yaml
+volumes:
+  landing:
+    description: "Landing zone for inbound data files"
+    type: managed
+    layer: bronze
+    domain: true
+```
+
+With `domain: true`, forge generates three Volumes: `landing_eu`, `landing_us`,
+`landing_apac` — each in its domain's schema. Files for each region land in
+separate Volumes.
+
+### 4b. Add the ingestion config seed (meta catalog)
+
+**`dbt/ddl/meta/seeds/ingestion_config.yml`**
+
+```yaml
+seeds:
+  ingestion_config:
+    description: "File-matching rules for Volume ingestion"
+    domain: false
+    catalog: meta
+    schema: config
+    origin:
+      type: seed
+      path: dbt/seeds/ingestion_config.csv
+      format: csv
+    columns:
+      config_id:      { type: int, required: true, unique: true }
+      ingest_type:    { type: string, required: true }
+      source_name:    { type: string, required: true }
+      target_model:   { type: string, required: true }
+      volume_name:    { type: string }
+      file_regex:     { type: string }
+      file_format:    { type: string }
+      has_header:     { type: boolean }
+      delimiter:      { type: string }
+      active:         { type: boolean }
+```
+
+**`dbt/seeds/ingestion_config.csv`**
+
+```csv
+config_id,ingest_type,source_name,target_model,volume_name,file_regex,file_format,has_header,delimiter,active
+1,volume,customer_feed,raw_customers,landing,"^customers_.*\.csv$",csv,true,",",true
+2,volume,order_feed,raw_orders,landing,"^orders_.*\.csv$",csv,true,",",true
+```
+
+The config is shared — `domain: false` — but each domain's Python task
+reads from its own `landing_{domain}` Volume.
+
+**Don't forget:** add `meta` to the `catalogs:` list in forge.yml:
+
+```yaml
+catalogs: [bronze, silver, meta]
+```
+
+### 4c. Add the file manifest model (domain-aware)
+
+**`dbt/ddl/bronze/models/file_manifest.yml`**
+
+```yaml
+models:
+  file_manifest:
+    description: "Tracks files ingested from Volumes"
+    managed_by: python
+    domain: true
+    columns:
+      file_path:       { type: string, required: true }
+      file_name:       { type: string, required: true }
+      model_name:      { type: string, required: true }
+      domain:          { type: string }
+      file_format:     { type: string }
+      row_count:       { type: int }
+      file_size_bytes: { type: int }
+      checksum:        { type: string }
+      ingested_at:     { type: timestamp, required: true }
+      status:          { type: string }
+```
+
+With `domain: true`, forge creates `file_manifest_eu`, `file_manifest_us`,
+`file_manifest_apac` — each in its domain schema.
+
+### 4d. Write the Python ingestion task
+
+Scaffold it:
+
+```bash
+forge python-task ingest_from_volume --template ingest
+```
+
+Or drop in your own at **`python/ingest_from_volume.py`**. The task reads
+`forge.domain` from Spark conf to know which domain it's running for.
+
+Register in forge.yml:
+
+```yaml
+python_tasks:
+  ingest_from_volume:
+    stage: ingest
+    description: "Reads files from landing Volume → raw tables"
+    template: ingest
+```
+
+Each per-domain workflow runs this task with its domain's context:
+- `PROCESS_regional_eu` → reads from `landing_eu`, writes to `file_manifest_eu`
+- `PROCESS_regional_us` → reads from `landing_us`, writes to `file_manifest_us`
+- etc.
+
+---
+
+## Step 5 — Compile & Inspect
 
 ```bash
 forge compile
@@ -139,14 +253,15 @@ Check the generated output:
 dbt/models/regional/
 ├── bronze/
 │   ├── eu/
-│   │   ├── stg_customers_eu.sql       ← reads from raw_customers_eu
+│   │   ├── raw_customers_eu.sql     ← CREATE TABLE (managed_by: python)
+│   │   ├── raw_orders_eu.sql
+│   │   ├── file_manifest_eu.sql
+│   │   ├── stg_customers_eu.sql     ← reads from raw_customers_eu
 │   │   └── stg_orders_eu.sql
 │   ├── us/
-│   │   ├── stg_customers_us.sql       ← reads from raw_customers_us
-│   │   └── stg_orders_us.sql
+│   │   └── ...
 │   └── apac/
-│       ├── stg_customers_apac.sql
-│       └── stg_orders_apac.sql
+│       └── ...
 └── silver/
     ├── eu/
     │   ├── customer_clean_eu.sql
@@ -172,7 +287,7 @@ grep "from" dbt/models/regional/bronze/us/stg_customers_us.sql
 
 ---
 
-## Step 5 — Per-Domain Workflows
+## Step 6 — Per-Domain Workflows
 
 By default, each domain gets its own Databricks workflow:
 
@@ -214,7 +329,7 @@ forge workflow
 
 ---
 
-## Step 6 — Deploy
+## Step 7 — Deploy
 
 ```bash
 forge deploy
@@ -222,14 +337,25 @@ forge deploy
 
 This:
 1. Creates domain schemas (`ben_regional_eu`, `ben_regional_us`, `ben_regional_apac`)
-2. Seeds source data
-3. Runs all domain instances (15+ models)
-4. Generates per-domain DAB workflows
-5. Deploys to Databricks via `databricks bundle deploy`
+2. Creates per-domain Volumes and raw tables
+3. Seeds config data (`ingestion_config`)
+4. Runs all domain instances (20+ models)
+5. Generates per-domain DAB workflows
+6. Deploys to Databricks via `databricks bundle deploy`
+
+After deploying, upload sample data to each domain's Volume, then
+run the ingestion task:
+
+```bash
+# Upload sample data to domain Volumes
+databricks fs cp sample_data/raw_customers_eu.csv dbfs:/Volumes/.../landing_eu/
+databricks fs cp sample_data/raw_orders_eu.csv    dbfs:/Volumes/.../landing_eu/
+# Repeat for us, apac...
+```
 
 ---
 
-## Step 7 — Opt a Model Out of Domains
+## Step 8 — Opt a Model Out of Domains
 
 Reference tables or shared lookups that should NOT be duplicated:
 
@@ -256,7 +382,7 @@ ref the single shared table, not a non-existent `country_codes_eu`.
    - Appends `_{domain}` to the model name
    - Hardcodes schema to `{base_schema}{schema_suffix}` (e.g. `ben_regional_eu`)
    - Rewrites upstream refs to domain-specific variants
-   - Applies `domain_sources:` overrides if defined
+   - Applies `domain_sources:` overrides if defined (optional, advanced)
 3. Each instance is a real dbt model — tests, docs, graph, workflow all work
 4. `build_domain_workflows()` splits the graph into per-domain subsets
 
@@ -268,12 +394,16 @@ ref the single shared table, not a non-existent `country_codes_eu`.
 |------|-----|
 | Add a domain | `domains: { jp: { schema_suffix: "_jp" } }` in forge.yml |
 | Choose which layers bifurcate | `domain_layers: [bronze, silver]` |
-| Domain-specific source | `domain_sources: { eu: raw_customers_eu }` in model DDL |
+| Domain-specific source | `domain_sources:` in model DDL (advanced, for non-bifurcated overrides) |
 | Opt a model out | `domain: false` in model DDL |
 | Shared workflow | `domain_workflows: shared` in forge.yml |
 | Separate workflows (default) | One workflow per domain, runs in parallel |
 | Check compiled source | `grep "from" dbt/models/.../eu/stg_customers_eu.sql` |
 | Deploy all domains | `forge deploy` (no extra flags) |
+| Declare a per-domain Volume | `domain: true` in `dbt/ddl/{layer}/volumes/*.yml` |
+| Upload domain data | `databricks fs cp sample_data/*.csv dbfs:/Volumes/.../landing_eu/` |
+| Scaffold Python task | `forge python-task my_task --template ingest` |
+| Python-managed model | `managed_by: python` in model DDL |
 
 ---
 
@@ -283,21 +413,38 @@ ref the single shared table, not a non-existent `country_codes_eu`.
 multi_domain_project/
 ├── forge.yml                                ← domains + domain_layers here
 ├── HOW-TO.md                                ← this guide
+├── python/                                  ← Python tasks (YOU edit)
+│   └── ingest_from_volume.py                ← Volume ingestion (runs per domain)
+├── sample_data/                             ← sample files to upload to Volumes
+│   ├── raw_customers_eu.csv
+│   ├── raw_customers_us.csv
+│   ├── raw_customers_apac.csv
+│   ├── raw_orders_eu.csv
+│   ├── raw_orders_us.csv
+│   └── raw_orders_apac.csv
 └── dbt/
-    └── ddl/
-        ├── bronze/
-        │   ├── seeds/
-        │   │   ├── raw_customers.yml        ← shared default seed
-        │   │   └── raw_orders.yml
-        │   └── staging/
-        │       ├── stg_customers.yml        ← has domain_sources
-        │       └── stg_orders.yml
-        └── silver/
-            ├── customer_clean.yml           ← quarantine (auto per domain)
-            ├── customer_orders.yml          ← join (auto per domain)
-            └── customer_summary.yml         ← aggregation + checks
+    ├── ddl/
+    │   ├── bronze/
+    │   │   ├── models/
+    │   │   │   ├── raw_customers.yml        ← raw tables (managed_by: python, domain: true)
+    │   │   │   ├── raw_orders.yml
+    │   │   │   └── file_manifest.yml        ← ingestion audit (domain: true)
+    │   │   ├── staging/
+    │   │   │   ├── stg_customers.yml        ← staging (auto per domain)
+    │   │   │   └── stg_orders.yml
+    │   │   └── volumes/
+    │   │       └── landing.yml              ← per-domain Volumes (domain: true)
+    │   ├── meta/
+    │   │   └── seeds/
+    │   │       └── ingestion_config.yml     ← ingestion rules (shared, meta catalog)
+    │   └── silver/
+    │       ├── customer_clean.yml           ← quarantine (auto per domain)
+    │       ├── customer_orders.yml          ← join (auto per domain)
+    │       └── customer_summary.yml         ← aggregation + checks
+    └── seeds/
+        └── ingestion_config.csv             ← ingestion rules data
 ```
 
 **The rule:** model definitions stay the same across all domains.
-Only `forge.yml` (add domains) and optionally `domain_sources:` (route sources)
-change when you go multi-domain.
+Raw data arrives via per-domain Volumes — not CSV seeds.
+Only `forge.yml` (add domains) changes when you go multi-domain.

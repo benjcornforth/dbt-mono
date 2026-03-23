@@ -1,0 +1,19 @@
+# ── File ingestion manifest — managed by Python ─────────
+# Tracks every file processed by the ingestion pipeline.
+# Not duplicated by domain (single-domain project).
+models:
+  file_manifest:
+    description: "Tracks files ingested from Volumes"
+    managed_by: python
+    domain: false
+    columns:
+      file_path:       { type: string, required: true, description: "Full Volume path to the ingested file" }
+      file_name:       { type: string, required: true, description: "File name only" }
+      model_name:      { type: string, required: true, description: "Target model the file was loaded into" }
+      domain:          { type: string, description: "Domain this file belongs to" }
+      file_format:     { type: string, description: "File format (csv, json, parquet)" }
+      row_count:       { type: int, description: "Number of rows ingested" }
+      file_size_bytes: { type: int, description: "File size in bytes" }
+      checksum:        { type: string, description: "MD5 checksum for dedup" }
+      ingested_at:     { type: timestamp, required: true, description: "When the file was ingested" }
+      status:          { type: string, description: "Ingestion status: SUCCESS, FAILED, SKIPPED" }
