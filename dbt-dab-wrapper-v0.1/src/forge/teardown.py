@@ -3,15 +3,40 @@
 # =============================================
 # THE CODE IS THE DOCUMENTATION
 #
-# Safe teardown plan generator.
+# Safe teardown plan generator + standalone backup.
 # Philosophy: NEVER delete data. Only remove orchestration + code assets.
-# Every step is reversible. Re-instate = forge deploy.
+# Every step is reversible. Re-instate = forge deploy / forge restore.
 #
 # Asset handling:
 #   📦 ARCHIVE — All table data saved to _teardown_archive (JSON rows)
+#   📦 SNAPSHOT — UDF source, workflow YAML, forge.yml, graph JSON
 #   ✅ REMOVE  — DAB job definitions (orchestration only)
 #   ✅ REMOVE  — UDFs (functions are code, always redeployable)
 #   🔒 PRESERVE — Tables, views, schemas, data (NEVER touched)
+#
+# Backup (standalone):                  Teardown (destructive):
+#   forge backup        files only        forge teardown        dry-run
+#   forge backup --data files + archive   forge teardown --execute
+#   forge backup --list show backups      forge restore --snapshot {ts}
+#
+# Snapshot directory structure:
+#   resources/backups/{timestamp}/
+#     ├── forge.yml                   # full config snapshot
+#     ├── graph.json                  # full graph snapshot
+#     ├── PROCESS_{id}.yml            # workflow YAML
+#     ├── functions/                  # UDF source files
+#     │   ├── clean_email.sql
+#     │   └── ...
+#     ├── dbt_models/                 # dbt model source files
+#     │   ├── customer_clean.sql
+#     │   └── ...
+#     └── BACKUP_manifest.yml         # backup metadata
+#
+# Restore:
+#   forge restore                     # shows available snapshots
+#   forge restore --snapshot {ts}     # restores from snapshot
+#   forge restore --data              # queries archive table on Databricks
+#   forge restore --table {name}      # restores table data from archive
 #
 # Mirrors the workflow generator pattern:
 #   build_teardown_plan(config, graph) → TeardownPlan
@@ -21,13 +46,36 @@
 
 from __future__ import annotations
 
+import getpass
+import json
 import shutil
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+def _git_info() -> dict[str, str]:
+    """Best-effort git sha + branch. Returns empty strings if not in a repo."""
+    info: dict[str, str] = {"sha": "", "branch": ""}
+    try:
+        info["sha"] = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except Exception:
+        pass
+    try:
+        info["branch"] = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except Exception:
+        pass
+    return info
 
 
 # =============================================
@@ -50,11 +98,12 @@ class TeardownStep:
     """One executable step in the teardown plan."""
     step: int
     name: str
-    action: str              # "copy", "delete_file", "sql", "log"
+    action: str              # "copy", "copy_dir", "delete_file", "sql", "snapshot", "log"
     target: str | None = None
     source: str | None = None
     statements: list[str] = field(default_factory=list)
     message: str | None = None
+    files: list[dict[str, str]] = field(default_factory=list)  # for snapshot: [{src, dst}]
 
 
 @dataclass
@@ -82,6 +131,7 @@ class TeardownPlan:
     # ── Serialisation ─────────────────────────────────
 
     archive_table: str | None = None   # fully qualified _teardown_archive table
+    snapshot_dir: str | None = None    # timestamped snapshot directory
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -96,6 +146,11 @@ class TeardownPlan:
                     "table": self.archive_table,
                     "note": "All table data is archived as JSON rows before any changes",
                 } if self.archive_table else None,
+                "snapshot": {
+                    "directory": self.snapshot_dir,
+                    "contents": "forge.yml, graph.json, workflow YAML, UDF source files, teardown plan",
+                    "note": "Complete project state captured for forge restore",
+                } if self.snapshot_dir else None,
                 "removes": [
                     {k: v for k, v in {
                         "type": a.asset_type,
@@ -157,6 +212,10 @@ class TeardownPlan:
             lines.append("")
             lines.append(f"  📦 ARCHIVES all table data to: {self.archive_table}")
 
+        if self.snapshot_dir:
+            lines.append(f"  📸 SNAPSHOTS all assets to: {self.snapshot_dir}")
+            lines.append(f"     (forge.yml, graph, workflow YAML, UDF source files)")
+
         lines.append("")
         tables = [a.name for a in self.preserves if a.asset_type == "table"]
         if tables:
@@ -166,7 +225,10 @@ class TeardownPlan:
 
         lines.append("")
         lines.append(f"  📦 Backup dir: {self.backup_dir}")
-        lines.append(f"  ♻️  Re-instate: {self.reinstate_command}")
+        lines.append(f"  ♻️  Re-instate: forge deploy")
+        if self.snapshot_dir:
+            ts = Path(self.snapshot_dir).name
+            lines.append(f"  ♻️  Restore:    forge restore --snapshot {ts}")
         return "\n".join(lines)
 
     # ── Execution ─────────────────────────────────────
@@ -205,6 +267,24 @@ class TeardownPlan:
                         log.append(f"  ✅ Removed")
                     else:
                         log.append(f"  ⚠️  Already removed")
+
+            elif step.action == "snapshot":
+                log.append(f"{prefix}Step {step.step}: snapshot all assets → {step.target}")
+                if not dry_run and step.target:
+                    snap_dir = Path(step.target)
+                    snap_dir.mkdir(parents=True, exist_ok=True)
+                    for f in step.files:
+                        src = Path(f["src"])
+                        dst = snap_dir / f["dst"]
+                        if src.exists():
+                            dst.parent.mkdir(parents=True, exist_ok=True)
+                            if src.is_dir():
+                                shutil.copytree(src, dst, dirs_exist_ok=True)
+                            else:
+                                shutil.copy2(src, dst)
+                            log.append(f"  ✅ {f['dst']}")
+                        else:
+                            log.append(f"  ⚠️  {f['dst']} (source not found)")
 
             elif step.action == "sql":
                 for stmt in step.statements:
@@ -309,33 +389,59 @@ def build_teardown_plan(
 
     # ── Build archive table name ─────────────────────
     ops_catalog = _resolve_catalog(catalog_pattern, env, scope, "operations")
-    ops_schema = _resolve_schema(schema_pattern, env, project_id, scope)
+    ops_schema = _resolve_schema(schema_pattern, env, "backups", scope)
     archive_table = f"{ops_catalog}.{ops_schema}._teardown_archive"
 
     # Collect qualified table names for archive
     default_catalog = _resolve_catalog(catalog_pattern, env, scope, profile.get("catalog", "bronze"))
-    default_schema = ops_schema  # same schema pattern
+    default_schema = _resolve_schema(schema_pattern, env, project_id, scope)
     table_names_qualified: list[tuple[str, str]] = []  # (short_name, qualified_name)
     for a in preserves:
         if a.asset_type == "table":
             table_names_qualified.append((a.name, f"{default_catalog}.{default_schema}.{a.name}"))
 
+    # ── Build snapshot directory ──────────────────────
+    snapshot_dir = f"{backup_dir}/{timestamp}"
+
+    # Reuse shared snapshot file collector
+    snapshot_files = collect_snapshot_files(forge_config)
+
     # ── Build steps ───────────────────────────────────
     steps: list[TeardownStep] = []
     step_num = 0
 
-    # Step: Create archive table (if not exists)
+    # Step 1: Snapshot all assets (before any changes)
     step_num += 1
+    steps.append(TeardownStep(
+        step=step_num,
+        name="snapshot_all_assets",
+        action="snapshot",
+        target=snapshot_dir,
+        files=snapshot_files,
+    ))
+
+    # ── Identity + git context ────────────────────────
+    user = getpass.getuser()
+    git = _git_info()
+
+    # Step 2: Create archive table (if not exists)
+    step_num += 1
+    archive_catalog_schema = archive_table.rsplit('.', 1)[0]
     steps.append(TeardownStep(
         step=step_num,
         name="create_archive_table",
         action="sql",
         statements=[
+            f"CREATE SCHEMA IF NOT EXISTS {archive_catalog_schema}",
             f"CREATE TABLE IF NOT EXISTS {archive_table} ("
             f"  table_name STRING,"
             f"  project STRING,"
             f"  environment STRING,"
             f"  archived_at TIMESTAMP,"
+            f"  performed_by STRING,"
+            f"  git_sha STRING,"
+            f"  git_branch STRING,"
+            f"  dab_name STRING,"
             f"  row_data STRING"
             f") USING DELTA",
         ],
@@ -351,6 +457,10 @@ def build_teardown_plan(
                 f"'{project_name}' AS project, "
                 f"'{env}' AS environment, "
                 f"current_timestamp() AS archived_at, "
+                f"'{user}' AS performed_by, "
+                f"'{git['sha']}' AS git_sha, "
+                f"'{git['branch']}' AS git_branch, "
+                f"'{wf_name}' AS dab_name, "
                 f"to_json(struct(*)) AS row_data "
                 f"FROM {qualified_name}"
             )
@@ -362,19 +472,7 @@ def build_teardown_plan(
             statements=archive_stmts,
         ))
 
-    # Step: Backup workflow YAML
-    if Path(wf_path).exists():
-        step_num += 1
-        backup_target = f"{backup_dir}/{wf_name}_{timestamp}.yml"
-        steps.append(TeardownStep(
-            step=step_num,
-            name="backup_workflow",
-            action="copy",
-            source=wf_path,
-            target=backup_target,
-        ))
-
-    # Step: Remove workflow YAML file
+    # Step: Remove workflow YAML file (already snapshotted in step 1)
     if Path(wf_path).exists():
         step_num += 1
         steps.append(TeardownStep(
@@ -403,12 +501,13 @@ def build_teardown_plan(
         name="confirm",
         action="log",
         message=(
-            f"✅ Teardown complete.\n"
-            f"� Table data archived to: {archive_table}\n"
-            f"�📋 Tables preserved: {', '.join(table_names)}\n"
-            f"🔒 Schemas preserved (use forge dev-down for dev schemas)\n"
-            f"📦 Backup: {backup_dir}/\n"
-            f"♻️  To re-instate: forge deploy"
+            "Teardown complete.\n"
+            f"Snapshot saved: {snapshot_dir}/\n"
+            f"Table data archived to: {archive_table}\n"
+            f"Tables preserved: {', '.join(table_names)}\n"
+            f"Schemas preserved (use forge dev-down for dev schemas)\n"
+            f"To re-instate: forge deploy\n"
+            f"To restore: forge restore --snapshot {timestamp}"
         ),
     ))
 
@@ -424,6 +523,7 @@ def build_teardown_plan(
         steps=steps,
         backup_dir=backup_dir,
         archive_table=archive_table,
+        snapshot_dir=snapshot_dir,
     )
 
 
@@ -443,7 +543,549 @@ def _resolve_catalog(pattern: str, env: str, scope: str, catalog: str) -> str:
 
 
 def _resolve_schema(pattern: str, env: str, project_id: str, scope: str) -> str:
-    import getpass
     user = getpass.getuser()
-    skip = []  # not needed for teardown — we always use current env
     return pattern.format(env=env, id=project_id, scope=scope, user=user, schema=project_id)
+
+# =============================================
+# SNAPSHOT HELPERS
+# =============================================
+
+BACKUP_DIR = "resources/backups"
+"""Default backup directory. Used by both forge backup and forge teardown."""
+
+
+def collect_snapshot_files(forge_config: dict) -> list[dict[str, str]]:
+    """
+    Collect the list of files to include in a backup snapshot.
+
+    Returns a list of {src, dst} dicts — portable file mappings.
+    Reused by both build_backup() and build_teardown_plan().
+    """
+    project_id = forge_config.get("id", forge_config.get("name", ""))
+    wf_name = f"PROCESS_{project_id}"
+    wf_path = f"resources/jobs/{wf_name}.yml"
+
+    snapshot_files: list[dict[str, str]] = []
+
+    # forge.yml
+    if Path("forge.yml").exists():
+        snapshot_files.append({"src": "forge.yml", "dst": "forge.yml"})
+
+    # Workflow YAML
+    if Path(wf_path).exists():
+        snapshot_files.append({"src": wf_path, "dst": f"{wf_name}.yml"})
+
+    # UDF source files
+    udf_dir = Path("dbt/functions")
+    if udf_dir.exists():
+        for udf_file in sorted(udf_dir.glob("*.sql")):
+            snapshot_files.append({"src": str(udf_file), "dst": f"functions/{udf_file.name}"})
+        for udf_file in sorted(udf_dir.glob("*.py")):
+            snapshot_files.append({"src": str(udf_file), "dst": f"functions/{udf_file.name}"})
+
+    # dbt model source files
+    models_dir = Path("dbt/models")
+    if models_dir.exists():
+        for model_file in sorted(models_dir.rglob("*.sql")):
+            rel = model_file.relative_to(models_dir)
+            snapshot_files.append({"src": str(model_file), "dst": f"dbt_models/{rel}"})
+        for model_file in sorted(models_dir.rglob("*.yml")):
+            rel = model_file.relative_to(models_dir)
+            snapshot_files.append({"src": str(model_file), "dst": f"dbt_models/{rel}"})
+
+    return snapshot_files
+
+
+@dataclass
+class BackupResult:
+    """Result of a standalone backup operation."""
+    timestamp: str
+    snapshot_dir: str
+    files_copied: list[str]
+    archive_statements: list[str] = field(default_factory=list)
+    manifest: dict = field(default_factory=dict)
+
+
+def build_backup(
+    forge_config: dict,
+    graph: dict,
+    *,
+    include_data: bool = False,
+    backup_dir: str = BACKUP_DIR,
+) -> BackupResult:
+    """
+    Create a standalone backup snapshot.
+
+    Copies all project files (forge.yml, workflow YAML, UDF source,
+    dbt models, graph JSON) into a timestamped backup directory.
+
+    If include_data=True, also generates SQL statements to archive
+    table data into the _teardown_archive table on Databricks.
+
+    This is the engine behind both:
+      forge backup          (routine, non-destructive)
+      forge teardown        (snapshot step before removal)
+    """
+    project_name = forge_config.get("name", "unnamed")
+    project_id = forge_config.get("id", project_name)
+    scope = forge_config.get("scope", "")
+    profile = resolve_active_profile(forge_config)
+    env = profile.get("env", forge_config.get("environment", "dev"))
+    catalog_pattern = forge_config.get("catalog_pattern", "{catalog}")
+    schema_pattern = forge_config.get("schema_pattern", "{schema}")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    snapshot_dir = f"{backup_dir}/{timestamp}"
+
+    # ── Copy files ────────────────────────────────────
+    snap_path = Path(snapshot_dir)
+    snap_path.mkdir(parents=True, exist_ok=True)
+
+    snapshot_files = collect_snapshot_files(forge_config)
+    files_copied: list[str] = []
+
+    for f in snapshot_files:
+        src = Path(f["src"])
+        dst = snap_path / f["dst"]
+        if src.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_dir():
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                shutil.copy2(src, dst)
+            files_copied.append(f["dst"])
+
+    # ── Write graph JSON ──────────────────────────────
+    (snap_path / "graph.json").write_text(
+        json.dumps(graph, indent=2, default=str)
+    )
+    files_copied.append("graph.json")
+
+    # ── Identity + git context ────────────────────────
+    user = getpass.getuser()
+    git = _git_info()
+    wf_name = f"PROCESS_{project_id}"
+
+    # ── Archive SQL statements (optional) ─────────────
+    archive_stmts: list[str] = []
+    archive_table = None
+    if include_data:
+        ops_catalog = _resolve_catalog(catalog_pattern, env, scope, "operations")
+        ops_schema = _resolve_schema(schema_pattern, env, "backups", scope)
+        archive_table = f"{ops_catalog}.{ops_schema}._teardown_archive"
+
+        archive_catalog_schema = archive_table.rsplit('.', 1)[0]
+        archive_stmts.append(
+            f"CREATE SCHEMA IF NOT EXISTS {archive_catalog_schema}"
+        )
+        archive_stmts.append(
+            f"CREATE TABLE IF NOT EXISTS {archive_table} ("
+            f"  table_name STRING,"
+            f"  project STRING,"
+            f"  environment STRING,"
+            f"  archived_at TIMESTAMP,"
+            f"  performed_by STRING,"
+            f"  git_sha STRING,"
+            f"  git_branch STRING,"
+            f"  dab_name STRING,"
+            f"  row_data STRING"
+            f") USING DELTA"
+        )
+
+        # Find tables from graph
+        contracts = graph.get("contracts", {})
+        default_catalog = _resolve_catalog(catalog_pattern, env, scope, profile.get("catalog", "bronze"))
+        default_schema = _resolve_schema(schema_pattern, env, project_id, scope)
+        for _cid, contract in contracts.items():
+            ds = contract["dataset"]
+            tags = set(contract.get("tags", []))
+            if ds["type"] == "table" and "auto-generated" not in tags:
+                qualified = f"{default_catalog}.{default_schema}.{ds['name']}"
+                archive_stmts.append(
+                    f"INSERT INTO {archive_table} "
+                    f"SELECT '{ds['name']}' AS table_name, "
+                    f"'{project_name}' AS project, "
+                    f"'{env}' AS environment, "
+                    f"current_timestamp() AS archived_at, "
+                    f"'{user}' AS performed_by, "
+                    f"'{git['sha']}' AS git_sha, "
+                    f"'{git['branch']}' AS git_branch, "
+                    f"'{wf_name}' AS dab_name, "
+                    f"to_json(struct(*)) AS row_data "
+                    f"FROM {qualified}"
+                )
+
+    # ── Write manifest ────────────────────────────────
+    manifest = {
+        "backup": {
+            "timestamp": timestamp,
+            "project": project_name,
+            "id": project_id,
+            "environment": env,
+            "scope": scope,
+            "performed_by": user,
+            "git_sha": git["sha"],
+            "git_branch": git["branch"],
+            "dab_name": wf_name,
+            "files": files_copied,
+            "data_archived": include_data,
+            "archive_table": archive_table,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    }
+    (snap_path / "BACKUP_manifest.yml").write_text(
+        yaml.dump(manifest, sort_keys=False, default_flow_style=False)
+    )
+    files_copied.append("BACKUP_manifest.yml")
+
+    return BackupResult(
+        timestamp=timestamp,
+        snapshot_dir=snapshot_dir,
+        files_copied=files_copied,
+        archive_statements=archive_stmts,
+        manifest=manifest,
+    )
+
+
+def list_backups(backup_dir: str = BACKUP_DIR) -> list[dict]:
+    """
+    List available backup snapshots.
+
+    Returns list of dicts with timestamp, path, files, and metadata.
+    Scans both resources/backups/ and legacy resources/teardown/_backup/.
+    """
+    all_snapshots: list[dict] = []
+
+    for search_dir in [backup_dir, "resources/teardown/_backup"]:
+        base = Path(search_dir)
+        if not base.exists():
+            continue
+        for d in sorted(base.iterdir(), reverse=True):
+            if d.is_dir() and len(d.name) == 15:  # YYYYMMDD_HHMMSS
+                contents = [f.name for f in d.rglob("*") if f.is_file()]
+
+                # Try new manifest first, then legacy teardown plan
+                meta = {}
+                manifest = d / "BACKUP_manifest.yml"
+                plan_file = d / "TEARDOWN_plan.yml"
+                if manifest.exists():
+                    raw = yaml.safe_load(manifest.read_text()) or {}
+                    meta = raw.get("backup", {})
+                elif plan_file.exists():
+                    raw = yaml.safe_load(plan_file.read_text()) or {}
+                    meta = raw.get("teardown", {})
+
+                all_snapshots.append({
+                    "timestamp": d.name,
+                    "path": str(d),
+                    "files": contents,
+                    "meta": meta,
+                    "source": "backup" if manifest.exists() else "teardown",
+                })
+
+    # Deduplicate by timestamp (prefer backup over teardown)
+    seen: dict[str, dict] = {}
+    for s in all_snapshots:
+        ts = s["timestamp"]
+        if ts not in seen or s["source"] == "backup":
+            seen[ts] = s
+    return sorted(seen.values(), key=lambda s: s["timestamp"], reverse=True)
+
+
+def restore_snapshot(
+    snapshot_id: str,
+    backup_dir: str = BACKUP_DIR,
+) -> list[str]:
+    """
+    Restore project files from a backup or teardown snapshot.
+
+    Searches both resources/backups/ and legacy resources/teardown/_backup/.
+    Copies forge.yml, workflow YAML, UDF source files, and dbt models
+    back to their original locations.
+
+    Returns list of log messages.
+    """
+    # Search both backup locations
+    snap_dir = None
+    for search_dir in [backup_dir, "resources/teardown/_backup"]:
+        candidate = Path(search_dir) / snapshot_id
+        if candidate.exists():
+            snap_dir = candidate
+            break
+
+    if snap_dir is None:
+        return [f"Snapshot not found: {snapshot_id}"]
+
+    log: list[str] = []
+
+    # Restore forge.yml
+    src = snap_dir / "forge.yml"
+    if src.exists():
+        shutil.copy2(src, "forge.yml")
+        log.append("Restored forge.yml")
+
+    # Restore workflow YAML
+    for f in snap_dir.glob("PROCESS_*.yml"):
+        dst = Path("resources/jobs") / f.name
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(f, dst)
+        log.append(f"Restored {dst}")
+
+    # Restore UDF source files
+    funcs_dir = snap_dir / "functions"
+    if funcs_dir.exists():
+        dst_dir = Path("dbt/functions")
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        for f in funcs_dir.iterdir():
+            if f.is_file():
+                shutil.copy2(f, dst_dir / f.name)
+                log.append(f"Restored dbt/functions/{f.name}")
+
+    # Restore dbt model source files
+    models_dir = snap_dir / "dbt_models"
+    if models_dir.exists():
+        dst_dir = Path("dbt/models")
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        for f in models_dir.rglob("*"):
+            if f.is_file():
+                rel = f.relative_to(models_dir)
+                dst = dst_dir / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, dst)
+                log.append(f"Restored dbt/models/{rel}")
+
+    if not log:
+        log.append("No files to restore in this snapshot.")
+
+    log.append("")
+    log.append("Snapshot restored. Run 'forge deploy' to redeploy all assets.")
+
+    return log
+
+
+# =============================================
+# ARCHIVE TABLE QUERIES (Databricks direct)
+# =============================================
+
+def _get_archive_table_name(forge_config: dict) -> str:
+    """Resolve the fully-qualified _teardown_archive table name from forge.yml."""
+    profile = resolve_active_profile(forge_config)
+    env = profile.get("env", forge_config.get("environment", "dev"))
+    scope = forge_config.get("scope", "")
+    project_id = forge_config.get("id", forge_config.get("name", ""))
+    catalog_pattern = forge_config.get("catalog_pattern", "{catalog}")
+    schema_pattern = forge_config.get("schema_pattern", "{schema}")
+    ops_catalog = _resolve_catalog(catalog_pattern, env, scope, "operations")
+    ops_schema = _resolve_schema(schema_pattern, env, "backups", scope)
+    return f"{ops_catalog}.{ops_schema}._teardown_archive"
+
+
+def _connect(forge_config: dict):
+    """Get a databricks-sql-connector connection from forge.yml profile."""
+    from forge.compute_resolver import resolve_profile, resolve_connection
+
+    profile = resolve_profile(forge_config)
+    conn_info = resolve_connection(profile)
+
+    if not conn_info.is_databricks:
+        raise ValueError(f"Archive queries require Databricks (current: {conn_info.platform})")
+    if not conn_info.host or not conn_info.token:
+        raise ValueError(
+            "Missing host or token. Configure ~/.databrickscfg or set "
+            "DBT_DATABRICKS_HOST / DBT_DATABRICKS_TOKEN."
+        )
+
+    try:
+        from databricks import sql as dbsql
+    except ImportError:
+        raise ImportError(
+            "Install databricks-sql-connector:\n"
+            "  pip install databricks-sql-connector"
+        )
+
+    http_path = conn_info.http_path
+    if not http_path:
+        import os
+        http_path = os.environ.get("DBT_DATABRICKS_HTTP_PATH", "")
+    if not http_path:
+        raise ValueError(
+            "Missing http_path. Add it to ~/.databrickscfg or set "
+            "DBT_DATABRICKS_HTTP_PATH."
+        )
+
+    return dbsql.connect(
+        server_hostname=conn_info.host.replace("https://", ""),
+        http_path=http_path,
+        access_token=conn_info.token,
+    )
+
+
+def execute_archive(forge_config: dict, statements: list[str]) -> list[dict]:
+    """Execute archive SQL statements via the Databricks SQL connector.
+
+    Returns a list of dicts with keys: statement, success, error.
+    """
+    results: list[dict] = []
+    conn = _connect(forge_config)
+    try:
+        cursor = conn.cursor()
+        try:
+            for stmt in statements:
+                try:
+                    cursor.execute(stmt)
+                    results.append({"statement": stmt, "success": True, "error": None})
+                except Exception as exc:
+                    results.append({"statement": stmt, "success": False, "error": str(exc)})
+        finally:
+            cursor.close()
+    finally:
+        conn.close()
+    return results
+
+
+def query_archive(
+    forge_config: dict,
+    table_name: str | None = None,
+) -> list[dict]:
+    """
+    Query the _teardown_archive table on Databricks.
+
+    Returns a list of dicts with: table_name, project, environment,
+    archived_at, row_count.
+
+    If table_name is given, filters to that table only.
+    """
+    archive_table = _get_archive_table_name(forge_config)
+
+    sql = (
+        f"SELECT table_name, project, environment, archived_at, "
+        f"performed_by, git_sha, git_branch, dab_name, "
+        f"COUNT(*) AS row_count "
+        f"FROM {archive_table} "
+    )
+    if table_name:
+        sql += f"WHERE table_name = '{table_name}' "
+    sql += (
+        "GROUP BY table_name, project, environment, archived_at, "
+        "performed_by, git_sha, git_branch, dab_name "
+        "ORDER BY archived_at DESC"
+    )
+
+    conn = _connect(forge_config)
+    try:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(sql)
+            columns = [desc[0] for desc in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        finally:
+            cursor.close()
+    finally:
+        conn.close()
+
+
+def restore_table_data(
+    forge_config: dict,
+    table_name: str,
+    archived_at: str | None = None,
+) -> list[str]:
+    """
+    Restore table data from the _teardown_archive table.
+
+    Generates and runs INSERT statements that parse the JSON row_data
+    back into the target table. Uses the most recent archive if
+    archived_at is not specified.
+
+    Returns list of log messages.
+    """
+    archive_table = _get_archive_table_name(forge_config)
+    log: list[str] = []
+
+    conn = _connect(forge_config)
+    try:
+        cursor = conn.cursor()
+        try:
+            # Find the target table's qualified name from the archive metadata
+            meta_sql = (
+                f"SELECT DISTINCT table_name, project, environment, archived_at "
+                f"FROM {archive_table} "
+                f"WHERE table_name = '{table_name}' "
+                f"ORDER BY archived_at DESC LIMIT 1"
+            )
+            if archived_at:
+                meta_sql = (
+                    f"SELECT DISTINCT table_name, project, environment, archived_at "
+                    f"FROM {archive_table} "
+                    f"WHERE table_name = '{table_name}' "
+                    f"AND archived_at = '{archived_at}' "
+                    f"LIMIT 1"
+                )
+
+            cursor.execute(meta_sql)
+            meta_rows = cursor.fetchall()
+            if not meta_rows:
+                log.append(f"No archived data found for table: {table_name}")
+                return log
+
+            meta = meta_rows[0]
+            ts = meta[3]  # archived_at
+            log.append(f"Found archive for '{table_name}' from {ts}")
+
+            # Count rows
+            count_sql = (
+                f"SELECT COUNT(*) FROM {archive_table} "
+                f"WHERE table_name = '{table_name}' "
+                f"AND archived_at = '{ts}'"
+            )
+            cursor.execute(count_sql)
+            row_count = cursor.fetchone()[0]
+            log.append(f"  {row_count} rows to restore")
+
+            # Resolve the target table's qualified name
+            profile = resolve_active_profile(forge_config)
+            env = profile.get("env", forge_config.get("environment", "dev"))
+            scope = forge_config.get("scope", "")
+            project_id = forge_config.get("id", forge_config.get("name", ""))
+            catalog_pattern = forge_config.get("catalog_pattern", "{catalog}")
+            schema_pattern = forge_config.get("schema_pattern", "{schema}")
+            default_catalog = _resolve_catalog(catalog_pattern, env, scope,
+                                                profile.get("catalog", "bronze"))
+            default_schema = _resolve_schema(schema_pattern, env, project_id, scope)
+            qualified_target = f"{default_catalog}.{default_schema}.{table_name}"
+
+            # Get target table's columns to build the restore query
+            col_sql = (
+                f"SELECT column_name FROM {default_catalog}.information_schema.columns "
+                f"WHERE table_schema = '{default_schema}' "
+                f"AND table_name = '{table_name}' "
+                f"ORDER BY ordinal_position"
+            )
+            cursor.execute(col_sql)
+            columns = [row[0] for row in cursor.fetchall()]
+
+            if not columns:
+                log.append(f"  Target table {qualified_target} not found — skipping data restore")
+                log.append(f"  Run 'forge deploy' first to recreate the table, then restore data")
+                return log
+
+            # Build INSERT from JSON: parse row_data back into columns
+            col_extracts = ", ".join(
+                f"row_data:{col}::STRING" for col in columns
+            )
+            restore_sql = (
+                f"INSERT INTO {qualified_target} "
+                f"SELECT {col_extracts} "
+                f"FROM {archive_table} "
+                f"WHERE table_name = '{table_name}' "
+                f"AND archived_at = '{ts}'"
+            )
+
+            log.append(f"  Restoring into {qualified_target}...")
+            cursor.execute(restore_sql)
+            log.append(f"  Restored {row_count} rows into {qualified_target}")
+
+        finally:
+            cursor.close()
+    finally:
+        conn.close()
+
+    return log

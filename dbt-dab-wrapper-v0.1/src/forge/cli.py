@@ -36,7 +36,16 @@ from forge.graph import (
 )
 from forge.type_safe import build_models, generate_sdk_file
 from forge.workflow import build_workflow
-from forge.teardown import build_teardown_plan
+from forge.teardown import (
+    build_teardown_plan,
+    build_backup,
+    list_backups,
+    restore_snapshot,
+    query_archive,
+    restore_table_data,
+    execute_archive,
+    BACKUP_DIR,
+)
 from forge.simple_ddl import (
     compile_all,
     compile_all_pure_sql,
@@ -293,6 +302,74 @@ def deploy(
     typer.echo("🎉 Deploy complete! Run 'forge diff' to see graph changes.")
 
 # =============================================
+# BACKUP – standalone snapshot (no destruction)
+# =============================================
+@app.command()
+def backup(
+    data: bool = typer.Option(False, "--data", help="Also archive table data to Databricks"),
+    list_all: bool = typer.Option(False, "--list", "-l", help="List existing backups"),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile to use"),
+):
+    """forge backup → snapshot all project assets (routine, non-destructive)"""
+    if not CONFIG_FILE.exists():
+        typer.echo("❌ No forge.yml found.")
+        raise typer.Exit(1)
+
+    config = yaml.safe_load(CONFIG_FILE.read_text())
+    if profile:
+        prof = resolve_profile(config, profile_name=profile)
+        config["environment"] = prof.get("env", config.get("environment", "dev"))
+
+    if list_all:
+        snaps = list_backups()
+        if not snaps:
+            typer.echo("No backups found.")
+            return
+        typer.echo(f"📸 Available backups ({len(snaps)}):")
+        typer.echo("")
+        for s in snaps:
+            source_tag = f"  [{s['source']}]" if s.get("source") == "teardown" else ""
+            typer.echo(f"  {s['timestamp']}  ({len(s['files'])} files){source_tag}")
+            meta = s.get("meta", {})
+            if meta.get("environment"):
+                typer.echo(f"    env: {meta['environment']}  project: {meta.get('project', meta.get('id', '?'))}")
+            if meta.get("data_archived"):
+                typer.echo(f"    data archived to: {meta.get('archive_table', '?')}")
+        typer.echo("")
+        typer.echo("To restore: forge restore --snapshot <timestamp>")
+        return
+
+    graph = build_graph(config)
+    result = build_backup(config, graph, include_data=data)
+
+    typer.echo(f"📸 Backup created: {result.snapshot_dir}/")
+    typer.echo(f"   {len(result.files_copied)} files snapshotted")
+    for f in result.files_copied:
+        typer.echo(f"   ✅ {f}")
+
+    if result.archive_statements:
+        typer.echo("")
+        typer.echo("📦 Archiving table data to Databricks...")
+        try:
+            results = execute_archive(config, result.archive_statements)
+            for r in results:
+                stmt = r["statement"]
+                typer.echo(f"  🔧 {stmt[:80]}..." if len(stmt) > 80 else f"  🔧 {stmt}")
+                if r["success"]:
+                    typer.echo(f"  ✅ Done")
+                else:
+                    typer.echo(f"  ⚠️  Failed: {r['error']}")
+                    typer.echo(f"     Execute manually: {stmt}")
+        except Exception as exc:
+            typer.echo(f"  ⚠️  Could not connect to Databricks: {exc}")
+            typer.echo("  Statements to execute manually:")
+            for stmt in result.archive_statements:
+                typer.echo(f"     {stmt}")
+
+    typer.echo("")
+    typer.echo(f"♻️  To restore: forge restore --snapshot {result.timestamp}")
+
+# =============================================
 # TEARDOWN – safe destroy (NEVER deletes data)
 # =============================================
 @app.command()
@@ -337,25 +414,119 @@ def teardown(
 
     # Run UDF SQL via dbt if there are SQL steps
     sql_steps = [s for s in plan.steps if s.action == "sql"]
-    for step in sql_steps:
-        for stmt in step.statements:
-            typer.echo(f"  🔧 Running: {stmt}")
-            try:
-                dbt_env = os.environ.copy()
-                subprocess.run(
-                    ["dbt", "run-operation", "run_query", "--args",
-                     yaml.dump({"sql": stmt}),
-                     "--project-dir", "."],
-                    check=True, capture_output=True, env=dbt_env,
-                )
-                typer.echo(f"  ✅ Done")
-            except (FileNotFoundError, subprocess.CalledProcessError) as exc:
-                typer.echo(f"  ⚠️  Could not auto-run. Execute manually:")
+    all_sql_stmts = [stmt for step in sql_steps for stmt in step.statements]
+    if all_sql_stmts:
+        try:
+            results = execute_archive(config, all_sql_stmts)
+            for r in results:
+                stmt = r["statement"]
+                typer.echo(f"  🔧 Running: {stmt}")
+                if r["success"]:
+                    typer.echo(f"  ✅ Done")
+                else:
+                    typer.echo(f"  ⚠️  Failed: {r['error']}")
+                    typer.echo(f"     Execute manually: {stmt}")
+        except Exception as exc:
+            typer.echo(f"  ⚠️  Could not connect to Databricks: {exc}")
+            typer.echo("  Statements to execute manually:")
+            for stmt in all_sql_stmts:
                 typer.echo(f"     {stmt}")
 
     typer.echo("")
     typer.echo("🎉 Teardown complete.")
     typer.echo(f"♻️  To re-instate everything: forge deploy")
+    if plan.snapshot_dir:
+        ts = Path(plan.snapshot_dir).name
+        typer.echo(f"♻️  To restore from snapshot: forge restore --snapshot {ts}")
+
+# =============================================
+# RESTORE – bring back from teardown snapshot
+# =============================================
+@app.command()
+def restore(
+    snapshot: Optional[str] = typer.Option(None, "--snapshot", "-s", help="Snapshot timestamp to restore (e.g. 20250101_120000)"),
+    data: bool = typer.Option(False, "--data", help="Query the archive table on Databricks for archived data"),
+    table: Optional[str] = typer.Option(None, "--table", "-t", help="Restore data for a specific table from the archive"),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile to use for Databricks connection"),
+):
+    """forge restore → list snapshots, query archive table, or restore from snapshot"""
+
+    # ── Data mode: poll the archive table on Databricks ──
+    if data or table:
+        if not CONFIG_FILE.exists():
+            typer.echo("❌ No forge.yml found.")
+            raise typer.Exit(1)
+
+        config = yaml.safe_load(CONFIG_FILE.read_text())
+        if profile:
+            prof = resolve_profile(config, profile_name=profile)
+            config["environment"] = prof.get("env", config.get("environment", "dev"))
+
+        if table:
+            # Restore data for a specific table
+            typer.echo(f"♻️  Restoring table data: {table}")
+            try:
+                log = restore_table_data(config, table)
+                for line in log:
+                    typer.echo(f"  {line}")
+            except Exception as exc:
+                typer.echo(f"❌ {exc}")
+                raise typer.Exit(1)
+        else:
+            # List what's in the archive table
+            typer.echo("📦 Querying archive table on Databricks...")
+            try:
+                rows = query_archive(config)
+                if not rows:
+                    typer.echo("  No archived data found.")
+                    return
+
+                typer.echo(f"  {len(rows)} archive entries found:")
+                typer.echo("")
+                for r in rows:
+                    git_tag = ""
+                    if r.get("git_sha"):
+                        git_tag = f"  {r['git_branch']}@{r['git_sha']}"
+                    typer.echo(
+                        f"  {r['table_name']:30s}  {r['row_count']:>8,} rows  "
+                        f"{r['archived_at']}  ({r['environment']})")
+                    typer.echo(
+                        f"    by: {r.get('performed_by', '?'):12s}  "
+                        f"dab: {r.get('dab_name', '?')}{git_tag}")
+                typer.echo("")
+                typer.echo("To restore a table: forge restore --table <name>")
+            except Exception as exc:
+                typer.echo(f"❌ Could not query archive: {exc}")
+                raise typer.Exit(1)
+        return
+
+    # ── Snapshot mode: local file snapshots ──
+    if snapshot is None:
+        # List available snapshots
+        snaps = list_backups()
+        if not snaps:
+            typer.echo("No backups found.")
+            typer.echo("Tip: use 'forge backup' to create one, or 'forge restore --data' to query Databricks")
+            return
+
+        typer.echo(f"📸 Available snapshots ({len(snaps)}):")
+        typer.echo("")
+        for s in snaps:
+            source_tag = f"  [{s['source']}]" if s.get("source") == "teardown" else ""
+            typer.echo(f"  {s['timestamp']}  ({len(s['files'])} files){source_tag}")
+            meta = s.get("meta", {})
+            if meta.get("environment"):
+                typer.echo(f"    env: {meta['environment']}  project: {meta.get('project', meta.get('id', '?'))}")
+        typer.echo("")
+        typer.echo("To restore files:  forge restore --snapshot <timestamp>")
+        typer.echo("To query archive:  forge restore --data")
+        return
+
+    # Restore from snapshot
+    typer.echo(f"♻️  Restoring from snapshot: {snapshot}")
+    log = restore_snapshot(snapshot)
+    for line in log:
+        typer.echo(f"  {line}")
 
 # =============================================
 # DIFF – graph magic

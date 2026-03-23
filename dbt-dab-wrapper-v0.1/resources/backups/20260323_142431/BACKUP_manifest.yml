@@ -1,0 +1,26 @@
+backup:
+  timestamp: '20260323_142431'
+  project: dbt-forge
+  id: demo
+  environment: dev
+  scope: fd
+  performed_by: ben
+  git_sha: 7ad713b
+  git_branch: main
+  dab_name: PROCESS_demo
+  files:
+  - forge.yml
+  - PROCESS_demo.yml
+  - functions/average_score.sql
+  - functions/clean_email.sql
+  - functions/loyalty_tier.sql
+  - dbt_models/demo/bronze/stg_customers.sql
+  - dbt_models/demo/bronze/stg_orders.sql
+  - dbt_models/demo/gold/customer_summary.sql
+  - dbt_models/demo/silver/customer_clean.sql
+  - dbt_models/demo/silver/customer_orders.sql
+  - dbt_models/schema.yml
+  - graph.json
+  data_archived: true
+  archive_table: dev_fd_operations.ben_demo._teardown_archive
+  generated_at: '2026-03-23T14:24:31.793199+00:00'
