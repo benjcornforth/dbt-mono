@@ -1,13 +1,11 @@
-# ── Enrich layer: join + transform ──────────
+# ── Joined customers with orders ──────────
 models:
-
   customer_orders:
     description: "Joined clean customers with their orders"
     sources:
       c: customer_clean
       o: stg_orders
     join: "c.customer_id = o.customer_id"
-    layer: silver
     materialized: table
     version: v1
     columns:

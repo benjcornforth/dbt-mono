@@ -1,10 +1,8 @@
-# ── Serve layer: aggregated metrics ──────────
+# ── Customer summary: aggregated metrics ──────────
 models:
-
   customer_summary:
     description: "Aggregated customer metrics - gold layer"
     source: customer_orders
-    layer: gold
     materialized: table
     version: v1
     group_by: [customer_id, first_name, last_name, email, country]

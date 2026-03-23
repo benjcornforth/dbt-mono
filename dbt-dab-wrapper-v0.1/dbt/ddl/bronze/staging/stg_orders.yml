@@ -1,0 +1,13 @@
+# ── Staged orders: raw → typed + lineage ──────────
+models:
+  stg_orders:
+    description: "Staged orders with computed line_total and lineage provenance"
+    source: raw_orders
+    columns:
+      order_id:     { type: int, required: true, unique: true, description: "Unique order identifier" }
+      customer_id:  { type: int, required: true, description: "FK to customers" }
+      product:      { type: string }
+      quantity:     { type: int }
+      unit_price:   { type: "decimal(10,2)", cast: true }
+      line_total:   { expr: "quantity * unit_price" }
+      order_date:   { type: date, cast: true }

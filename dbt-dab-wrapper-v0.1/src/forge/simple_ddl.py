@@ -76,95 +76,112 @@ from typing import Any
 
 import yaml
 
-# Model name prefix → medallion layer (mirrors compute_resolver._LAYER_PREFIXES)
-_LAYER_PREFIXES: dict[str, str] = {
-    "raw_": "bronze",
-    "src_": "bronze",
-    "seed_": "bronze",
-    "stg_": "silver",
-    "staging_": "silver",
-    "clean_": "silver",
-    "int_": "silver",
-    "fct_": "gold",
-    "dim_": "gold",
-    "agg_": "gold",
-    "rpt_": "gold",
-    "pub_": "gold",
-}
-
-
-def _resolve_layer(model_name: str, model_def: dict) -> str:
-    """Determine the medallion layer for a model.
-
-    Priority: explicit layer: key → name prefix → default 'silver'.
-    """
-    layer = model_def.get("layer")
-    if layer:
-        return layer
-    for prefix, lyr in _LAYER_PREFIXES.items():
-        if model_name.startswith(prefix):
-            return lyr
-    return "silver"
-
 
 # =============================================
 # DDL YAML PARSER
 # =============================================
 
-def load_raw_ddl(ddl_path: Path) -> dict:
-    """Load DDL from a single file or a directory of YAML files.
+def load_raw_ddl(ddl_path: Path, forge_config: dict | None = None) -> dict:
+    """Load DDL from a single file or a directory tree of YAML files.
 
-    If ddl_path is a file, load it directly.
-    If ddl_path is a directory, merge all *.yml files (sorted) into
-    a single dict. Each file can contain models: and/or udfs: keys.
-    Duplicate model or UDF names across files raise ValueError.
+    Supports three layouts:
+      1. Single file:  dbt/models.yml
+      2. Flat dir:     dbt/ddl/*.yml  (all files at root level)
+      3. Layer tree:   dbt/ddl/{layer}/**/*.yml  (folder = layer)
+
+    In layout 3, top-level subdirectories (bronze/, silver/, gold/) are
+    treated as layer names.  Each layer name is validated against the
+    ``schemas`` list in *forge_config* (from forge.yml).  The layer is
+    injected into every model definition as ``layer: <folder>``.
+
+    Duplicate model, UDF, or seed names across files raise ValueError.
     """
     if ddl_path.is_file():
         return yaml.safe_load(ddl_path.read_text()) or {}
 
     if ddl_path.is_dir():
         merged: dict[str, Any] = {"models": {}, "udfs": {}, "seeds": {}}
-        for yml_file in sorted(ddl_path.glob("*.yml")):
-            raw = yaml.safe_load(yml_file.read_text()) or {}
-            for model_name, model_def in raw.get("models", {}).items():
-                if model_name in merged["models"]:
-                    raise ValueError(
-                        f"Duplicate model '{model_name}' in {yml_file.name} "
-                        f"(already defined in an earlier file)"
-                    )
-                merged["models"][model_name] = model_def
-            for udf_name, udf_def in raw.get("udfs", {}).items():
-                if udf_name in merged["udfs"]:
-                    raise ValueError(
-                        f"Duplicate UDF '{udf_name}' in {yml_file.name} "
-                        f"(already defined in an earlier file)"
-                    )
-                merged["udfs"][udf_name] = udf_def
-            for seed_name, seed_def in raw.get("seeds", {}).items():
-                if seed_name in merged["seeds"]:
-                    raise ValueError(
-                        f"Duplicate seed '{seed_name}' in {yml_file.name} "
-                        f"(already defined in an earlier file)"
-                    )
-                merged["seeds"][seed_name] = seed_def
+
+        # Collect allowed layer names from forge.yml
+        allowed_layers: set[str] | None = None
+        if forge_config:
+            # Union of schemas + catalogs = valid folder names
+            allowed_layers = set(forge_config.get("schemas", []))
+            allowed_layers |= set(forge_config.get("catalogs", []))
+
+        # Detect layout: are there layer subdirectories?
+        subdirs = [d for d in sorted(ddl_path.iterdir()) if d.is_dir()]
+        root_ymls = sorted(ddl_path.glob("*.yml"))
+
+        if subdirs:
+            # Layout 3: layer tree — validate folder names
+            if allowed_layers:
+                for d in subdirs:
+                    if d.name not in allowed_layers:
+                        raise ValueError(
+                            f"Folder '{d.name}' in {ddl_path} is not a valid layer. "
+                            f"Allowed layers (from forge.yml schemas + catalogs): "
+                            f"{sorted(allowed_layers)}"
+                        )
+
+            # Walk all YAML files recursively; infer layer from top-level folder
+            for yml_file in sorted(ddl_path.rglob("*.yml")):
+                rel = yml_file.relative_to(ddl_path)
+                parts = rel.parts  # e.g. ('silver', 'staging', 'stg_customers.yml')
+                layer = parts[0] if len(parts) > 1 else None
+
+                raw = yaml.safe_load(yml_file.read_text()) or {}
+                _merge_section(merged, "models", raw, yml_file, inject_layer=layer)
+                _merge_section(merged, "udfs", raw, yml_file)
+                _merge_section(merged, "seeds", raw, yml_file)
+        else:
+            # Layout 2: flat directory — root-level *.yml only
+            for yml_file in root_ymls:
+                raw = yaml.safe_load(yml_file.read_text()) or {}
+                _merge_section(merged, "models", raw, yml_file)
+                _merge_section(merged, "udfs", raw, yml_file)
+                _merge_section(merged, "seeds", raw, yml_file)
+
         return merged
 
     raise FileNotFoundError(f"DDL path not found: {ddl_path}")
 
 
-def load_ddl(ddl_path: Path) -> dict[str, dict]:
+def _merge_section(
+    merged: dict,
+    section: str,
+    raw: dict,
+    yml_file: Path,
+    inject_layer: str | None = None,
+) -> None:
+    """Merge a section (models/udfs/seeds) from *raw* into *merged*.
+
+    Raises on duplicates.  For models, injects ``layer`` when provided.
+    """
+    for name, defn in raw.get(section, {}).items():
+        if name in merged[section]:
+            raise ValueError(
+                f"Duplicate {section.rstrip('s')} '{name}' in {yml_file.name} "
+                f"(already defined in an earlier file)"
+            )
+        if inject_layer and section == "models" and isinstance(defn, dict):
+            defn.setdefault("layer", inject_layer)
+        merged[section][name] = defn
+
+
+def load_ddl(ddl_path: Path, forge_config: dict | None = None) -> dict[str, dict]:
     """Load models from a file or directory and return the models dict."""
-    return load_raw_ddl(ddl_path).get("models", {})
+    return load_raw_ddl(ddl_path, forge_config=forge_config).get("models", {})
 
 
-def load_udfs(ddl_path: Path) -> dict[str, dict]:
+def load_udfs(ddl_path: Path, forge_config: dict | None = None) -> dict[str, dict]:
     """Load UDFs from a file or directory and return the udfs dict."""
-    return load_raw_ddl(ddl_path).get("udfs", {})
+    return load_raw_ddl(ddl_path, forge_config=forge_config).get("udfs", {})
 
 
-def load_seeds(ddl_path: Path) -> dict[str, dict]:
+def load_seeds(ddl_path: Path, forge_config: dict | None = None) -> dict[str, dict]:
     """Load seed definitions from a file or directory."""
-    return load_raw_ddl(ddl_path).get("seeds", {})
+    return load_raw_ddl(ddl_path, forge_config=forge_config).get("seeds", {})
 
 
 # =============================================
@@ -456,22 +473,22 @@ def compile_udf_sql(udf_name: str, udf_def: dict, schema: str = "{{ target.schem
     return "\n".join(lines)
 
 
-def compile_all_udfs(ddl_path: Path) -> dict[str, str]:
+def compile_all_udfs(ddl_path: Path, forge_config: dict | None = None) -> dict[str, str]:
     """
     Compile all UDFs from models.yml.
 
     Returns: {udf_name: sql_statement}
     """
-    udfs = load_udfs(ddl_path)
+    udfs = load_udfs(ddl_path, forge_config=forge_config)
     results: dict[str, str] = {}
     for udf_name, udf_def in udfs.items():
         results[udf_name] = compile_udf_sql(udf_name, udf_def)
     return results
 
 
-def compile_udfs_to_dir(ddl_path: Path, output_dir: Path) -> dict[str, Path]:
+def compile_udfs_to_dir(ddl_path: Path, output_dir: Path, forge_config: dict | None = None) -> dict[str, Path]:
     """Compile each UDF to its own .sql file in output_dir."""
-    udfs = compile_all_udfs(ddl_path)
+    udfs = compile_all_udfs(ddl_path, forge_config=forge_config)
     if not udfs:
         return {}
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -483,7 +500,7 @@ def compile_udfs_to_dir(ddl_path: Path, output_dir: Path) -> dict[str, Path]:
     return results
 
 
-def compile_sources_yml(ddl_path: Path, source_name: str = "seed") -> str | None:
+def compile_sources_yml(ddl_path: Path, source_name: str = "seed", forge_config: dict | None = None) -> str | None:
     """Generate dbt sources YAML from seed definitions in DDL.
 
     Seeds are declared as a dbt source so models can reference them
@@ -491,7 +508,7 @@ def compile_sources_yml(ddl_path: Path, source_name: str = "seed") -> str | None
     schema defaults to ``{{ target.schema }}`` so it matches wherever
     ``dbt seed`` loads the CSV data.
     """
-    seeds = load_seeds(ddl_path)
+    seeds = load_seeds(ddl_path, forge_config=forge_config)
     if not seeds:
         return None
 
@@ -558,8 +575,8 @@ def compile_all(
 
     Returns a dict of {model_name: output_path} for all generated files.
     """
-    models = load_ddl(ddl_path)
-    seeds = load_seeds(ddl_path)
+    models = load_ddl(ddl_path, forge_config=forge_config)
+    seeds = load_seeds(ddl_path, forge_config=forge_config)
     seed_names = set(seeds.keys())
     output_dir.mkdir(parents=True, exist_ok=True)
     results: dict[str, Path] = {}
@@ -581,7 +598,7 @@ def compile_all(
 
     for model_name, model_def in models.items():
         sql = compile_model(model_name, model_def, forge_config=forge_config, seed_names=seed_names)
-        layer = _resolve_layer(model_name, model_def)
+        layer = model_def.get("layer", "default")
         sub_dir = output_dir / origin / layer
         sub_dir.mkdir(parents=True, exist_ok=True)
         out_path = sub_dir / f"{model_name}.sql"
@@ -596,12 +613,12 @@ def compile_all(
 
     # Generate UDFs → dbt/functions/ (one file per UDF)
     functions_dir = output_dir.parent / "functions"
-    udf_results = compile_udfs_to_dir(ddl_path, functions_dir)
+    udf_results = compile_udfs_to_dir(ddl_path, functions_dir, forge_config=forge_config)
     for udf_name, udf_path in udf_results.items():
         results[f"_udf_{udf_name}"] = udf_path
 
     # Generate sources YAML → dbt/sources/ (seed declarations)
-    sources_yml = compile_sources_yml(ddl_path)
+    sources_yml = compile_sources_yml(ddl_path, forge_config=forge_config)
     if sources_yml:
         sources_dir = output_dir.parent / "sources"
         sources_dir.mkdir(parents=True, exist_ok=True)

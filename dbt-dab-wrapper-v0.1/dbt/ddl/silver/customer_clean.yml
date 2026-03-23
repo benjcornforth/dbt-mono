@@ -1,10 +1,8 @@
-# ── Clean layer: quarantine bad rows ──────────
+# ── Clean customers: quarantine bad rows ──────────
 models:
-
   customer_clean:
     description: "Clean customers - null emails and negative revenue quarantined"
     source: stg_customers
-    layer: silver
     materialized: table
     version: v2
     quarantine: "email IS NULL OR revenue < 0"
