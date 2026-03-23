@@ -1,0 +1,9 @@
+# ── Landing volume — file drop zone ─────────────────────
+# Managed volume where external files arrive for ingestion.
+# The Python ingestion task reads from this Volume.
+volumes:
+  landing:
+    description: "Landing zone for inbound data files"
+    type: managed
+    layer: bronze
+    domain: false

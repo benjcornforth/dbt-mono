@@ -65,11 +65,11 @@ Open `forge.yml`. The key settings:
 
 ```yaml
 name: sales_data
-scope: sales
+scope: fd
 id: sales
 active_profile: dev
 
-catalog_pattern: "{env}_{scope}_{catalog}"    # → dev_sales_bronze
+catalog_pattern: "{env}_{scope}_{catalog}"    # → dev_fd_bronze
 schema_pattern:  "{user}_{id}"                # → ben_sales
 
 profiles:
@@ -82,8 +82,8 @@ profiles:
 ```
 
 **What this means:**
-- Tables land in catalog `dev_sales_bronze`, schema `ben_sales`
-- Silver models go to `dev_sales_silver.ben_sales`
+- Tables land in catalog `dev_fd_bronze`, schema `ben_sales`
+- Silver models go to `dev_fd_silver.ben_sales`
 - Switch to prod by running `forge deploy --profile prod`
 
 To connect to Databricks:
@@ -129,8 +129,8 @@ to the landing Volume:
 
 ```bash
 # After forge deploy creates the Volume:
-databricks fs cp sample_data/raw_customers.csv dbfs:/Volumes/bronze/ben_sales/landing/customers_20240101.csv
-databricks fs cp sample_data/raw_orders.csv    dbfs:/Volumes/bronze/ben_sales/landing/orders_20240101.csv
+databricks fs cp sample_data/raw_customers.csv dbfs:/Volumes/dev_fd_bronze/ben_sales/landing/customers_20240101.csv
+databricks fs cp sample_data/raw_orders.csv    dbfs:/Volumes/dev_fd_bronze/ben_sales/landing/orders_20240101.csv
 ```
 
 Then run the ingestion task to load them into the raw tables.

@@ -255,6 +255,39 @@ def deploy(
         compile_all(ddl_path, Path("dbt/models"), forge_config=config)
         typer.echo("  ✅ Compiled models, functions, sources")
 
+    # Pre-flight: verify required catalogs exist on the target platform
+    if conn.platform == "databricks":
+        required_catalogs = set(schema_vars.get(k, "") for k in schema_vars if k.startswith("catalog_"))
+        if required_catalogs:
+            typer.echo("🔍 Checking catalogs...")
+            try:
+                result = subprocess.run(
+                    ["dbt", "run-operation", "run_query", "--args",
+                     yaml.dump({"sql": "SHOW CATALOGS"}),
+                     "--project-dir", "."] + dbt_vars_flag,
+                    check=True, capture_output=True, text=True, env=dbt_env,
+                )
+                # Parse catalog names from dbt run-operation output
+                existing_catalogs = set()
+                for line in result.stdout.splitlines():
+                    stripped = line.strip().strip("|").strip()
+                    if stripped and stripped.lower() not in ("catalog", "catalog_name", ""):
+                        # dbt run-operation prints table rows
+                        existing_catalogs.add(stripped.lower())
+                missing = sorted(c for c in required_catalogs if c.lower() not in existing_catalogs)
+                if missing:
+                    typer.echo(f"  ❌ Missing catalog(s): {', '.join(missing)}")
+                    typer.echo("     Create them first:")
+                    for cat in missing:
+                        typer.echo(f"       CREATE CATALOG IF NOT EXISTS `{cat}`;")
+                    typer.echo("     Or update forge.yml scope/catalog_pattern to match existing catalogs.")
+                    raise typer.Exit(1)
+                typer.echo(f"  ✅ All catalogs verified: {', '.join(sorted(required_catalogs))}")
+            except subprocess.CalledProcessError:
+                typer.echo("  ⚠️  Could not verify catalogs (SHOW CATALOGS failed). Continuing...")
+            except FileNotFoundError:
+                pass  # dbt not installed — skip check
+
     # Deploy UDFs first (functions must exist before models reference them)
     functions_dir = Path("dbt/functions")
     if functions_dir.is_dir():

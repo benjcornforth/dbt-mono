@@ -1,5 +1,5 @@
 {{ config(
-    materialized='view', schema='ben_demo_eu', database=var("catalog_bronze"), tags=['eu']
+    materialized='view', schema=var("schema_bronze"), database=var("catalog_bronze")
 ) }}
 
 select
@@ -11,4 +11,4 @@ select
     country,
     cast(revenue as decimal(10,2)) as revenue,
     {{ dbt_dab_tools.lineage_columns(columns=[{'name': 'signup_date', 'expr': 'cast(signup_date as date)', 'op': 'CAST', 'inputs': ['signup_date']}, {'name': 'revenue', 'expr': 'cast(revenue as decimal(10,2))', 'op': 'CAST', 'inputs': ['revenue']}]) }}
-from {{ source('seed', 'raw_customers') }}
+from {{ ref('raw_customers') }}

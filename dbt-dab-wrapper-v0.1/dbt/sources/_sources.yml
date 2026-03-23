@@ -1,28 +1,30 @@
 version: 2
 sources:
-- name: seed
-  description: Seed data loaded by dbt seed
-  schema: '{{ target.schema }}'
+- name: seed_meta_config
+  description: Seed data in meta.config
   tables:
-  - name: raw_customers
-    description: Raw customer data loaded from CSV
+  - name: ingestion_config
+    description: File-matching rules for Volume ingestion
     columns:
-    - name: customer_id
-      description: Unique customer identifier
-    - name: first_name
-    - name: last_name
-    - name: email
-    - name: signup_date
-    - name: country
-    - name: revenue
-  - name: raw_orders
-    description: Raw order data loaded from CSV
-    columns:
-    - name: order_id
-      description: Unique order identifier
-    - name: customer_id
-      description: FK to raw_customers
-    - name: product
-    - name: quantity
-    - name: unit_price
-    - name: order_date
+    - name: config_id
+      description: Unique config identifier
+    - name: ingest_type
+      description: 'Discriminator: volume | api | kafka | jdbc | sftp'
+    - name: source_name
+      description: Logical name (e.g. customer_feed)
+    - name: target_model
+      description: Raw model name to write into
+    - name: volume_name
+      description: Volume name to scan (ingest_type=volume)
+    - name: file_regex
+      description: Regex pattern to match filenames
+    - name: file_format
+      description: 'File format: csv, json, parquet, delta'
+    - name: has_header
+      description: Whether CSV has a header row
+    - name: delimiter
+      description: CSV delimiter character
+    - name: active
+      description: Toggle rule on/off
+  database: meta
+  schema: config

@@ -8,4 +8,3 @@ order_id,customer_id,product,quantity,unit_price,order_date
 1007,8,Widget C,1,899.00,2024-08-30
 1008,10,Widget A,10,49.99,2024-10-15
 1009,2,Widget B,1,129.99,2024-11-01
-1010,4,Widget A,4,49.99,2024-11-20

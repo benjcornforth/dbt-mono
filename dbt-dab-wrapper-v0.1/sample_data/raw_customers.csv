@@ -8,4 +8,3 @@ customer_id,first_name,last_name,email,signup_date,country,revenue
 7,Grace,Lee,,2024-07-18,JP,1500.00
 8,Hank,Davis,hank@example.com,2024-08-22,US,200.00
 9,Ivy,Chen,ivy@example.com,2024-09-30,UK,-100.00
-10,Jack,Wilson,jack@example.com,2024-10-11,DE,4500.00

@@ -3,13 +3,13 @@
 # A child can change 3 lines and redeploy everything.
 
 name: sales_data
-scope: sales
+scope: fd
 id: sales
 active_profile: dev
 
 # ── Naming Patterns ──
 # Tokens: {env}, {id}, {scope}, {user}, {catalog}, {schema}
-catalog_pattern: "{env}_{scope}_{catalog}"     # → dev_sales_bronze
+catalog_pattern: "{env}_{scope}_{catalog}"     # → dev_fd_bronze
 schema_pattern:  "{user}_{id}"                 # → ben_sales
 skip_env_prefix: [prd, prod]
 

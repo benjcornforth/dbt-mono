@@ -1,5 +1,5 @@
 {{ config(
-    materialized='table', schema='ben_demo_us', database=var("catalog_silver"), tags=['us'], meta={'version': 'v1'}
+    materialized='table', schema=var("schema_silver"), database=var("catalog_silver"), meta={'version': 'v1'}
 ) }}
 
 select
@@ -14,6 +14,6 @@ select
     max(order_date) as last_order_date,
     loyalty_tier(total_revenue) as tier,
     {{ dbt_dab_tools.lineage_columns(columns=[{'name': 'total_orders', 'expr': 'count(order_id)', 'op': 'AGGREGATION'}, {'name': 'total_revenue', 'expr': 'sum(line_total)', 'op': 'AGGREGATION'}, {'name': 'first_order_date', 'expr': 'min(order_date)', 'op': 'AGGREGATION'}, {'name': 'last_order_date', 'expr': 'max(order_date)', 'op': 'AGGREGATION'}, {'name': 'tier', 'expr': 'loyalty_tier(total_revenue)', 'udf_name': 'loyalty_tier', 'op': 'SQL_UDF', 'inputs': ['total_revenue']}]) }}
-from {{ ref('customer_orders_us') }}
+from {{ ref('customer_orders') }}
 group by
     customer_id, first_name, last_name, email, country

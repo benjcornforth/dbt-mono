@@ -82,8 +82,8 @@ Sample data files are in `sample_data/`. After deploying, upload them
 to each domain's landing Volume:
 
 ```bash
-databricks fs cp sample_data/raw_customers_eu.csv dbfs:/Volumes/bronze/ben_regional_eu/landing_eu/customers_20240101.csv
-databricks fs cp sample_data/raw_customers_us.csv dbfs:/Volumes/bronze/ben_regional_us/landing_us/customers_20240101.csv
+databricks fs cp sample_data/raw_customers_eu.csv dbfs:/Volumes/dev_fd_bronze/ben_regional_eu/landing_eu/customers_20240101.csv
+databricks fs cp sample_data/raw_customers_us.csv dbfs:/Volumes/dev_fd_bronze/ben_regional_us/landing_us/customers_20240101.csv
 ```
 
 > **Note:** `domain_sources:` is still available for advanced cases where

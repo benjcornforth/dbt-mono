@@ -8,7 +8,7 @@ Template: ingest_from_volume
 Ingests files from a Unity Catalog Volume into raw tables.
 Driven by the ingestion_config seed (dbt/ddl/meta/seeds/) loaded
 into the meta catalog by `dbt seed`.
-Tracks every file in the file_manifest table (per-domain, managed_by: python)
+Tracks every file in the file_manifest table (managed_by: python)
 defined in dbt/ddl/bronze/models/.
 Pydantic validation is provided by forge codegen (sdk/models.py).
 """
