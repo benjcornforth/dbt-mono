@@ -391,7 +391,15 @@ def build_teardown_plan(
         ds = contract["dataset"]
         tags = set(contract.get("tags", []))
         if ds["type"] == "table" and "auto-generated" not in tags:
-            if wipe_all:
+            is_shared = "shared" in tags or contract.get("_meta", {}).get("domain") is False
+            if is_shared:
+                preserves.append(TeardownAsset(
+                    asset_type="table",
+                    name=ds["name"],
+                    action="preserve",
+                    note="Shared asset (domain: false) — never dropped by sub-domain teardown",
+                ))
+            elif wipe_all:
                 removes.append(TeardownAsset(
                     asset_type="table",
                     name=ds["name"],

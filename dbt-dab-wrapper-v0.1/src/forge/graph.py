@@ -912,13 +912,20 @@ def _mark_python_managed_nodes(
 
     for model_name, model_def in models.items():
         managed_by = model_def.get("managed_by")
-        if not managed_by:
+        domain_flag = model_def.get("domain")
+        if not managed_by and domain_flag is None:
             continue
         # Find matching contract and tag it
         for prefix in [f"model.{project}.{model_name}", f"model.dbt_dab_wrapper.{model_name}"]:
             if prefix in graph["contracts"]:
-                graph["contracts"][prefix].setdefault("tags", []).append("python_managed")
-                graph["contracts"][prefix].setdefault("_meta", {})["managed_by"] = managed_by
+                meta = graph["contracts"][prefix].setdefault("_meta", {})
+                if managed_by:
+                    graph["contracts"][prefix].setdefault("tags", []).append("python_managed")
+                    meta["managed_by"] = managed_by
+                if domain_flag is not None:
+                    meta["domain"] = domain_flag
+                    if not domain_flag:
+                        graph["contracts"][prefix].setdefault("tags", []).append("shared")
                 break
 
 

@@ -1894,6 +1894,33 @@ def compile_all_pure_sql(
             model_name, model_def, prof, forge_config=forge_config,
         )
 
+    # ── Validate shared assets aren't in domain-suffixed schemas ──
+    domains = (forge_config or {}).get("domains", {})
+    if domains:
+        domain_suffixes = {
+            d_cfg.get("schema_suffix", f"_{d_name}")
+            for d_name, d_cfg in domains.items()
+        }
+        errors: list[str] = []
+        for model_name, model_def in models.items():
+            if isinstance(model_def, str) or model_def is None:
+                continue
+            if model_def.get("domain") is False:
+                _, m_schema = model_locations[model_name]
+                for suffix in domain_suffixes:
+                    if m_schema.endswith(suffix):
+                        errors.append(
+                            f"  {model_name}: shared asset (domain: false) is in "
+                            f"domain-suffixed schema '{m_schema}' — a domain teardown "
+                            f"with DROP SCHEMA CASCADE would destroy it"
+                        )
+        if errors:
+            raise RuntimeError(
+                "Compile error: shared assets placed in domain-specific schemas.\n"
+                + "\n".join(errors)
+                + "\n\nMove shared assets to the base schema or set domain: true."
+            )
+
     seq = 0
 
     # Resolve meta catalog/schema for lineage tables

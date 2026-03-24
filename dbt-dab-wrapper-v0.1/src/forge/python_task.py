@@ -394,6 +394,48 @@ class ForgeTask:
         fqn = self.table(model_name, model_def)
         df_with_lineage.write.mode(mode).saveAsTable(fqn)
 
+    def log_lineage(
+        self,
+        model_name: str,
+        row_count: int,
+        sources: list[str] | None = None,
+        model_def: dict | None = None,
+    ) -> None:
+        """Write a lineage_log entry for a python-managed model.
+
+        Mirrors the INSERT INTO lineage_log that SQL models get at compile time.
+        Call after write_table_with_lineage() to close the lineage loop.
+
+            task.log_lineage("raw_customers", df.count(), sources=["landing/customers.csv"])
+        """
+        import os
+        from datetime import datetime, timezone
+
+        model_def = model_def or {}
+        catalog, schema = resolve_model_schema(
+            model_name, model_def, self._profile, self._config,
+        )
+        meta_cat = self.catalog("meta")
+        meta_sch = self.schema("meta")
+        fq_log = f"{meta_cat}.{meta_sch}.lineage_log"
+
+        run_id = os.environ.get("DBX_JOB_RUN_ID", "local")
+        git_commit = os.environ.get("FORGE_GIT_COMMIT", "unknown")
+        sources_str = ", ".join(sources) if sources else ""
+
+        insert_sql = (
+            f"INSERT INTO {fq_log} "
+            f"(run_id, model, materialized, rows_created, catalog, schema, sources, git_commit) "
+            f"VALUES ('{run_id}', '{model_name}', 'managed_by_python', "
+            f"{row_count}, '{catalog}', '{schema}', '{sources_str}', '{git_commit}')"
+        )
+
+        # Prefer SparkSQL (on-cluster), fall back to SQL connector (local)
+        if self._spark is not None:
+            self._spark.sql(insert_sql)
+        else:
+            self.sql(insert_sql)
+
     def _validate_df(self, model_name: str, df: Any) -> None:
         """Validate a DataFrame against the Pydantic model from type_safe."""
         from forge.type_safe import build_models
