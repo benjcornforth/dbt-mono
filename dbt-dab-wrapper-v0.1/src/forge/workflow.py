@@ -1118,27 +1118,6 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
             ))
             managed_by_tasks.append(task_name)
 
-    # Python tasks whose models are managed_by (DDL-driven).
-    # The managed_by value in DDL determines which python tasks belong here:
-    #   managed_by: python             → matches all python tasks
-    #   managed_by: ingest_from_volume → matches python task by name
-    if managed_by_values:
-        from forge.python_task import load_python_tasks
-        python_tasks = load_python_tasks()
-        for pt in python_tasks:
-            # Match: DDL says "python" (generic) or names this specific task
-            if "python" in managed_by_values or pt["name"] in managed_by_values:
-                pt_deps = list(managed_by_tasks) if managed_by_tasks else [tasks[-1].name]
-                tasks.append(WorkflowTask(
-                    name=f"ingest_py_{pt['name']}",
-                    stage="ingest",
-                    task_type="python",
-                    python_file=pt["file"],
-                    models=[],
-                    depends_on=pt_deps,
-                    compute_type=compute_type,
-                ))
-
     return Workflow(
         name=f"SETUP_{project_id}",
         tasks=tasks,

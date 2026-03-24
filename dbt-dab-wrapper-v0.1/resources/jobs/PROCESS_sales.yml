@@ -3,6 +3,11 @@ resources:
     PROCESS_sales:
       name: PROCESS_sales (dev)
       tasks:
+      - task_key: ingest_py_ingest_from_volume
+        timeout_seconds: 3600
+        environment_key: default
+        spark_python_task:
+          python_file: ../../python/ingest_from_volume.py
       - task_key: stage_customer_orders
         timeout_seconds: 3600
         sql_task:
@@ -26,12 +31,16 @@ resources:
           file:
             path: ../../sql/005_stg_customers.sql
           warehouse_id: 724607f766691c81
+        depends_on:
+        - task_key: ingest_py_ingest_from_volume
       - task_key: stage_stg_orders
         timeout_seconds: 3600
         sql_task:
           file:
             path: ../../sql/007_stg_orders.sql
           warehouse_id: 724607f766691c81
+        depends_on:
+        - task_key: ingest_py_ingest_from_volume
       - task_key: clean_customer_clean
         timeout_seconds: 3600
         sql_task:
@@ -56,3 +65,4 @@ resources:
           - dbt-databricks
           - pydantic>=2.0
           - pyyaml
+          - whl: ../dist/*.whl
