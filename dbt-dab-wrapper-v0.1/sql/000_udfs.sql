@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS `dev_fd_meta`.`ben_sales`.`lineage_graph` (
     git_commit STRING DEFAULT 'unknown',
     updated_at TIMESTAMP DEFAULT current_timestamp()
 )
-USING DELTA;
+USING DELTA
+TBLPROPERTIES('delta.feature.allowColumnDefaults' = 'supported');
 
 CREATE TABLE IF NOT EXISTS `dev_fd_meta`.`ben_sales`.`lineage_log` (
     run_id STRING NOT NULL,
@@ -32,7 +33,8 @@ CREATE TABLE IF NOT EXISTS `dev_fd_meta`.`ben_sales`.`lineage_log` (
     git_commit STRING,
     completed_at TIMESTAMP DEFAULT current_timestamp()
 )
-USING DELTA;
+USING DELTA
+TBLPROPERTIES('delta.feature.allowColumnDefaults' = 'supported');
 
 -- UDF: loyalty_tier
 -- Assigns GOLD/SILVER/BRONZE based on revenue

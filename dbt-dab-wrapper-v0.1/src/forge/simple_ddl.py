@@ -659,12 +659,21 @@ def _compile_table_stub(table_name: str, columns: dict, catalog: str, schema: st
             constraints += f" DEFAULT {default}"
         col_defs.append(f"    {col_name} {resolved_type}{constraints}")
 
+    has_defaults = any(
+        (col if isinstance(col, dict) else {}).get("default") is not None
+        for col in columns.values()
+    )
     lines = [
         f"CREATE TABLE IF NOT EXISTS {fq_name} (",
         ",\n".join(col_defs),
         ")",
-        "USING DELTA;",
+        "USING DELTA",
     ]
+    if has_defaults:
+        lines.append("TBLPROPERTIES('delta.feature.allowColumnDefaults' = 'supported');")
+    else:
+        # Close the statement
+        lines[-1] += ";"
     return "\n".join(lines)
 
 
@@ -1622,7 +1631,8 @@ def compile_lineage_graph_sql(
     lines.append(f"    git_commit      STRING     DEFAULT '{git_commit}',")
     lines.append(f"    updated_at      TIMESTAMP  DEFAULT current_timestamp()")
     lines.append(")")
-    lines.append("USING DELTA;")
+    lines.append("USING DELTA")
+    lines.append("TBLPROPERTIES('delta.feature.allowColumnDefaults' = 'supported');")
     lines.append("")
 
     # ── lineage_log table ──
@@ -1637,7 +1647,8 @@ def compile_lineage_graph_sql(
     lines.append("    git_commit      STRING,")
     lines.append("    completed_at    TIMESTAMP  DEFAULT current_timestamp()")
     lines.append(")")
-    lines.append("USING DELTA;")
+    lines.append("USING DELTA")
+    lines.append("TBLPROPERTIES('delta.feature.allowColumnDefaults' = 'supported');")
     lines.append("")
 
     # ── Truncate + reload lineage_graph ──
