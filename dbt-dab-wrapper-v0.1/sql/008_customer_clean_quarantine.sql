@@ -7,7 +7,7 @@ AS
 SELECT *,
     'customer_clean' AS _quarantine_source,
     'unknown' AS _quarantine_git_commit,
-    '2026-03-24T18:34:04.811826+00:00' AS _quarantine_detected_at
+    '2026-03-24T18:49:47.139643+00:00' AS _quarantine_detected_at
 FROM `dev_fd_silver`.`ben_sales`.`customer_clean`
 WHERE email IS NULL OR revenue < 0;
 

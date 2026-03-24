@@ -1651,56 +1651,148 @@ def compile_pure_sql_model(
         lines.append(f"INSERT INTO {fq_name}")
 
     # SELECT columns
-    col_lines = []
-    for col_name, col_def in columns.items():
-        if isinstance(col_def, str):
-            col_def = {"type": col_def}
-        elif col_def is None:
-            col_def = {}
-        col_lines.append(_compile_column_select(col_name, col_def, None, udf_qualifiers, all_columns=columns))
-
-    # Lineage struct (static, no Jinja)
-    lineage_sql = _compile_lineage_struct(
-        model_name, model_def, schema, git_commit, deploy_ts, compute_type, columns, platform,
-    )
-    col_lines.append(lineage_sql)
-
-    lines.append("SELECT")
-    lines.append(",\n".join(col_lines))
-
-    # FROM clause — fully qualified table names instead of {{ ref() }}
-    # Use source_locations to resolve each source to its correct schema
-    def _fq(source_name: str) -> str:
-        if source_locations and source_name in source_locations:
-            s_cat, s_sch = source_locations[source_name]
-            return f"`{s_cat}`.`{s_sch}`.`{source_name}`"
-        return f"`{catalog}`.`{schema}`.`{source_name}`"
-
-    if is_join:
-        sources = model_def.get("sources", {})
-        join_condition = model_def.get("join", "")
-        join_type = model_def.get("join_type", "INNER JOIN")
-
-        source_items = list(sources.items())
-        first_alias, first_source = source_items[0]
-        lines.append(f"FROM {_fq(first_source)} {first_alias}")
-
-        for alias, source in source_items[1:]:
-            lines.append(f"{join_type} {_fq(source)} {alias}")
-            lines.append(f"    ON {join_condition}")
-    else:
-        source = model_def.get("source", "")
-        if source:
-            lines.append(f"FROM {_fq(source)}")
-
-    # GROUP BY
+    # Detect if any UDF references an aggregated sibling — if so, use CTE
+    has_udf_on_aggregate = False
     if is_agg:
-        group_cols = model_def.get("group_by", [])
-        if group_cols:
-            lines.append("GROUP BY")
-            lines.append(f"    {', '.join(group_cols)}")
+        for col_name, col_def in columns.items():
+            cd = col_def if isinstance(col_def, dict) else {}
+            if "udf" not in cd:
+                continue
+            # Check if any argument references a sibling with expr
+            udf_call = cd["udf"]
+            args_start = udf_call.index("(")
+            args_str = udf_call[args_start + 1 : udf_call.rindex(")")]
+            for arg in (a.strip() for a in args_str.split(",")):
+                sibling = columns.get(arg)
+                if isinstance(sibling, dict) and "expr" in sibling:
+                    has_udf_on_aggregate = True
+                    break
+            if has_udf_on_aggregate:
+                break
 
-    lines.append(";")
+    if has_udf_on_aggregate:
+        # CTE approach: aggregate in inner query, apply UDFs in outer query
+        # Inner CTE: all non-UDF columns with their expressions
+        inner_col_lines = []
+        for col_name, col_def in columns.items():
+            cd = col_def
+            if isinstance(cd, str):
+                cd = {"type": cd}
+            elif cd is None:
+                cd = {}
+            if "udf" in cd:
+                continue  # skip UDF columns — computed in outer SELECT
+            inner_col_lines.append(_compile_column_select(col_name, cd, None, None, all_columns=columns))
+
+        # FROM clause
+        def _fq(source_name: str) -> str:
+            if source_locations and source_name in source_locations:
+                s_cat, s_sch = source_locations[source_name]
+                return f"`{s_cat}`.`{s_sch}`.`{source_name}`"
+            return f"`{catalog}`.`{schema}`.`{source_name}`"
+
+        from_lines: list[str] = []
+        if is_join:
+            sources = model_def.get("sources", {})
+            join_condition = model_def.get("join", "")
+            join_type = model_def.get("join_type", "INNER JOIN")
+            source_items = list(sources.items())
+            first_alias, first_source = source_items[0]
+            from_lines.append(f"    FROM {_fq(first_source)} {first_alias}")
+            for alias, source in source_items[1:]:
+                from_lines.append(f"    {join_type} {_fq(source)} {alias}")
+                from_lines.append(f"        ON {join_condition}")
+        else:
+            source = model_def.get("source", "")
+            if source:
+                from_lines.append(f"    FROM {_fq(source)}")
+
+        group_cols = model_def.get("group_by", [])
+
+        lines.append(f"WITH _agg AS (")
+        lines.append("    SELECT")
+        lines.append(",\n".join(f"    {cl}" for cl in inner_col_lines))
+        lines.extend(from_lines)
+        if group_cols:
+            lines.append(f"    GROUP BY")
+            lines.append(f"        {', '.join(group_cols)}")
+        lines.append(")")
+
+        # Outer SELECT: passthrough all CTE columns + apply UDFs + lineage
+        outer_col_lines = []
+        for col_name, col_def in columns.items():
+            cd = col_def
+            if isinstance(cd, str):
+                cd = {"type": cd}
+            elif cd is None:
+                cd = {}
+            if "udf" in cd:
+                # UDF on CTE column — arguments are now plain column refs
+                outer_col_lines.append(_compile_column_select(col_name, cd, None, udf_qualifiers))
+            else:
+                outer_col_lines.append(f"    {col_name}")
+
+        lineage_sql = _compile_lineage_struct(
+            model_name, model_def, schema, git_commit, deploy_ts, compute_type, columns, platform,
+        )
+        outer_col_lines.append(lineage_sql)
+
+        lines.append("SELECT")
+        lines.append(",\n".join(outer_col_lines))
+        lines.append("FROM _agg")
+        lines.append(";")
+    else:
+        # Standard path: no CTE needed
+        col_lines = []
+        for col_name, col_def in columns.items():
+            if isinstance(col_def, str):
+                col_def = {"type": col_def}
+            elif col_def is None:
+                col_def = {}
+            col_lines.append(_compile_column_select(col_name, col_def, None, udf_qualifiers, all_columns=columns))
+
+        # Lineage struct (static, no Jinja)
+        lineage_sql = _compile_lineage_struct(
+            model_name, model_def, schema, git_commit, deploy_ts, compute_type, columns, platform,
+        )
+        col_lines.append(lineage_sql)
+
+        lines.append("SELECT")
+        lines.append(",\n".join(col_lines))
+
+        # FROM clause — fully qualified table names instead of {{ ref() }}
+        # Use source_locations to resolve each source to its correct schema
+        def _fq(source_name: str) -> str:
+            if source_locations and source_name in source_locations:
+                s_cat, s_sch = source_locations[source_name]
+                return f"`{s_cat}`.`{s_sch}`.`{source_name}`"
+            return f"`{catalog}`.`{schema}`.`{source_name}`"
+
+        if is_join:
+            sources = model_def.get("sources", {})
+            join_condition = model_def.get("join", "")
+            join_type = model_def.get("join_type", "INNER JOIN")
+
+            source_items = list(sources.items())
+            first_alias, first_source = source_items[0]
+            lines.append(f"FROM {_fq(first_source)} {first_alias}")
+
+            for alias, source in source_items[1:]:
+                lines.append(f"{join_type} {_fq(source)} {alias}")
+                lines.append(f"    ON {join_condition}")
+        else:
+            source = model_def.get("source", "")
+            if source:
+                lines.append(f"FROM {_fq(source)}")
+
+        # GROUP BY
+        if is_agg:
+            group_cols = model_def.get("group_by", [])
+            if group_cols:
+                lines.append("GROUP BY")
+                lines.append(f"    {', '.join(group_cols)}")
+
+        lines.append(";")
 
     # ── Execution summary (shown as sql_task output) ──
     fq_name = f"`{catalog}`.`{schema}`.`{model_name}`"

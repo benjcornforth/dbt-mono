@@ -39,7 +39,7 @@ SELECT
         'model', 'customer_orders',
         'sources', 'customer_clean, stg_orders',
         'git_commit', 'unknown',
-        'deployed_at', '2026-03-24T18:34:04.811826+00:00',
+        'deployed_at', '2026-03-24T18:49:47.139643+00:00',
         'compute_type', 'serverless',
         'contract_id', 'ben_sales.customer_orders',
         'version', 'v1',

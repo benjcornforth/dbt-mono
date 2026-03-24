@@ -21,23 +21,38 @@ CREATE TABLE IF NOT EXISTS `dev_fd_silver`.`ben_sales`.`customer_summary` (
 TRUNCATE TABLE `dev_fd_silver`.`ben_sales`.`customer_summary`;
 
 INSERT INTO `dev_fd_silver`.`ben_sales`.`customer_summary`
+WITH _agg AS (
+    SELECT
+        customer_id,
+        first_name,
+        last_name,
+        email,
+        country,
+        count(order_id) as total_orders,
+        sum(line_total) as total_revenue,
+        min(order_date) as first_order_date,
+        max(order_date) as last_order_date
+    FROM `dev_fd_silver`.`ben_sales`.`customer_orders`
+    GROUP BY
+        customer_id, first_name, last_name, email, country
+)
 SELECT
     customer_id,
     first_name,
     last_name,
     email,
     country,
-    count(order_id) as total_orders,
-    sum(line_total) as total_revenue,
-    min(order_date) as first_order_date,
-    max(order_date) as last_order_date,
-    `dev_fd_silver`.`ben_sales`.loyalty_tier(sum(line_total)) as tier,
+    total_orders,
+    total_revenue,
+    first_order_date,
+    last_order_date,
+    `dev_fd_silver`.`ben_sales`.loyalty_tier(total_revenue) as tier,
     named_struct(
         'schema_version', '3',
         'model', 'customer_summary',
         'sources', 'customer_orders',
         'git_commit', 'unknown',
-        'deployed_at', '2026-03-24T18:34:04.811826+00:00',
+        'deployed_at', '2026-03-24T18:49:47.139643+00:00',
         'compute_type', 'serverless',
         'contract_id', 'ben_sales.customer_summary',
         'version', 'v1',
@@ -94,9 +109,7 @@ SELECT
         )
     )
     ) AS _lineage
-FROM `dev_fd_silver`.`ben_sales`.`customer_orders`
-GROUP BY
-    customer_id, first_name, last_name, email, country
+FROM _agg
 ;
 
 -- Execution summary
