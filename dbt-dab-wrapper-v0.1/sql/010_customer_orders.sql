@@ -4,9 +4,24 @@
 
 CREATE SCHEMA IF NOT EXISTS `dev_fd_silver`.`ben_sales`;
 
-CREATE OR REPLACE TABLE `dev_fd_silver`.`ben_sales`.`customer_orders`
-USING DELTA
-AS
+CREATE TABLE IF NOT EXISTS `dev_fd_silver`.`ben_sales`.`customer_orders` (
+    customer_id STRING,
+    first_name STRING,
+    last_name STRING,
+    email STRING,
+    country STRING,
+    order_id STRING NOT NULL,
+    product STRING,
+    quantity STRING,
+    unit_price STRING,
+    line_total STRING,
+    order_date STRING,
+    _lineage STRUCT<schema_version: STRING, model: STRING, sources: STRING, git_commit: STRING, deployed_at: STRING, compute_type: STRING, contract_id: STRING, version: STRING, columns: ARRAY<STRUCT<name: STRING, expression: STRING, op: STRING>>>
+) USING DELTA;
+
+TRUNCATE TABLE `dev_fd_silver`.`ben_sales`.`customer_orders`;
+
+INSERT INTO `dev_fd_silver`.`ben_sales`.`customer_orders`
 SELECT
     c.customer_id,
     c.first_name,
@@ -24,7 +39,7 @@ SELECT
         'model', 'customer_orders',
         'sources', 'customer_clean, stg_orders',
         'git_commit', 'unknown',
-        'deployed_at', '2026-03-24T16:36:04.526701+00:00',
+        'deployed_at', '2026-03-24T18:34:04.811826+00:00',
         'compute_type', 'serverless',
         'contract_id', 'ben_sales.customer_orders',
         'version', 'v1',

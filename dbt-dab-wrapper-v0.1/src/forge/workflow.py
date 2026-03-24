@@ -222,7 +222,7 @@ class Workflow:
         # Include forge wheel if any python tasks exist
         has_python_tasks = any(t.task_type == "python" for t in self.tasks)
         if has_python_tasks:
-            env_deps.append({"whl": "../dist/*.whl"})
+            env_deps.append({"whl": "../../dist/*.whl"})
 
         job["resources"]["jobs"][self.name]["environments"] = [
             {
@@ -377,6 +377,17 @@ def generate_bundle_config(forge_config: dict, job_yaml_paths: list[str] | None 
     sync_include = ["dbt-dab-tools/"]
     if sql_mode:
         sync_include.append("sql/")
+    # Python tasks need the script files and the vendored forge package
+    if Path("python").is_dir():
+        sync_include.append("python/")
+    if Path("forge").is_dir():
+        sync_include.append("forge/")
+    # dbt metadata (schema.yml) needed by build_models() at runtime
+    if Path("dbt").is_dir():
+        sync_include.append("dbt/")
+    # forge.yml needed by ForgeTask at runtime
+    if Path("forge.yml").exists():
+        sync_include.append("forge.yml")
 
     bundle: dict[str, Any] = {
         "bundle": {
@@ -841,14 +852,24 @@ def build_workflow(
 
     domain_name = forge_config.get("_domain")  # set by build_domain_workflows
     ingest_task_names: list[str] = []
+
+    # Build runtime params: pass resolved catalog/schema to python tasks
+    # so they don't need to re-resolve naming patterns on Databricks
+    # (where getpass.getuser() returns a Spark session ID, not the deployer).
+    runtime_params: list[str] = []
+    for var_key, var_val in dbt_vars.items():
+        runtime_params.append(f"--{var_key}={var_val}")
+
     for pt in python_tasks:
         if "python" in managed_by_values or pt["name"] in managed_by_values:
             # DDL-driven ingest task → first task in PROCESS
             pt_name = f"ingest_py_{pt['name']}"
 
-            pt_config: dict[str, Any] | None = None
+            params = list(runtime_params)
             if domain_name:
-                pt_config = {"parameters": [f"--domain={domain_name}"]}
+                params.append(f"--domain={domain_name}")
+
+            pt_config: dict[str, Any] | None = {"parameters": params} if params else None
 
             tasks.insert(0, WorkflowTask(
                 name=pt_name,
@@ -1078,6 +1099,28 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
             compute_type=compute_type,
         ))
 
+    # Volumes task — CREATE VOLUME IF NOT EXISTS
+    sql_dir = Path("sql")
+    if sql_dir.is_dir():
+        for f in sorted(sql_dir.iterdir()):
+            if f.name.endswith("_volumes.sql"):
+                try:
+                    header = f.read_text().split("\n", 3)[:3]
+                except Exception:
+                    continue
+                if any("-- Volumes" in line for line in header):
+                    vol_deps = [tasks[-1].name] if tasks else ["setup"]
+                    tasks.append(WorkflowTask(
+                        name="create_volumes",
+                        stage="ingest",
+                        task_type="sql",
+                        sql_file=f"sql/{f.name}",
+                        models=[],
+                        depends_on=vol_deps,
+                        compute_type=compute_type,
+                    ))
+                    break
+
     # Managed-by models — CREATE TABLE IF NOT EXISTS (schema only)
     # DDL managed_by values drive which python tasks belong in SETUP.
     managed_by_tasks: list[str] = []
@@ -1117,6 +1160,34 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
                 compute_type=compute_type,
             ))
             managed_by_tasks.append(task_name)
+
+    # Seed SQL files — seeds compiled to pure SQL (catalog-overridden seeds)
+    if sql_dir.is_dir():
+        last_setup_task = tasks[-1].name if tasks else "setup"
+        for f in sorted(sql_dir.iterdir()):
+            if f.suffix != ".sql":
+                continue
+            try:
+                header = f.read_text().split("\n", 5)[:5]
+            except Exception:
+                continue
+            is_seed = any("-- Seed:" in line for line in header)
+            if not is_seed:
+                continue
+            parts = f.stem.split("_", 1)
+            if not (parts[0].isdigit() and len(parts) > 1):
+                continue
+            seed_name = parts[1]
+            task_name = f"seed_{seed_name}"
+            tasks.append(WorkflowTask(
+                name=task_name,
+                stage="ingest",
+                task_type="sql",
+                sql_file=f"sql/{f.name}",
+                models=[],
+                depends_on=[last_setup_task],
+                compute_type=compute_type,
+            ))
 
     return Workflow(
         name=f"SETUP_{project_id}",

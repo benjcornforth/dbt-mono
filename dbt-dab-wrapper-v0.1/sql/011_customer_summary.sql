@@ -4,9 +4,23 @@
 
 CREATE SCHEMA IF NOT EXISTS `dev_fd_silver`.`ben_sales`;
 
-CREATE OR REPLACE TABLE `dev_fd_silver`.`ben_sales`.`customer_summary`
-USING DELTA
-AS
+CREATE TABLE IF NOT EXISTS `dev_fd_silver`.`ben_sales`.`customer_summary` (
+    customer_id INT NOT NULL,
+    first_name STRING,
+    last_name STRING,
+    email STRING,
+    country STRING,
+    total_orders INT,
+    total_revenue DECIMAL(10,2),
+    first_order_date DATE,
+    last_order_date DATE,
+    tier STRING,
+    _lineage STRUCT<schema_version: STRING, model: STRING, sources: STRING, git_commit: STRING, deployed_at: STRING, compute_type: STRING, contract_id: STRING, version: STRING, columns: ARRAY<STRUCT<name: STRING, expression: STRING, op: STRING>>>
+) USING DELTA;
+
+TRUNCATE TABLE `dev_fd_silver`.`ben_sales`.`customer_summary`;
+
+INSERT INTO `dev_fd_silver`.`ben_sales`.`customer_summary`
 SELECT
     customer_id,
     first_name,
@@ -17,13 +31,13 @@ SELECT
     sum(line_total) as total_revenue,
     min(order_date) as first_order_date,
     max(order_date) as last_order_date,
-    `dev_fd_silver`.`ben_sales`.loyalty_tier(total_revenue) as tier,
+    `dev_fd_silver`.`ben_sales`.loyalty_tier(sum(line_total)) as tier,
     named_struct(
         'schema_version', '3',
         'model', 'customer_summary',
         'sources', 'customer_orders',
         'git_commit', 'unknown',
-        'deployed_at', '2026-03-24T16:36:04.526701+00:00',
+        'deployed_at', '2026-03-24T18:34:04.811826+00:00',
         'compute_type', 'serverless',
         'contract_id', 'ben_sales.customer_summary',
         'version', 'v1',

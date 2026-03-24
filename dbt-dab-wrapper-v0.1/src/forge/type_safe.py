@@ -215,6 +215,9 @@ def _make_model_class(
     annotations: dict[str, Any] = {}
 
     for col in columns:
+        # Skip forge internal columns (leading underscore is invalid in Pydantic v2)
+        if col["name"].startswith("_"):
+            continue
         py_type = _python_type_for_sql(col["type"])
         if col["nullable"]:
             annotations[col["name"]] = py_type | None
@@ -222,14 +225,6 @@ def _make_model_class(
         else:
             annotations[col["name"]] = py_type
             # no default — forces the caller to supply it
-
-    # Add _lineage field with auto-populated defaults
-    annotations["_lineage"] = Lineage
-    default_lineage = Lineage(
-        model=model_name,
-        contract_id=f"{schema}.{model_name}",
-    )
-    field_defs["_lineage"] = Field(default_factory=lambda dl=default_lineage: dl.model_copy())
 
     # Build the class
     namespace: dict[str, Any] = {
@@ -560,18 +555,39 @@ def build_models(
     elif schema_yml_path:
         tables = _load_columns_from_schema_yml(Path(schema_yml_path))
     else:
-        # Auto-discover
-        for candidate in [
-            Path("target/manifest.json"),
-            Path("dbt/models/schema.yml"),
-        ]:
-            if candidate.exists():
-                if candidate.name == "manifest.json":
-                    tables = _load_columns_from_manifest(candidate)
-                else:
-                    tables = _load_columns_from_schema_yml(candidate)
+        # Auto-discover: check relative paths + paths relative to the
+        # calling script (needed on Databricks where CWD != project root).
+        import sys as _sys
+        search_roots = [Path(".")]
+        try:
+            # On Databricks, co_filename points to the actual script under
+            # .bundle/<name>/<target>/files/python/<script>.py
+            # so files/ is the project root.
+            _caller = Path(_sys._getframe(1).f_code.co_filename)
+            _files_root = _caller.parent.parent  # python/ -> files/
+            if _files_root != Path("."):
+                search_roots.append(_files_root)
+        except (AttributeError, ValueError):
+            pass
+
+        candidates = [
+            "target/manifest.json",
+            "dbt/models/schema.yml",
+        ]
+        found = False
+        for root in search_roots:
+            for rel in candidates:
+                p = root / rel
+                if p.exists():
+                    if p.name == "manifest.json":
+                        tables = _load_columns_from_manifest(p)
+                    else:
+                        tables = _load_columns_from_schema_yml(p)
+                    found = True
+                    break
+            if found:
                 break
-        else:
+        if not found:
             raise FileNotFoundError(
                 "No manifest.json or schema.yml found. "
                 "Run 'dbt compile' or provide a path."

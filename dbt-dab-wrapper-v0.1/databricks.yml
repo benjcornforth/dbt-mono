@@ -13,6 +13,10 @@ sync:
   include:
   - dbt-dab-tools/
   - sql/
+  - python/
+  - forge/
+  - dbt/
+  - forge.yml
 targets:
   dev:
     workspace:

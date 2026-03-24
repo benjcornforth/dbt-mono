@@ -415,6 +415,13 @@ def resolve_model_schema(
     # 1. Explicit model-level override
     model_schema = model_def.get("schema")
     model_catalog = model_def.get("catalog")
+
+    # Resolve logical names through the maps whenever provided
+    if model_catalog and catalogs_map:
+        model_catalog = catalogs_map.get(model_catalog, model_catalog)
+    if model_schema and schemas_map:
+        model_schema = schemas_map.get(model_schema, model_schema)
+
     if model_schema and model_catalog:
         return model_catalog, model_schema
     if model_schema:

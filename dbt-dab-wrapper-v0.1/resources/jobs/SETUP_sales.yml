@@ -32,30 +32,46 @@ resources:
           warehouse_id: 724607f766691c81
         depends_on:
         - task_key: create_udfs
+      - task_key: create_volumes
+        timeout_seconds: 3600
+        sql_task:
+          file:
+            path: ../../sql/002_volumes.sql
+          warehouse_id: 724607f766691c81
+        depends_on:
+        - task_key: seed_lineage_graph
       - task_key: create_file_manifest
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/002_file_manifest.sql
+            path: ../../sql/004_file_manifest.sql
           warehouse_id: 724607f766691c81
         depends_on:
-        - task_key: seed_lineage_graph
+        - task_key: create_volumes
       - task_key: create_raw_customers
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/003_raw_customers.sql
+            path: ../../sql/005_raw_customers.sql
           warehouse_id: 724607f766691c81
         depends_on:
-        - task_key: seed_lineage_graph
+        - task_key: create_volumes
       - task_key: create_raw_orders
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/004_raw_orders.sql
+            path: ../../sql/006_raw_orders.sql
           warehouse_id: 724607f766691c81
         depends_on:
-        - task_key: seed_lineage_graph
+        - task_key: create_volumes
+      - task_key: seed_ingestion_config
+        timeout_seconds: 3600
+        sql_task:
+          file:
+            path: ../../sql/003_ingestion_config.sql
+          warehouse_id: 724607f766691c81
+        depends_on:
+        - task_key: create_raw_orders
       environments:
       - environment_key: default
         spec:

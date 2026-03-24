@@ -8,11 +8,20 @@ resources:
         environment_key: default
         spark_python_task:
           python_file: ../../python/ingest_from_volume.py
+          parameters:
+          - --schema_bronze=ben_sales
+          - --schema_silver=ben_sales
+          - --schema_gold=ben_sales
+          - --catalog_bronze=dev_fd_bronze
+          - --catalog_silver=dev_fd_silver
+          - --catalog_meta=dev_fd_meta
+          - --git_commit=local
+          - --compute_type=serverless
       - task_key: stage_customer_orders
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/008_customer_orders.sql
+            path: ../../sql/010_customer_orders.sql
           warehouse_id: 724607f766691c81
         depends_on:
         - task_key: clean_customer_clean
@@ -21,7 +30,7 @@ resources:
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/009_customer_summary.sql
+            path: ../../sql/011_customer_summary.sql
           warehouse_id: 724607f766691c81
         depends_on:
         - task_key: stage_customer_orders
@@ -29,7 +38,7 @@ resources:
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/005_stg_customers.sql
+            path: ../../sql/007_stg_customers.sql
           warehouse_id: 724607f766691c81
         depends_on:
         - task_key: ingest_py_ingest_from_volume
@@ -37,7 +46,7 @@ resources:
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/007_stg_orders.sql
+            path: ../../sql/009_stg_orders.sql
           warehouse_id: 724607f766691c81
         depends_on:
         - task_key: ingest_py_ingest_from_volume
@@ -45,7 +54,7 @@ resources:
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/006_customer_clean.sql
+            path: ../../sql/008_customer_clean.sql
           warehouse_id: 724607f766691c81
         depends_on:
         - task_key: stage_stg_customers
@@ -53,7 +62,7 @@ resources:
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/006_customer_clean_quarantine.sql
+            path: ../../sql/008_customer_clean_quarantine.sql
           warehouse_id: 724607f766691c81
         depends_on:
         - task_key: clean_customer_clean
@@ -65,4 +74,4 @@ resources:
           - dbt-databricks
           - pydantic>=2.0
           - pyyaml
-          - whl: ../dist/*.whl
+          - whl: ../../dist/*.whl

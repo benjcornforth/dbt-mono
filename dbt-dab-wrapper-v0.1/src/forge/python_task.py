@@ -92,12 +92,23 @@ class ForgeTask:
 
     @staticmethod
     def _find_config() -> Path:
-        """Walk up from cwd to find forge.yml."""
+        """Find forge.yml — checks CWD parents, then relative to this module."""
+        # 1. Walk up from CWD (works locally)
         current = Path.cwd()
         for parent in [current, *current.parents]:
             candidate = parent / "forge.yml"
             if candidate.exists():
                 return candidate
+
+        # 2. On Databricks, CWD is not the project root.
+        #    This module lives at files/forge/python_task.py,
+        #    so forge.yml is at files/forge.yml (one level up from this file).
+        module_dir = Path(__file__).resolve().parent   # forge/
+        files_root = module_dir.parent                  # files/
+        candidate = files_root / "forge.yml"
+        if candidate.exists():
+            return candidate
+
         raise FileNotFoundError(
             "No forge.yml found. Run from your project directory "
             "or pass config_path explicitly."
@@ -141,7 +152,7 @@ class ForgeTask:
         """
         model_def = model_def or {}
         catalog, schema = resolve_model_schema(
-            model_name, model_def, self._profile, self._config,
+            model_name, model_def, self._expanded, self._config,
         )
         return f"{catalog}.{schema}.{model_name}"
 
