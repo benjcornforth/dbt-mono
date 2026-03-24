@@ -108,19 +108,22 @@ RETURN (
       ON l.model = g.target_model
     WHERE l.depth < 10
   )
-  SELECT concat_ws('\n', collect_list(
-    concat(
-      '[', CAST(depth AS STRING), '] ',
-      model, '.', key_column, ' = ', key_value,
-      CASE WHEN transform_type IS NOT NULL
-           THEN concat(' (', transform_type,
-                CASE WHEN expression IS NOT NULL AND expression != ''
-                     THEN concat(': ', expression) ELSE '' END, ')')
-           ELSE '' END
-    )
-  ))
-  FROM lineage
-  ORDER BY depth
+  SELECT concat_ws('\n', collect_list(line))
+  FROM (
+    SELECT
+      depth,
+      concat(
+        '[', CAST(depth AS STRING), '] ',
+        model, '.', key_column, ' = ', key_value,
+        CASE WHEN transform_type IS NOT NULL
+             THEN concat(' (', transform_type,
+                  CASE WHEN expression IS NOT NULL AND expression != ''
+                       THEN concat(': ', expression) ELSE '' END, ')')
+             ELSE '' END
+      ) AS line
+    FROM lineage
+    ORDER BY depth
+  )
 );
 
 -- UDF: trace_lineage_json
@@ -156,18 +159,21 @@ RETURN (
       ON l.model = g.target_model
     WHERE l.depth < 10
   )
-  SELECT to_json(collect_list(named_struct(
-    'depth', depth,
-    'model', model,
-    'key_column', key_column,
-    'key_value', key_value,
-    'transform_type', transform_type,
-    'expression', expression,
-    'catalog', source_catalog,
-    'schema', source_schema
-  )))
-  FROM lineage
-  ORDER BY depth
+  SELECT to_json(collect_list(node))
+  FROM (
+    SELECT named_struct(
+      'depth', depth,
+      'model', model,
+      'key_column', key_column,
+      'key_value', key_value,
+      'transform_type', transform_type,
+      'expression', expression,
+      'catalog', source_catalog,
+      'schema', source_schema
+    ) AS node
+    FROM lineage
+    ORDER BY depth
+  )
 );
 
 -- UDF: last_run_id
