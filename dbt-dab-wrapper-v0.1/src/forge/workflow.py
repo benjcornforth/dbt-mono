@@ -835,9 +835,21 @@ def build_workflow(
             prev_task_name = task_name
 
     # ── Python tasks ──────────────────────────────────
+    # DDL-driven: python tasks that match managed_by values belong in SETUP, not here.
+    # Collect managed_by values from graph contracts (derived from DDL).
+    managed_by_values: set[str] = set()
+    for cid, contract in contracts.items():
+        mb = contract.get("_meta", {}).get("managed_by")
+        if mb:
+            managed_by_values.add(mb)
+
     domain_name = forge_config.get("_domain")  # set by build_domain_workflows
     for stage in STAGES:
         for pt in python_by_stage[stage]:
+            # DDL-driven: skip python tasks that are placed in SETUP
+            # (they match managed_by values from DDL)
+            if "python" in managed_by_values or pt["name"] in managed_by_values:
+                continue
             pt_name = f"{stage}_py_{pt['name']}"
             pt_deps: list[str] = []
             for dep in pt.get("depends_on", []):
@@ -1052,28 +1064,37 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
             compute_type=compute_type,
         ))
 
-    # Managed-by-python models — CREATE TABLE IF NOT EXISTS (schema only)
-    # These must run before PROCESS so the python ingest task can write to them.
+    # Managed-by models — CREATE TABLE IF NOT EXISTS (schema only)
+    # DDL managed_by values drive which python tasks belong in SETUP.
+    managed_by_tasks: list[str] = []
+    managed_by_values: set[str] = set()  # e.g. {"python"} or {"ingest_from_volume"}
     sql_dir = Path("sql")
     if sql_dir.is_dir():
         last_setup_task = tasks[-1].name if tasks else "setup"
         for f in sorted(sql_dir.iterdir()):
             if f.suffix != ".sql":
                 continue
-            # Check for managed_by marker in file header
+            # Check for managed_by marker in file header (derived from DDL)
             try:
                 header = f.read_text().split("\n", 5)[:5]
             except Exception:
                 continue
-            if not any("-- Managed by:" in line for line in header):
+            managed_by_val = None
+            for line in header:
+                if "-- Managed by:" in line:
+                    managed_by_val = line.split("-- Managed by:", 1)[1].strip()
+                    break
+            if not managed_by_val:
                 continue
+            managed_by_values.add(managed_by_val)
             # Extract model name from "NNN_model_name.sql"
             parts = f.stem.split("_", 1)
             if not (parts[0].isdigit() and len(parts) > 1):
                 continue
             model_name = parts[1]
+            task_name = f"create_{model_name}"
             tasks.append(WorkflowTask(
-                name=f"create_{model_name}",
+                name=task_name,
                 stage="ingest",
                 task_type="sql",
                 sql_file=f"sql/{f.name}",
@@ -1081,6 +1102,28 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
                 depends_on=[last_setup_task],
                 compute_type=compute_type,
             ))
+            managed_by_tasks.append(task_name)
+
+    # Python tasks whose models are managed_by (DDL-driven).
+    # The managed_by value in DDL determines which python tasks belong here:
+    #   managed_by: python             → matches all python tasks
+    #   managed_by: ingest_from_volume → matches python task by name
+    if managed_by_values:
+        from forge.python_task import load_python_tasks
+        python_tasks = load_python_tasks(forge_config)
+        for pt in python_tasks:
+            # Match: DDL says "python" (generic) or names this specific task
+            if "python" in managed_by_values or pt["name"] in managed_by_values:
+                pt_deps = list(managed_by_tasks) if managed_by_tasks else [tasks[-1].name]
+                tasks.append(WorkflowTask(
+                    name=f"ingest_py_{pt['name']}",
+                    stage="ingest",
+                    task_type="python",
+                    python_file=pt["file"],
+                    models=[],
+                    depends_on=pt_deps,
+                    compute_type=compute_type,
+                ))
 
     return Workflow(
         name=f"SETUP_{project_id}",

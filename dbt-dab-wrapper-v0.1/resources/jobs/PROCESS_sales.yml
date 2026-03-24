@@ -48,11 +48,6 @@ resources:
           warehouse_id: 724607f766691c81
         depends_on:
         - task_key: clean_customer_clean
-      - task_key: ingest_py_ingest_from_volume
-        timeout_seconds: 3600
-        environment_key: default
-        spark_python_task:
-          python_file: ../../python/ingest_from_volume.py
       environments:
       - environment_key: default
         spec:
@@ -61,4 +56,3 @@ resources:
           - dbt-databricks
           - pydantic>=2.0
           - pyyaml
-          - whl: ../dist/*.whl

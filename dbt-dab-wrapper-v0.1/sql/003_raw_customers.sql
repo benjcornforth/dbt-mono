@@ -26,14 +26,14 @@ SELECT
 -- Lineage log (run_id captured at runtime)
 INSERT INTO `dev_fd_meta`.`ben_sales`.lineage_log
     (run_id, model, materialized, rows_created, catalog, schema, sources, git_commit, completed_at)
-VALUES (
+SELECT
     '{{job.run_id}}',
     'raw_customers',
     'managed_by_python',
-    (SELECT COUNT(*) FROM `dev_fd_bronze`.`ben_sales`.`raw_customers`),
+    COUNT(*),
     'dev_fd_bronze',
     'ben_sales',
     '',
     'unknown',
     current_timestamp()
-);
+FROM `dev_fd_bronze`.`ben_sales`.`raw_customers`;

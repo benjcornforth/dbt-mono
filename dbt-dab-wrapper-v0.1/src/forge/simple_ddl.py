@@ -1656,7 +1656,9 @@ def compile_lineage_graph_sql(
     lines.append(f"TRUNCATE TABLE {fq_graph};")
     lines.append("")
 
-    # ── INSERT edges from DDL ──
+    # ── Collect all edge rows, then emit a single INSERT ──
+    value_rows: list[str] = []
+
     for model_name, model_def in models.items():
         if isinstance(model_def, str):
             model_def = {"source": model_def}
@@ -1742,27 +1744,30 @@ def compile_lineage_graph_sql(
                 source_col = col_name  # Same name unless expr references different cols
 
                 _e = (expr or "").replace("'", "''")
-                lines.append(
-                    f"INSERT INTO {fq_graph} "
-                    f"(target_model, source_model, target_column, source_column, "
-                    f"join_key, source_key, transform_type, expression, "
-                    f"target_catalog, target_schema, source_catalog, source_schema) VALUES "
-                    f"('{model_name}', '{source_name}', '{col_name}', '{source_col}', "
+                value_rows.append(
+                    f"  ('{model_name}', '{source_name}', '{col_name}', '{source_col}', "
                     f"'{join_key}', '{source_key}', '{transform}', '{_e}', "
-                    f"'{t_cat}', '{t_sch}', '{s_cat}', '{s_sch}');"
+                    f"'{t_cat}', '{t_sch}', '{s_cat}', '{s_sch}')"
                 )
                 has_column_edges = True
 
             # If no column-level edges, add a model-level edge
             if not has_column_edges:
                 transform = "JOIN" if is_join else "SOURCE"
-                lines.append(
-                    f"INSERT INTO {fq_graph} "
-                    f"(target_model, source_model, join_key, source_key, transform_type, "
-                    f"target_catalog, target_schema, source_catalog, source_schema) VALUES "
-                    f"('{model_name}', '{source_name}', '{join_key}', '{source_key}', '{transform}', "
-                    f"'{t_cat}', '{t_sch}', '{s_cat}', '{s_sch}');"
+                value_rows.append(
+                    f"  ('{model_name}', '{source_name}', NULL, NULL, "
+                    f"'{join_key}', '{source_key}', '{transform}', NULL, "
+                    f"'{t_cat}', '{t_sch}', '{s_cat}', '{s_sch}')"
                 )
+
+    if value_rows:
+        lines.append(
+            f"INSERT INTO {fq_graph} "
+            f"(target_model, source_model, target_column, source_column, "
+            f"join_key, source_key, transform_type, expression, "
+            f"target_catalog, target_schema, source_catalog, source_schema) VALUES"
+        )
+        lines.append(",\n".join(value_rows) + ";")
 
     lines.append("")
     return "\n".join(lines) + "\n"
@@ -1805,17 +1810,17 @@ def compile_lineage_log_insert(
         f"\n-- Lineage log (run_id captured at runtime)\n"
         f"INSERT INTO {fq_log}\n"
         f"    (run_id, model, materialized, rows_created, catalog, schema, sources, git_commit, completed_at)\n"
-        f"VALUES (\n"
+        f"SELECT\n"
         f"    '{{{{job.run_id}}}}',\n"
         f"    '{model_name}',\n"
         f"    '{materialized}',\n"
-        f"    (SELECT COUNT(*) FROM {fq_model}),\n"
+        f"    COUNT(*),\n"
         f"    '{catalog}',\n"
         f"    '{schema}',\n"
         f"    '{sources}',\n"
         f"    '{git_commit}',\n"
         f"    current_timestamp()\n"
-        f");\n"
+        f"FROM {fq_model};\n"
     )
 
 

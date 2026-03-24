@@ -18,7 +18,7 @@ SELECT
         'model', 'stg_orders',
         'sources', 'raw_orders',
         'git_commit', 'unknown',
-        'deployed_at', '2026-03-24T15:45:09.284477+00:00',
+        'deployed_at', '2026-03-24T16:02:01.469903+00:00',
         'compute_type', 'serverless',
         'contract_id', 'ben_sales.stg_orders',
         'version', 'v1',
@@ -73,14 +73,14 @@ SELECT
 -- Lineage log (run_id captured at runtime)
 INSERT INTO `dev_fd_meta`.`ben_sales`.lineage_log
     (run_id, model, materialized, rows_created, catalog, schema, sources, git_commit, completed_at)
-VALUES (
+SELECT
     '{{job.run_id}}',
     'stg_orders',
     'view',
-    (SELECT COUNT(*) FROM `dev_fd_bronze`.`ben_sales`.`stg_orders`),
+    COUNT(*),
     'dev_fd_bronze',
     'ben_sales',
     'raw_orders',
     'unknown',
     current_timestamp()
-);
+FROM `dev_fd_bronze`.`ben_sales`.`stg_orders`;
