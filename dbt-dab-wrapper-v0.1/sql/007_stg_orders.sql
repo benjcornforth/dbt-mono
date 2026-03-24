@@ -18,7 +18,7 @@ SELECT
         'model', 'stg_orders',
         'sources', 'raw_orders',
         'git_commit', 'unknown',
-        'deployed_at', '2026-03-24T16:19:23.417517+00:00',
+        'deployed_at', '2026-03-24T16:36:04.526701+00:00',
         'compute_type', 'serverless',
         'contract_id', 'ben_sales.stg_orders',
         'version', 'v1',

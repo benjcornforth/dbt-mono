@@ -1168,17 +1168,26 @@ def build_teardown_workflow(forge_config: dict, graph: dict) -> Workflow:
             continue
         model_names.append(contract["dataset"]["name"])
 
-    # Single SQL task that drops all models, UDFs, and lineage tables
+    # Backup (deep-clone all tables) → then teardown (drop everything)
     tasks = [
+        WorkflowTask(
+            name="backup",
+            stage="serve",
+            task_type="sql",
+            sql_file="sql/backup.sql",
+            models=[],
+            depends_on=[],
+            compute_type=compute_type,
+        ),
         WorkflowTask(
             name="teardown",
             stage="serve",
             task_type="sql",
             sql_file="sql/teardown.sql",
             models=[],
-            depends_on=[],
+            depends_on=["backup"],
             compute_type=compute_type,
-        )
+        ),
     ]
 
     return Workflow(
