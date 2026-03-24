@@ -15,7 +15,6 @@ DROP FUNCTION IF EXISTS `dev_fd_silver`.`ben_sales`.clean_email;
 CREATE FUNCTION `dev_fd_silver`.`ben_sales`.clean_email(raw_email string)
 RETURNS string
 LANGUAGE PYTHON
-RUNTIME_VERSION = '3.11'
 HANDLER = 'clean'
 AS $$
 def clean(raw_email):
@@ -31,7 +30,6 @@ DROP FUNCTION IF EXISTS `dev_fd_silver`.`ben_sales`.average_score;
 CREATE FUNCTION `dev_fd_silver`.`ben_sales`.average_score(score_a double, score_b double)
 RETURNS double
 LANGUAGE PYTHON
-RUNTIME_VERSION = '3.11'
 PACKAGES ('pandas', 'numpy')
 HANDLER = 'compute'
 AS $$

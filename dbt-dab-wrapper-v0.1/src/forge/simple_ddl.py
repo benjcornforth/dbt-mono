@@ -632,7 +632,7 @@ def compile_schema_yml(models: dict[str, dict]) -> str:
 # forge udfs    → shows defined UDFs
 # Graph:          → adds purple UDF nodes
 
-def compile_udf_sql(udf_name: str, udf_def: dict, schema: str = "{{ target.catalog }}.{{ target.schema }}") -> str:
+def compile_udf_sql(udf_name: str, udf_def: dict, schema: str = "{{ target.catalog }}.{{ target.schema }}", compute_type: str = "serverless") -> str:
     """
     Compile a single UDF definition into a CREATE FUNCTION SQL statement.
 
@@ -688,7 +688,7 @@ def compile_udf_sql(udf_name: str, udf_def: dict, schema: str = "{{ target.catal
         lines.append(f"RETURN ({body});")
     elif language == "PYTHON":
         lines.append("LANGUAGE PYTHON")
-        if runtime_version:
+        if runtime_version and compute_type != "serverless":
             lines.append(f"RUNTIME_VERSION = '{runtime_version}'")
         if packages:
             pkg_str = ", ".join(f"'{p}'" for p in packages)
@@ -1486,7 +1486,7 @@ def compile_all_pure_sql(
                 udf_catalog = udf_catalog or resolved_cat
                 udf_schema = udf_schema or resolved_sch
             fq_schema = f"`{udf_catalog}`.`{udf_schema}`"
-            udf_lines.append(compile_udf_sql(udf_name, udf_def, schema=fq_schema))
+            udf_lines.append(compile_udf_sql(udf_name, udf_def, schema=fq_schema, compute_type=compute_type))
             udf_lines.append("")
         udf_path = output_dir / f"{seq:03d}_udfs.sql"
         udf_path.write_text("\n".join(udf_lines))
