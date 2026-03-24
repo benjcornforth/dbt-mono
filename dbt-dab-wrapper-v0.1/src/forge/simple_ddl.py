@@ -632,6 +632,75 @@ def compile_schema_yml(models: dict[str, dict]) -> str:
 # forge udfs    → shows defined UDFs
 # Graph:          → adds purple UDF nodes
 
+
+def _compile_table_stub(table_name: str, columns: dict, catalog: str, schema: str) -> str:
+    """Generate a CREATE TABLE IF NOT EXISTS stub from a model's column definitions.
+
+    Used to ensure tables exist before UDFs that reference them.
+    The stub is idempotent — safe even if the real table is created later.
+    """
+    fq_name = f"`{catalog}`.`{schema}`.`{table_name}`"
+    col_defs = []
+    for col_name, col_def in columns.items():
+        if isinstance(col_def, str):
+            col_def = {"type": col_def}
+        elif col_def is None:
+            col_def = {}
+        col_type = col_def.get("type", "STRING").upper()
+        type_map = {"INT": "INT", "STRING": "STRING", "DATE": "DATE",
+                    "BOOLEAN": "BOOLEAN", "DOUBLE": "DOUBLE", "FLOAT": "FLOAT",
+                    "BIGINT": "BIGINT", "SMALLINT": "SMALLINT", "TIMESTAMP": "TIMESTAMP"}
+        resolved_type = type_map.get(col_type, col_type)
+        constraints = ""
+        if col_def.get("required"):
+            constraints += " NOT NULL"
+        default = col_def.get("default")
+        if default is not None:
+            constraints += f" DEFAULT {default}"
+        col_defs.append(f"    {col_name} {resolved_type}{constraints}")
+
+    lines = [
+        f"CREATE TABLE IF NOT EXISTS {fq_name} (",
+        ",\n".join(col_defs),
+        ")",
+        "USING DELTA;",
+    ]
+    return "\n".join(lines)
+
+
+# ── Internal table schemas for forge-managed tables ──
+# These are used by compile_trace_lineage_udf's depends_on mechanism.
+
+_LINEAGE_GRAPH_COLUMNS: dict = {
+    "target_model": {"type": "STRING", "required": True},
+    "source_model": {"type": "STRING", "required": True},
+    "target_column": "STRING",
+    "source_column": "STRING",
+    "join_key": "STRING",
+    "source_key": "STRING",
+    "transform_type": {"type": "STRING", "required": True},
+    "expression": "STRING",
+    "target_catalog": {"type": "STRING", "required": True},
+    "target_schema": {"type": "STRING", "required": True},
+    "source_catalog": {"type": "STRING", "required": True},
+    "source_schema": {"type": "STRING", "required": True},
+    "git_commit": {"type": "STRING", "default": "'unknown'"},
+    "updated_at": {"type": "TIMESTAMP", "default": "current_timestamp()"},
+}
+
+_LINEAGE_LOG_COLUMNS: dict = {
+    "run_id": {"type": "STRING", "required": True},
+    "model": {"type": "STRING", "required": True},
+    "materialized": "STRING",
+    "rows_created": "BIGINT",
+    "catalog": "STRING",
+    "schema": "STRING",
+    "sources": "STRING",
+    "git_commit": "STRING",
+    "completed_at": {"type": "TIMESTAMP", "default": "current_timestamp()"},
+}
+
+
 def compile_udf_sql(udf_name: str, udf_def: dict, schema: str = "{{ target.catalog }}.{{ target.schema }}", compute_type: str = "serverless") -> str:
     """
     Compile a single UDF definition into a CREATE FUNCTION SQL statement.
@@ -1972,6 +2041,56 @@ def compile_all_pure_sql(
             udf_lines.append(f"CREATE SCHEMA IF NOT EXISTS `{cat}`.`{sch}`;")
         udf_lines.append("")
 
+        # ── Collect and emit table stubs for UDF depends_on ──
+        # User UDFs can declare depends_on: [model_name, ...] to reference
+        # tables in their body. Since the UDF file runs before model files,
+        # we emit CREATE TABLE IF NOT EXISTS stubs here.
+        emitted_stubs: set[str] = set()
+        dep_errors: list[str] = []
+
+        for udf_name, udf_def in udfs.items():
+            for dep in udf_def.get("depends_on", []):
+                if dep in emitted_stubs:
+                    continue
+                if dep not in models:
+                    dep_errors.append(
+                        f"  UDF '{udf_name}': depends_on '{dep}' but no model "
+                        f"with that name exists in models.yml"
+                    )
+                    continue
+                dep_def = models[dep]
+                if isinstance(dep_def, str) or dep_def is None:
+                    dep_errors.append(
+                        f"  UDF '{udf_name}': depends_on '{dep}' but that model "
+                        f"has no column definitions (needed for table stub)"
+                    )
+                    continue
+                dep_cols = dep_def.get("columns", {})
+                if not dep_cols:
+                    dep_errors.append(
+                        f"  UDF '{udf_name}': depends_on '{dep}' but that model "
+                        f"has no columns defined (needed for table stub)"
+                    )
+                    continue
+                dep_cat, dep_sch = model_locations[dep]
+                udf_lines.append(f"-- Table stub for UDF dependency: {dep}")
+                udf_lines.append(_compile_table_stub(dep, dep_cols, dep_cat, dep_sch))
+                udf_lines.append("")
+                emitted_stubs.add(dep)
+
+        if dep_errors:
+            raise RuntimeError(
+                "Compile error: UDF depends_on references could not be resolved.\n"
+                + "\n".join(dep_errors)
+            )
+
+        # ── Lineage table stubs (internal depends_on for trace_lineage UDFs) ──
+        udf_lines.append("-- Table stubs for lineage UDFs (forge-internal)")
+        udf_lines.append(_compile_table_stub("lineage_graph", _LINEAGE_GRAPH_COLUMNS, meta_cat, meta_sch))
+        udf_lines.append("")
+        udf_lines.append(_compile_table_stub("lineage_log", _LINEAGE_LOG_COLUMNS, meta_cat, meta_sch))
+        udf_lines.append("")
+
         for udf_name, udf_catalog, udf_schema in udf_schemas:
             fq_schema = f"`{udf_catalog}`.`{udf_schema}`"
             udf_lines.append(compile_udf_sql(udf_name, udfs[udf_name], schema=fq_schema, compute_type=compute_type))
@@ -1989,6 +2108,12 @@ def compile_all_pure_sql(
         schema_lines = []
         for cat, sch in sorted(all_schemas):
             schema_lines.append(f"CREATE SCHEMA IF NOT EXISTS `{cat}`.`{sch}`;")
+        schema_lines.append("")
+        # Lineage table stubs for trace_lineage UDFs
+        schema_lines.append("-- Table stubs for lineage UDFs (forge-internal)")
+        schema_lines.append(_compile_table_stub("lineage_graph", _LINEAGE_GRAPH_COLUMNS, meta_cat, meta_sch))
+        schema_lines.append("")
+        schema_lines.append(_compile_table_stub("lineage_log", _LINEAGE_LOG_COLUMNS, meta_cat, meta_sch))
         schema_lines.append("")
         lineage_udf_sql = "\n".join(schema_lines) + compile_trace_lineage_udf(meta_cat, meta_sch, compute_type=compute_type)
         udf_path = output_dir / f"{seq:03d}_udfs.sql"

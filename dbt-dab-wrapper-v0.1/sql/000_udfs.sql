@@ -2,6 +2,38 @@ CREATE SCHEMA IF NOT EXISTS `dev_fd_bronze`.`ben_sales`;
 CREATE SCHEMA IF NOT EXISTS `dev_fd_meta`.`ben_sales`;
 CREATE SCHEMA IF NOT EXISTS `dev_fd_silver`.`ben_sales`;
 
+-- Table stubs for lineage UDFs (forge-internal)
+CREATE TABLE IF NOT EXISTS `dev_fd_meta`.`ben_sales`.`lineage_graph` (
+    target_model STRING NOT NULL,
+    source_model STRING NOT NULL,
+    target_column STRING,
+    source_column STRING,
+    join_key STRING,
+    source_key STRING,
+    transform_type STRING NOT NULL,
+    expression STRING,
+    target_catalog STRING NOT NULL,
+    target_schema STRING NOT NULL,
+    source_catalog STRING NOT NULL,
+    source_schema STRING NOT NULL,
+    git_commit STRING DEFAULT 'unknown',
+    updated_at TIMESTAMP DEFAULT current_timestamp()
+)
+USING DELTA;
+
+CREATE TABLE IF NOT EXISTS `dev_fd_meta`.`ben_sales`.`lineage_log` (
+    run_id STRING NOT NULL,
+    model STRING NOT NULL,
+    materialized STRING,
+    rows_created BIGINT,
+    catalog STRING,
+    schema STRING,
+    sources STRING,
+    git_commit STRING,
+    completed_at TIMESTAMP DEFAULT current_timestamp()
+)
+USING DELTA;
+
 -- UDF: loyalty_tier
 -- Assigns GOLD/SILVER/BRONZE based on revenue
 DROP FUNCTION IF EXISTS `dev_fd_silver`.`ben_sales`.loyalty_tier;
