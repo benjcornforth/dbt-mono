@@ -8,9 +8,7 @@
 seeds:
   ingestion_config:
     description: "File-matching rules for Volume ingestion"
-    domain: false
-    catalog: meta
-    schema: config
+    namespace: config
     origin:
       type: seed
       path: dbt/seeds/ingestion_config.csv

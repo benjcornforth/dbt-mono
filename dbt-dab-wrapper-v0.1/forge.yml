@@ -5,24 +5,86 @@
 name: sales_data
 scope: fd
 id: sales
-active_profile: dev
 
-# ── Naming Patterns ──
-# Tokens: {env}, {id}, {scope}, {user}, {catalog}, {schema}
-catalog_pattern: "{env}_{scope}_{catalog}"     # → dev_fd_bronze
-schema_pattern:  "{user}_{id}"                 # → ben_sales
-skip_env_prefix: [prd, prod]
+placements:
+  families:
+    domain:
+      allowed_classes: [domain]
+      allowed_layers: [bronze, silver, gold]
+      catalog_pattern: "{env}_{scope}_{layer}"
+      schema_pattern: "{user}_{domain}"
 
-catalogs: [bronze, silver, meta]
-schemas:  [bronze, silver, gold]
+    shared_meta:
+      allowed_classes: [shared]
+      allowed_layers: [meta]
+      catalog_pattern: "{env}_{scope}_meta"
+      schema_pattern: "{user}_{namespace}"
 
-# ── Profiles ──
+    shared_ops:
+      allowed_classes: [shared]
+      allowed_layers: [operations]
+      catalog_pattern: "{env}_{scope}_ops"
+      schema_pattern: "{user}_{namespace}"
+
+    system_meta:
+      allowed_classes: [system]
+      allowed_layers: [meta]
+      catalog_pattern: "{env}_{scope}_meta"
+      schema_pattern: "{user}_{system}"
+
+    system_ops:
+      allowed_classes: [system]
+      allowed_layers: [operations]
+      catalog_pattern: "{env}_{scope}_ops"
+      schema_pattern: "{user}_{system}"
+
+domains:
+  sales:
+    placement_family: domain
+
+shared_namespaces:
+  config:
+    placement_family: shared_meta
+    layer: meta
+
+  metadata:
+    placement_family: shared_meta
+    layer: meta
+
+  operations:
+    placement_family: shared_ops
+    layer: operations
+
+system_assets:
+  lineage:
+    enabled: true
+    placement_family: system_meta
+    layer: meta
+    system: lineage
+
+  quarantine:
+    enabled: true
+    placement_family: system_meta
+    layer: meta
+    system: quarantine
+
+  backups:
+    enabled: true
+    placement_family: system_ops
+    layer: operations
+    system: backups
+
+  deployment_state:
+    enabled: true
+    placement_family: system_ops
+    layer: operations
+    system: deploy
+
 profiles:
   dev:
     platform: databricks
     databricks_profile: dev
     env: dev
-    catalog: bronze
     compute:
       type: serverless
       auto_scale: true
@@ -31,10 +93,9 @@ profiles:
     platform: databricks
     databricks_profile: PROD
     env: prd
-    catalog: bronze
     compute:
       type: serverless
-    schedule: "0 0 6 * * ?"           # daily at 6 AM UTC
+    schedule: "0 0 6 * * ?"
 
   local:
     platform: postgres
@@ -43,17 +104,22 @@ profiles:
       port: 5432
       database: sales_db
     catalog: public
-    schemas:
-      bronze: bronze
-      silver: silver
-      gold: gold
-    catalogs:
-      bronze: public
-      silver: public
+    schema: sales
+    overrides:
+      placement_families:
+        domain:
+          catalog: public
+        shared_meta:
+          catalog: public
+        shared_ops:
+          catalog: public
+        system_meta:
+          catalog: public
+        system_ops:
+          catalog: public
     compute:
       type: local
 
-# ── Features ──
 features:
   graph: true
   quarantine: true
@@ -61,7 +127,6 @@ features:
   prior_version: true
   python_udfs: true
 
-# ── Lineage ──
 lineage:
   mode: full
   origin_tracking: true

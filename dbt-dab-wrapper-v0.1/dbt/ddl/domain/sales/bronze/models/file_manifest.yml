@@ -10,7 +10,6 @@ models:
   file_manifest:
     description: "Tracks files ingested from Volumes"
     managed_by: ingest_from_volume
-    domain: true
     columns:
       file_path:       { type: string, required: true, description: "Full Volume path to the ingested file" }
       file_name:       { type: string, required: true, description: "File name only" }

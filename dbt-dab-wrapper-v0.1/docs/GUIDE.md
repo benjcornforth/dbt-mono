@@ -410,7 +410,7 @@ run in parallel on separate schedules if needed.
 
 | Mode | Behavior |
 |------|----------|
-| `separate` (default) | One workflow per domain: `PROCESS_demo_eu`, `PROCESS_demo_us`, etc. |
+| `separate` (default) | One workflow per domain. Names are generated from the project id plus the domain when needed, for example `PROCESS_regional_eu`. |
 | `shared` | Single workflow containing all domain instances |
 
 To switch to a shared workflow, add to forge.yml:
@@ -420,6 +420,8 @@ domain_workflows: shared
 ```
 
 ### forge.yml domain config
+
+Workflow partitioning is driven by domain metadata in the compiled graph, not by model-name suffixes.
 
 ```yaml
 # In forge.yml:

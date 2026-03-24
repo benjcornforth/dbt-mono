@@ -6,9 +6,9 @@
 DROP FUNCTION IF EXISTS `dev_fd_silver`.`ben_sales`.average_score;
 DROP FUNCTION IF EXISTS `dev_fd_silver`.`ben_sales`.clean_email;
 DROP FUNCTION IF EXISTS `dev_fd_silver`.`ben_sales`.loyalty_tier;
-DROP FUNCTION IF EXISTS `dev_fd_meta`.`ben_sales`.trace_lineage;
-DROP FUNCTION IF EXISTS `dev_fd_meta`.`ben_sales`.trace_lineage_json;
-DROP FUNCTION IF EXISTS `dev_fd_meta`.`ben_sales`.last_run_id;
+DROP FUNCTION IF EXISTS `dev_fd_meta`.`ben_lineage`.trace_lineage;
+DROP FUNCTION IF EXISTS `dev_fd_meta`.`ben_lineage`.trace_lineage_json;
+DROP FUNCTION IF EXISTS `dev_fd_meta`.`ben_lineage`.last_run_id;
 
 DROP TABLE IF EXISTS `dev_fd_silver`.`ben_sales`.`customer_summary`;
 DROP TABLE IF EXISTS `dev_fd_silver`.`ben_sales`.`customer_orders`;
@@ -19,8 +19,8 @@ DROP TABLE IF EXISTS `dev_fd_bronze`.`ben_sales`.`raw_orders`;
 DROP TABLE IF EXISTS `dev_fd_bronze`.`ben_sales`.`raw_customers`;
 DROP TABLE IF EXISTS `dev_fd_bronze`.`ben_sales`.`file_manifest`;
 
-DROP TABLE IF EXISTS `dev_fd_meta`.`ben_sales`.transform_quarantine;
-DROP TABLE IF EXISTS `dev_fd_meta`.`ben_sales`.ingest_quarantine;
-DROP TABLE IF EXISTS `dev_fd_meta`.`ben_sales`.lineage_graph;
-DROP TABLE IF EXISTS `dev_fd_meta`.`ben_sales`.lineage_log;
+DROP TABLE IF EXISTS `dev_fd_meta`.`ben_lineage`.transform_quarantine;
+DROP TABLE IF EXISTS `dev_fd_meta`.`ben_lineage`.ingest_quarantine;
+DROP TABLE IF EXISTS `dev_fd_meta`.`ben_lineage`.lineage_graph;
+DROP TABLE IF EXISTS `dev_fd_meta`.`ben_lineage`.lineage_log;
 

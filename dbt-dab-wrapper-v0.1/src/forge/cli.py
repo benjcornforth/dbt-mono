@@ -18,8 +18,13 @@
 # An engineer sees every line explained.
 
 import os
+import json
+import copy
+import shutil
 import typer
 import yaml
+from datetime import datetime, timezone
+from contextlib import contextmanager
 from pathlib import Path
 import subprocess
 from typing import Optional
@@ -119,72 +124,407 @@ def _resolve_ddl(ddl: str) -> Path:
     return Path(ddl)
 
 
-DEFAULT_CONFIG = {
-    "name": "my_project",
-    "active_profile": "dev",
-    "profiles": {
-        "dev": {
-            "platform": "databricks",
-            "databricks_profile": "DEFAULT",
-            "catalog": "main",
-            "schema": "dev_silver",
-            "compute": {"type": "serverless", "auto_scale": True},
-        },
-        "prod": {
-            "platform": "databricks",
-            "databricks_profile": "PROD",
-            "catalog": "main",
-            "schema": "silver",
-            "compute": {"type": "serverless"},
-        },
-    },
-    "dbt": {"version": "1.8.0"},
-    "features": {
-        "graph": True,
-        "quarantine": True,
-        "validation_exceptions": True,
-        "prior_version": True,
-        "python_udfs": True
-    },
-    "portability": {
-        "avoid_databricks_only": True,
-        "postgres_compatible": True
+def _require_profile_name(
+    config: dict,
+    *,
+    command_name: str,
+    profile: str | None = None,
+    target: str | None = None,
+) -> str:
+    profiles = config.get("profiles", {})
+    selected = target or profile
+
+    if not profiles:
+        typer.echo(f"❌ {command_name} requires a profiles: block in forge.yml.")
+        raise typer.Exit(1)
+
+    if not selected:
+        typer.echo(f"❌ {command_name} requires an explicit target/profile.")
+        typer.echo("   Specify --target <name> or --profile <name>.")
+        typer.echo(f"   Available profiles: {', '.join(profiles.keys())}")
+        raise typer.Exit(1)
+
+    if selected not in profiles:
+        typer.echo(f"❌ Unknown target/profile '{selected}'.")
+        typer.echo(f"   Available profiles: {', '.join(profiles.keys())}")
+        raise typer.Exit(1)
+
+    return selected
+
+
+def _artifact_targets_root() -> Path:
+    return _PROJECT_ROOT / "artifacts" / "targets"
+
+
+def _target_artifact_root(target: str) -> Path:
+    return _artifact_targets_root() / target
+
+
+@contextmanager
+def _pushd(path: Path):
+    previous = Path.cwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(previous)
+
+
+def _reset_dir(path: Path) -> None:
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def _copy_tree_if_exists(source: Path, destination: Path) -> None:
+    if source.is_dir():
+        shutil.copytree(source, destination, dirs_exist_ok=True)
+
+
+def _copy_file_if_exists(source: Path, destination: Path) -> None:
+    if source.is_file():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
+
+def _materialize_profile_config(config: dict, profile_name: str) -> tuple[dict, dict]:
+    profile = resolve_profile(config, profile_name=profile_name)
+    materialized_config = copy.deepcopy(config)
+    for legacy_key in [key for key in materialized_config if key.startswith("active") and key.endswith("profile")]:
+        materialized_config.pop(legacy_key, None)
+    materialized_config["profiles"] = {
+        profile_name: {
+            key: value
+            for key, value in profile.items()
+            if key != "_name"
+        }
     }
-}
+    materialized_config["catalog"] = profile.get("catalog", materialized_config.get("catalog", "main"))
+    materialized_config["schema"] = profile.get("schema", materialized_config.get("schema", "default"))
+    materialized_config["compute"] = profile.get("compute", materialized_config.get("compute", {}))
+    materialized_config["environment"] = profile.get("env", profile["_name"])
+    return materialized_config, profile
+
+
+def _resolve_target_config(config: dict, profile_name: str) -> tuple[dict, dict]:
+    return _materialize_profile_config(config, profile_name)
+
+
+def _stage_target_support_files(target_root: Path, target_config: dict) -> None:
+    _copy_tree_if_exists(_PROJECT_ROOT / "dbt" / "ddl", target_root / "dbt" / "ddl")
+    _copy_tree_if_exists(_PROJECT_ROOT / "dbt" / "seeds", target_root / "dbt" / "seeds")
+    _copy_tree_if_exists(_PROJECT_ROOT / "python", target_root / "python")
+    _copy_tree_if_exists(_PROJECT_ROOT / "macros", target_root / "macros")
+    _copy_file_if_exists(_PROJECT_ROOT / "dbt_project.yml", target_root / "dbt_project.yml")
+    _copy_file_if_exists(_PROJECT_ROOT / "packages.yml", target_root / "packages.yml")
+    _copy_file_if_exists(_PROJECT_ROOT / "package-lock.yml", target_root / "package-lock.yml")
+    generate_profiles_yml(target_config, output_path=target_root / "profiles.yml")
+    (target_root / "forge.yml").write_text(
+        yaml.dump(target_config, sort_keys=False, default_flow_style=False)
+    )
+    (target_root / "resources" / "jobs").mkdir(parents=True, exist_ok=True)
+
+
+def _build_and_stage_wheel(target_root: Path) -> list[str]:
+    subprocess.run(["poetry", "build"], check=True, cwd=_PROJECT_ROOT)
+    source_dist = _PROJECT_ROOT / "dist"
+    target_dist = target_root / "dist"
+    target_dist.mkdir(parents=True, exist_ok=True)
+
+    copied: list[str] = []
+    for wheel in sorted(source_dist.glob("*.whl")):
+        shutil.copy2(wheel, target_dist / wheel.name)
+        copied.append(str(Path("dist") / wheel.name))
+    if not copied:
+        raise FileNotFoundError("No wheel files were produced in dist/ after poetry build.")
+    return copied
+
+
+def _write_deploy_manifest(
+    target_root: Path,
+    *,
+    target: str,
+    target_config: dict,
+    pure_sql_results: dict[str, Path],
+    dbt_results: dict[str, Path],
+    job_artifacts: list[dict[str, str]],
+    wheel_paths: list[str],
+) -> Path:
+    def _normalize_artifact_path(path: Path) -> str:
+        return str(path.relative_to(target_root)) if path.is_absolute() else str(path)
+
+    payload = {
+        "target": target,
+        "profile": target,
+        "platform": (target_config.get("profiles", {}).get(target, {}) or {}).get("platform", "unknown"),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "git_commit": target_config.get("git_commit", "local"),
+        "artifacts": {
+            "sql": sorted(_normalize_artifact_path(path) for path in pure_sql_results.values()),
+            "dbt": sorted(
+                _normalize_artifact_path(path)
+                for key, path in dbt_results.items()
+                if not key.startswith("_schema") and not key.startswith("_sources")
+            ),
+            "jobs": sorted(job_artifacts, key=lambda job: job["name"]),
+            "bundle": "databricks.yml",
+            "wheel": wheel_paths,
+        },
+    }
+    manifest_path = target_root / "deploy_manifest.json"
+    manifest_path.write_text(json.dumps(payload, indent=2))
+    return manifest_path
+
+
+def _build_target_bundle(target: str, config: dict, sql_mode: bool) -> dict[str, Path | list[str] | str]:
+    target_root = _target_artifact_root(target)
+    _reset_dir(target_root)
+
+    target_config, profile = _resolve_target_config(config, target)
+    _stage_target_support_files(target_root, target_config)
+    wheel_paths = _build_and_stage_wheel(target_root)
+
+    with _pushd(target_root):
+        ddl_path = Path("dbt") / "ddl"
+
+        pure_sql_results = compile_all_pure_sql(
+            ddl_path,
+            Path("sql"),
+            catalog=target_config.get("catalog", "main"),
+            schema=target_config.get("schema", "default"),
+            compute_type=(target_config.get("compute", {}) or {}).get("type", "serverless"),
+            platform=profile.get("platform", "databricks"),
+            profile=profile,
+            forge_config=target_config,
+        )
+        from forge.simple_ddl import compile_teardown_sql, compile_backup_sql
+        compile_backup_sql(ddl_path, Path("sql"), profile=profile, forge_config=target_config)
+        compile_teardown_sql(ddl_path, Path("sql"), profile=profile, forge_config=target_config)
+
+        dbt_results = compile_all(ddl_path, Path("dbt") / "models", forge_config=target_config)
+
+        graph = build_graph(target_config, dbt_project_dir=Path("dbt"))
+        workflows = build_domain_workflows(target_config, graph, sql_mode=sql_mode)
+        job_artifacts: list[dict[str, str]] = []
+        for wf in workflows:
+            wf_path = Path("resources") / "jobs" / f"{wf.name}.yml"
+            wf_path.parent.mkdir(parents=True, exist_ok=True)
+            wf_path.write_text(wf.to_databricks_yml())
+            job_artifacts.append({
+                "name": wf.name,
+                "file": str(wf_path),
+            })
+
+        bundle_yml = generate_bundle_config(target_config, sql_mode=sql_mode, prebuilt_wheel=True)
+        bundle_path = Path("databricks.yml")
+        bundle_path.write_text(bundle_yml)
+
+        manifest_path = _write_deploy_manifest(
+            target_root,
+            target=target,
+            target_config=target_config,
+            pure_sql_results=pure_sql_results,
+            dbt_results=dbt_results,
+            job_artifacts=job_artifacts,
+            wheel_paths=wheel_paths,
+        )
+
+    return {
+        "target_root": target_root,
+        "bundle_path": target_root / "databricks.yml",
+        "manifest_path": manifest_path,
+        "job_paths": [str(target_root / job["file"]) for job in job_artifacts],
+    }
+
+
+def _build_default_config(project_name: str, default_domain: str) -> dict:
+    domain_name = default_domain.strip().lower().replace("-", "_") or "default"
+    return {
+        "name": project_name,
+        "scope": "fd",
+        "placements": {
+            "families": {
+                "domain": {
+                    "allowed_classes": ["domain"],
+                    "allowed_layers": ["bronze", "silver", "gold"],
+                    "catalog_pattern": "{env}_{scope}_{layer}",
+                    "schema_pattern": "{user}_{domain}",
+                },
+                "shared_meta": {
+                    "allowed_classes": ["shared"],
+                    "allowed_layers": ["meta"],
+                    "catalog_pattern": "{env}_{scope}_meta",
+                    "schema_pattern": "{user}_{namespace}",
+                },
+                "shared_ops": {
+                    "allowed_classes": ["shared"],
+                    "allowed_layers": ["operations"],
+                    "catalog_pattern": "{env}_{scope}_ops",
+                    "schema_pattern": "{user}_{namespace}",
+                },
+                "system_meta": {
+                    "allowed_classes": ["system"],
+                    "allowed_layers": ["meta"],
+                    "catalog_pattern": "{env}_{scope}_meta",
+                    "schema_pattern": "{user}_{system}",
+                },
+                "system_ops": {
+                    "allowed_classes": ["system"],
+                    "allowed_layers": ["operations"],
+                    "catalog_pattern": "{env}_{scope}_ops",
+                    "schema_pattern": "{user}_{system}",
+                },
+            }
+        },
+        "domains": {
+            domain_name: {
+                "placement_family": "domain",
+            }
+        },
+        "shared_namespaces": {
+            "config": {
+                "placement_family": "shared_meta",
+                "layer": "meta",
+            },
+            "metadata": {
+                "placement_family": "shared_meta",
+                "layer": "meta",
+            },
+            "operations": {
+                "placement_family": "shared_ops",
+                "layer": "operations",
+            },
+        },
+        "system_assets": {
+            "lineage": {
+                "enabled": True,
+                "placement_family": "system_meta",
+                "layer": "meta",
+                "system": "lineage",
+            },
+            "quarantine": {
+                "enabled": True,
+                "placement_family": "system_meta",
+                "layer": "meta",
+                "system": "quarantine",
+            },
+            "backups": {
+                "enabled": True,
+                "placement_family": "system_ops",
+                "layer": "operations",
+                "system": "backups",
+            },
+            "deployment_state": {
+                "enabled": True,
+                "placement_family": "system_ops",
+                "layer": "operations",
+                "system": "deploy",
+            },
+        },
+        "profiles": {
+            "dev": {
+                "platform": "databricks",
+                "databricks_profile": "DEFAULT",
+                "env": "dev",
+                "catalog": "main",
+                "schema": "silver",
+                "compute": {"type": "serverless", "auto_scale": True},
+            },
+            "prod": {
+                "platform": "databricks",
+                "databricks_profile": "PROD",
+                "env": "prd",
+                "catalog": "main",
+                "schema": "silver",
+                "compute": {"type": "serverless"},
+            },
+            "local": {
+                "platform": "postgres",
+                "connection": {
+                    "host": "localhost",
+                    "port": 5432,
+                    "database": project_name,
+                },
+                "schema": domain_name,
+                "catalog": "public",
+                "overrides": {
+                    "placement_families": {
+                        "domain": {"catalog": "public"},
+                        "shared_meta": {"catalog": "public"},
+                        "shared_ops": {"catalog": "public"},
+                        "system_meta": {"catalog": "public"},
+                        "system_ops": {"catalog": "public"},
+                    }
+                },
+                "compute": {"type": "local"},
+            },
+        },
+        "dbt": {"version": "1.8.0"},
+        "features": {
+            "graph": True,
+            "quarantine": True,
+            "validation_exceptions": True,
+            "prior_version": True,
+            "python_udfs": True,
+        },
+        "portability": {
+            "avoid_databricks_only": True,
+            "postgres_compatible": True,
+        },
+    }
 
 # =============================================
 # SETUP – ludicrously simple
 # =============================================
 @app.command()
 def setup(
-    project_name: Optional[str] = typer.Option(None, "--name", help="Project name (defaults to folder name)")
+    project_name: Optional[str] = typer.Option(None, "--name", help="Project name (defaults to folder name)"),
+    domain: str = typer.Option("sales", "--domain", help="Default domain scaffolded under dbt/ddl/domain/<domain>/..."),
 ):
     """forge setup → creates forge.yml + folders in 2 seconds"""
     typer.echo("🚀 Running forge setup... (child-level simple)")
 
     project_root = Path.cwd()
+    resolved_project_name = project_name or project_root.name
     if not CONFIG_FILE.exists():
-        config = DEFAULT_CONFIG.copy()
-        if project_name:
-            config["name"] = project_name
-        else:
-            config["name"] = project_root.name
+        config = _build_default_config(resolved_project_name, domain)
 
         CONFIG_FILE.write_text(yaml.dump(config, sort_keys=False, default_flow_style=False))
         typer.echo(f"✅ Created {CONFIG_FILE} – this is the ONLY file you ever edit!")
+    else:
+        config = yaml.safe_load(CONFIG_FILE.read_text()) or {}
 
-    # Create canonical DDL tree plus generated-output folders.
+    domains = config.get("domains", {}) if isinstance(config.get("domains", {}), dict) else {}
+    default_domain = next(iter(domains), domain.strip().lower().replace("-", "_") or "sales")
+
+    # Create canonical v1 DDL tree plus generated-output folders.
     (project_root / "dbt" / "models").mkdir(parents=True, exist_ok=True)
-    layer_roots = set(config.get("schemas", [])) | set(config.get("catalogs", []))
-    for layer in sorted(layer_roots):
-        for asset_kind in ("models", "udfs", "seeds", "volumes"):
-            (project_root / "dbt" / "ddl" / layer / asset_kind).mkdir(parents=True, exist_ok=True)
+    domain_root = project_root / "dbt" / "ddl" / "domain" / default_domain
+    for relative_path in (
+        Path("bronze/models"),
+        Path("bronze/volumes"),
+        Path("silver/models"),
+        Path("silver/udfs"),
+        Path("gold/models"),
+    ):
+        (domain_root / relative_path).mkdir(parents=True, exist_ok=True)
+
+    shared_root = project_root / "dbt" / "ddl" / "shared"
+    for relative_path in (
+        Path("meta/seeds"),
+        Path("meta/models"),
+        Path("operations/models"),
+    ):
+        (shared_root / relative_path).mkdir(parents=True, exist_ok=True)
+
+    (project_root / "python").mkdir(parents=True, exist_ok=True)
     (project_root / "artifacts").mkdir(parents=True, exist_ok=True)
 
-    typer.echo("✅ Created dbt/ddl/<layer>/{models,udfs,seeds,volumes}/ + dbt/models/")
+    typer.echo(
+        f"✅ Created dbt/ddl/domain/{default_domain}/{{bronze,silver,gold}}/... + dbt/ddl/shared/{{meta,operations}}/..."
+    )
 
     # Auto-generate profiles.yml from forge.yml
-    config = yaml.safe_load(CONFIG_FILE.read_text())
     profiles_path = project_root / "profiles.yml"
     if not profiles_path.exists():
         generate_profiles_yml(config, output_path=profiles_path)
@@ -203,7 +543,7 @@ def setup(
 # =============================================
 @app.command()
 def deploy(
-    env: str = typer.Option("dev", "--env", help="Environment to deploy"),
+    env: Optional[str] = typer.Option(None, "--env", help="Target/profile to deploy"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Forge profile (from forge.yml profiles:)"),
     local: bool = typer.Option(False, "--local", help="Run setup/dbt locally instead of uploading as DAB tasks"),
     sql: bool = typer.Option(True, "--sql/--no-sql", help="Use sql_task (pure SQL) instead of dbt_task. Default: on. --no-sql to use dbt_task."),
@@ -213,14 +553,14 @@ def deploy(
     Default: generates workflow with setup/run tasks and deploys via DAB.
     --local: runs setup, dbt seed, dbt run locally from CLI, then deploys bundle.
     """
-    typer.echo(f"🚀 Deploying to {env}...")
-
     if not CONFIG_FILE.exists():
         typer.echo("❌ No forge.yml found. Run 'forge setup' first!")
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
-    prof = resolve_profile(config, profile_name=profile or env)
+    selected_profile = _require_profile_name(config, command_name="forge deploy", profile=profile, target=env)
+    typer.echo(f"🚀 Deploying to {selected_profile}...")
+    prof = resolve_profile(config, profile_name=selected_profile)
     conn = resolve_connection(prof)
 
     typer.echo(f"  📋 Profile: {prof['_name']} ({conn.platform})")
@@ -248,12 +588,6 @@ def deploy(
         "compute_type": conn.compute_type or "serverless",
     }
     dbt_vars_flag = ["--vars", yaml.dump(dbt_vars)]
-
-    # Compile DDL → models + functions + sources
-    ddl_path = _resolve_ddl(DDL_DEFAULT)
-    if ddl_path.exists():
-        compile_all(ddl_path, Path("dbt/models"), forge_config=config)
-        typer.echo("  ✅ Compiled models, functions, sources")
 
     # Pre-flight: verify required catalogs exist on the target platform
     if conn.platform == "databricks":
@@ -292,6 +626,43 @@ def deploy(
                 typer.echo(f"  ⚠️  Could not verify catalogs (databricks CLI error). Continuing...")
             except (FileNotFoundError, json.JSONDecodeError):
                 typer.echo("  ⚠️  Could not verify catalogs (databricks CLI not found). Continuing...")
+
+    if not local:
+        target_name = prof["_name"]
+        typer.echo(f"📦 Building staged target bundle for {target_name}...")
+        try:
+            build_result = _build_target_bundle(target_name, config, sql_mode=sql)
+            typer.echo(f"  ✅ Built target bundle → {build_result['target_root']}")
+        except subprocess.CalledProcessError as exc:
+            typer.echo(f"❌ Target bundle build failed while running: {' '.join(exc.cmd) if exc.cmd else 'subprocess'}")
+            raise typer.Exit(1)
+        except Exception as exc:
+            typer.echo(f"❌ Target bundle build failed: {exc}")
+            raise typer.Exit(1)
+
+        try:
+            with _pushd(build_result["target_root"]):
+                typer.echo("🚀 Running databricks bundle deploy from staged target root...")
+                result = run_bundle_command("deploy", target=target_name)
+            if result["success"]:
+                typer.echo("✅ Bundle deployed to Databricks.")
+                if result["output"]:
+                    for line in result["output"].strip().splitlines():
+                        typer.echo(f"  {line}")
+            else:
+                typer.echo(f"  ⚠️  Bundle deploy failed: {result['error']}")
+                typer.echo(f"  Run manually from {build_result['target_root']}: databricks bundle deploy --target {target_name}")
+        except Exception as exc:
+            typer.echo(f"  ⚠️  Bundle deploy skipped: {exc}")
+
+        typer.echo("🎉 Deploy complete! Run 'forge diff' to see graph changes.")
+        return
+
+    # Compile DDL → models + functions + sources
+    ddl_path = _resolve_ddl(DDL_DEFAULT)
+    if ddl_path.exists():
+        compile_all(ddl_path, Path("dbt/models"), forge_config=config)
+        typer.echo("  ✅ Compiled models, functions, sources")
 
     # ── LOCAL MODE: run setup/dbt locally from CLI ──
     if local:
@@ -453,6 +824,54 @@ def deploy(
             typer.echo(f"  ⚠️  Bundle deploy skipped: {exc}")
 
     typer.echo("🎉 Deploy complete! Run 'forge diff' to see graph changes.")
+
+
+@app.command()
+def build(
+    target: Optional[str] = typer.Option(None, "--target", "-t", help="Profile/target name to render under artifacts/targets/<target>"),
+    all_targets: bool = typer.Option(False, "--all-targets", help="Render one staged deployment bundle per configured profile"),
+    sql: bool = typer.Option(True, "--sql/--no-sql", help="Use sql_task (pure SQL) instead of dbt_task. Default: on."),
+):
+    """forge build → render a target-scoped deployment bundle under artifacts/targets/<target>"""
+    if not CONFIG_FILE.exists():
+        typer.echo("❌ No forge.yml found. Run 'forge setup' first!")
+        raise typer.Exit(1)
+
+    config = yaml.safe_load(CONFIG_FILE.read_text())
+    profiles = config.get("profiles", {})
+
+    if all_targets and target:
+        typer.echo("❌ Use either --target or --all-targets, not both.")
+        raise typer.Exit(1)
+
+    selected_targets = [target] if target else ([*profiles.keys()] if all_targets else [])
+    if not selected_targets:
+        typer.echo("❌ forge build requires an explicit target/profile.")
+        typer.echo("   Specify --target <name> or use --all-targets.")
+        if profiles:
+            typer.echo(f"   Available profiles: {', '.join(profiles.keys())}")
+        raise typer.Exit(1)
+
+    for target_name in selected_targets:
+        if target_name not in profiles:
+            typer.echo(f"❌ Unknown target/profile '{target_name}'.")
+            raise typer.Exit(1)
+
+        typer.echo(f"🏗️  Building target bundle for {target_name}...")
+        try:
+            result = _build_target_bundle(target_name, config, sql_mode=sql)
+        except subprocess.CalledProcessError as exc:
+            typer.echo(f"❌ Build failed while running: {' '.join(exc.cmd) if exc.cmd else 'subprocess'}")
+            raise typer.Exit(1)
+        except Exception as exc:
+            typer.echo(f"❌ Build failed for {target_name}: {exc}")
+            raise typer.Exit(1)
+
+        typer.echo(f"  ✅ Target root → {result['target_root']}")
+        typer.echo(f"  📦 Bundle config → {result['bundle_path']}")
+        typer.echo(f"  🧾 Deploy manifest → {result['manifest_path']}")
+
+    typer.echo("🎉 Target bundle build complete.")
 
 # =============================================
 # BACKUP – standalone snapshot (no destruction)
@@ -800,7 +1219,7 @@ def explain(
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
     graph = build_graph(config, dbt_project_dir=dbt_dir)
-    tree = walk_column_lineage(graph, model_name, column_name, dbt_dir)
+    tree = walk_column_lineage(graph, model_name, column_name, dbt_dir, forge_config=config)
 
     if "error" in tree:
         typer.echo(f"❌ {tree['error']}")
@@ -893,13 +1312,8 @@ def workflow(
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
-    if profile:
-        prof = resolve_profile(config, profile_name=profile)
-        # Merge profile values into config for workflow builder
-        config["catalog"] = prof.get("catalog", config.get("catalog", "main"))
-        config["schema"] = prof.get("schema", config.get("schema", "silver"))
-        config["compute"] = prof.get("compute", config.get("compute", {}))
-        config["environment"] = prof["_name"]
+    selected_profile = _require_profile_name(config, command_name="forge workflow", profile=profile)
+    config, _ = _materialize_profile_config(config, selected_profile)
 
     graph = build_graph(config)
     workflows = build_domain_workflows(config, graph, sql_mode=sql)
@@ -1004,13 +1418,16 @@ def compile(
         typer.echo(f"❌ {ddl} not found. Create the canonical dbt/ddl/ tree first.")
         raise typer.Exit(1)
 
+    if not CONFIG_FILE.exists():
+        typer.echo("❌ No forge.yml found. Run 'forge setup' first!")
+        raise typer.Exit(1)
+
+    config = yaml.safe_load(CONFIG_FILE.read_text())
+    selected_profile = _require_profile_name(config, command_name="forge compile", profile=profile)
+    config, prof = _materialize_profile_config(config, selected_profile)
+
     if pure_sql:
         # Pure-SQL mode: no Jinja, no dbt, runs on any SQL warehouse
-        if not CONFIG_FILE.exists():
-            typer.echo("❌ No forge.yml found. Run 'forge setup' first!")
-            raise typer.Exit(1)
-        config = yaml.safe_load(CONFIG_FILE.read_text())
-        prof = resolve_profile(config, profile_name=profile)
         catalog = prof.get("catalog", "main")
         schema = prof.get("schema", "silver")
         compute_type = prof.get("compute", {}).get("type", "serverless") if isinstance(prof.get("compute"), dict) else "serverless"
@@ -1047,7 +1464,6 @@ def compile(
 
     # Standard dbt mode
     output_dir = Path(output)
-    config = yaml.safe_load(CONFIG_FILE.read_text()) if CONFIG_FILE.exists() else None
     results = compile_all(ddl_path, output_dir, forge_config=config)
 
     for name, path in results.items():
@@ -1094,7 +1510,8 @@ def migrate(
         raise typer.Exit(0)
 
     if dry_run:
-        results = apply_all_migrations_dry_run(ddl_path, mig_dir)
+        config = yaml.safe_load(CONFIG_FILE.read_text()) if CONFIG_FILE.exists() else {}
+        results = apply_all_migrations_dry_run(ddl_path, mig_dir, forge_config=config)
         if not results:
             typer.echo("✅ All migrations already applied. Nothing to do.")
             return
@@ -1107,7 +1524,8 @@ def migrate(
         typer.echo(f"\n📋 {len(results)} migration(s) would be applied. Remove --dry-run to apply.")
         return
 
-    results = apply_all_migrations(ddl_path, mig_dir)
+    config = yaml.safe_load(CONFIG_FILE.read_text()) if CONFIG_FILE.exists() else {}
+    results = apply_all_migrations(ddl_path, mig_dir, forge_config=config)
 
     if not results:
         typer.echo("✅ All migrations already applied. Nothing to do.")
@@ -1164,12 +1582,14 @@ def udfs(
         typer.echo(f"❌ {ddl} not found.")
         raise typer.Exit(1)
 
-    udf_defs = load_udfs(ddl_path)
+    config = yaml.safe_load(CONFIG_FILE.read_text()) if CONFIG_FILE.exists() else {}
+
+    udf_defs = load_udfs(ddl_path, forge_config=config)
     if not udf_defs:
         typer.echo("📋 No UDFs defined. Add a udfs: block to your DDL to get started.")
         return
 
-    compiled = compile_all_udfs(ddl_path)
+    compiled = compile_all_udfs(ddl_path, forge_config=config)
 
     typer.echo(f"\n🔧 {len(compiled)} UDF(s) defined:\n")
     for udf_name in compiled:
@@ -1222,7 +1642,8 @@ def validate(
         typer.echo(f"❌ {ddl} not found.")
         raise typer.Exit(1)
 
-    results = compile_checks_sql(ddl_path, model_filter=model)
+    config = yaml.safe_load(CONFIG_FILE.read_text()) if CONFIG_FILE.exists() else {}
+    results = compile_checks_sql(ddl_path, model_filter=model, forge_config=config)
 
     if not results:
         typer.echo("📋 No checks defined. Add a checks: block to your DDL to get started.")
@@ -1421,7 +1842,7 @@ def profiles_cmd(
         return
 
     forge_profiles = config.get("profiles", {})
-    active = config.get("active_profile", "(none)")
+    default_profile = next(iter(forge_profiles), "(none)")
 
     if not forge_profiles:
         typer.echo("📋 No profiles defined in forge.yml (using legacy flat config).")
@@ -1434,10 +1855,9 @@ def profiles_cmd(
         typer.echo(f"🔗 ~/.databrickscfg profiles: {', '.join(dbr_profiles)}")
         typer.echo("")
 
-    typer.echo(f"📋 Forge profiles (active: {active}):\n")
+    typer.echo(f"📋 Forge profiles (default resolver order starts with: {default_profile}):\n")
 
     for name, prof in forge_profiles.items():
-        is_active = " ← active" if name == active else ""
         platform = prof.get("platform", "databricks")
         dbr_ref = prof.get("databricks_profile", "")
         env_tag = prof.get("env", "")
@@ -1447,7 +1867,7 @@ def profiles_cmd(
         compute = prof.get("compute", {})
         compute_type = compute.get("type", "serverless") if isinstance(compute, dict) else compute
 
-        typer.echo(f"  {'▸' if name == active else '·'} {name}{is_active}")
+        typer.echo(f"  · {name}")
         typer.echo(f"      platform: {platform}  |  catalog: {catalog}  |  schema: {schema}  |  compute: {compute_type}")
         if env_tag:
             typer.echo(f"      env: {env_tag}")

@@ -6,4 +6,3 @@ volumes:
     description: "Landing zone for inbound data files"
     type: managed
     layer: bronze
-    domain: false

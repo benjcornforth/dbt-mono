@@ -10,11 +10,13 @@ resources:
           project_directory: ${workspace.file_path}
           commands:
           - dbt deps
-          - 'dbt seed --full-refresh --vars ''{"schema_bronze": "ben_sales", "schema_silver":
-            "ben_sales", "schema_gold": "ben_sales", "catalog_bronze": "dev_fd_bronze",
-            "catalog_silver": "dev_fd_silver", "catalog_meta": "dev_fd_meta", "git_commit":
+          - 'dbt seed --full-refresh --vars ''{"schema_bronze": "dev_bronze", "schema_silver":
+            "dev_silver", "schema_gold": "dev_gold", "catalog_bronze": "dev_sales_bronze",
+            "catalog_silver": "dev_sales_silver", "catalog_meta": "dev_sales_meta",
+            "catalog_operations": "dev_sales_operations", "schema_backups": "ben_backups",
+            "archive_table": "dev_sales_operations.ben_backups._backup_archive", "git_commit":
             "local", "compute_type": "serverless"}'''
-          catalog: dev_fd_bronze
+          catalog: main
           warehouse_id: 724607f766691c81
       - task_key: create_udfs
         timeout_seconds: 3600

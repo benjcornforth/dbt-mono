@@ -1,8 +1,8 @@
 -- UDF: average_score
 -- Pandas vectorized UDF
 -- Vectorized average using pandas — fast on large batches
-DROP FUNCTION IF EXISTS {{ target.catalog }}.{{ target.schema }}.average_score;
-CREATE FUNCTION {{ target.catalog }}.{{ target.schema }}.average_score(score_a double, score_b double)
+DROP FUNCTION IF EXISTS `dev_fd_silver`.`ben_sales`.average_score;
+CREATE FUNCTION `dev_fd_silver`.`ben_sales`.average_score(score_a double, score_b double)
 RETURNS double
 LANGUAGE PYTHON
 AS $$

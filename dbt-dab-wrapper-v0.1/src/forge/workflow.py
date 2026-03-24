@@ -45,7 +45,7 @@ from typing import Any
 import yaml
 
 
-from forge.compute_resolver import read_databrickscfg, get_schema_variables
+from forge.compute_resolver import read_databrickscfg, get_schema_variables, resolve_profile
 
 
 # =============================================
@@ -363,7 +363,12 @@ class Workflow:
 # DATABRICKS BUNDLE CONFIG (databricks.yml)
 # =============================================
 
-def generate_bundle_config(forge_config: dict, job_yaml_paths: list[str] | None = None, sql_mode: bool = False) -> str:
+def generate_bundle_config(
+    forge_config: dict,
+    job_yaml_paths: list[str] | None = None,
+    sql_mode: bool = False,
+    prebuilt_wheel: bool = False,
+) -> str:
     """
     Generate a root databricks.yml that ties the DAB bundle together.
 
@@ -372,22 +377,37 @@ def generate_bundle_config(forge_config: dict, job_yaml_paths: list[str] | None 
     """
     project_name = forge_config.get("name", "unnamed")
     project_id = forge_config.get("id", project_name)
-    profile = forge_config.get("active_profile", "dev")
+    resolved_profile = resolve_profile(forge_config)
+    profile = resolved_profile.get("_name", next(iter(forge_config.get("profiles", {})), "dev"))
 
     # Resolve the workspace host from the active profile
     profiles = forge_config.get("profiles", {})
     active_prof = profiles.get(profile, {})
     databricks_profile = active_prof.get("databricks_profile", "DEFAULT")
 
-    sync_include = ["dbt-dab-tools/"]
+    sync_include: list[str] = []
+    if Path("dbt-dab-tools").is_dir():
+        sync_include.append("dbt-dab-tools/")
     if sql_mode:
         sync_include.append("sql/")
+    if Path("dist").is_dir():
+        sync_include.append("dist/")
     # Python tasks need the script files; the forge runtime comes from the wheel.
     if Path("python").is_dir():
         sync_include.append("python/")
     # dbt metadata (schema.yml) needed by build_models() at runtime
     if Path("dbt").is_dir():
         sync_include.append("dbt/")
+    if Path("macros").is_dir():
+        sync_include.append("macros/")
+    if Path("dbt_project.yml").exists():
+        sync_include.append("dbt_project.yml")
+    if Path("packages.yml").exists():
+        sync_include.append("packages.yml")
+    if Path("package-lock.yml").exists():
+        sync_include.append("package-lock.yml")
+    if Path("profiles.yml").exists():
+        sync_include.append("profiles.yml")
     # forge.yml needed by ForgeTask at runtime
     if Path("forge.yml").exists():
         sync_include.append("forge.yml")
@@ -397,17 +417,19 @@ def generate_bundle_config(forge_config: dict, job_yaml_paths: list[str] | None 
             "name": f"{project_name}_{project_id}",
         },
         "include": job_yaml_paths or ["resources/jobs/*.yml"],
-        "artifacts": {
+        "sync": {
+            "include": sync_include,
+        },
+    }
+
+    if not prebuilt_wheel:
+        bundle["artifacts"] = {
             "forge_wheel": {
                 "type": "whl",
                 "build": "poetry build",
                 "path": ".",
             },
-        },
-        "sync": {
-            "include": sync_include,
-        },
-    }
+        }
 
     # Add targets from forge.yml profiles
     targets = {}
@@ -625,9 +647,8 @@ def _compute_depths(graph: dict) -> dict[str, int]:
 
 
 def _resolve_dbt_vars(forge_config: dict) -> dict[str, str]:
-    """Compute catalog/schema dbt variables from the active profile."""
-    active_profile = forge_config.get("active_profile", "dev")
-    profile_config = forge_config.get("profiles", {}).get(active_profile, {})
+    """Compute catalog/schema dbt variables from the resolved profile."""
+    profile_config = resolve_profile(forge_config)
     if not profile_config:
         return {}
     schema_vars = get_schema_variables(profile_config, forge_config)
@@ -664,8 +685,7 @@ def build_workflow(
     compute_type = forge_config.get("compute", {}).get("type", "serverless")
 
     # Resolve the actual catalog name via the profile's naming pattern
-    active_profile = forge_config.get("active_profile", "dev")
-    profile_config = forge_config.get("profiles", {}).get(active_profile, {})
+    profile_config = resolve_profile(forge_config)
     logical_catalog = profile_config.get("catalog", forge_config.get("catalog", "main"))
     dbt_vars = _resolve_dbt_vars(forge_config)
     resolved_catalog = dbt_vars.get(f"catalog_{logical_catalog}", logical_catalog)
@@ -674,9 +694,6 @@ def build_workflow(
     warehouse_id = None
     if compute_type == "serverless":
         try:
-            # Get the active profile or default
-            active_profile = forge_config.get("active_profile", "dev")
-            profile_config = forge_config.get("profiles", {}).get(active_profile, {})
             databricks_profile = profile_config.get("databricks_profile", "DEFAULT")
             config = read_databrickscfg(databricks_profile)
             http_path = config.get("http_path")
@@ -992,17 +1009,17 @@ def build_domain_workflows(
 ) -> list[Workflow]:
     """Build one Databricks Workflow per domain.
 
-    Each workflow contains only the models suffixed with that domain
-    (e.g. ``stg_customers_eu``, ``customer_clean_eu``), plus any shared
-    (non-domain) models they depend on.
+    In v1, domain membership comes from contract metadata rather than
+    model-name suffixes. Each workflow contains contracts tagged for that
+    domain plus shared contracts with no domain assignment.
 
     Returns a list of Workflow objects — one per domain defined in
     ``forge_config["domains"]``.  Falls back to a single shared workflow
     if no domains are configured or ``domain_workflows: shared`` is set.
     """
     domains = forge_config.get("domains", {})
-    domain_layers = forge_config.get("domain_layers", [])
     mode = forge_config.get("domain_workflows", "separate")  # "separate" | "shared"
+    project_id = forge_config.get("id", forge_config.get("name", "unnamed"))
 
     if not domains or mode == "shared":
         process_workflows = [build_workflow(forge_config, graph, sql_mode=sql_mode)]
@@ -1012,17 +1029,16 @@ def build_domain_workflows(
         edges = graph.get("edges", [])
 
         for domain_name in domains:
-            suffix = f"_{domain_name}"
+            workflow_suffix = "" if domain_name == project_id else f"_{domain_name}"
 
-            # Filter contracts: keep domain-specific models for this domain + shared models
+            # Filter contracts: keep this domain's contracts plus shared/system
+            # contracts that do not declare a business domain.
             domain_cids: set[str] = set()
             for cid, contract in contracts.items():
-                model = contract["dataset"]["name"]
-                # Include this domain's instances
-                if model.endswith(suffix):
+                meta_domain = contract.get("_meta", {}).get("domain")
+                if meta_domain == domain_name:
                     domain_cids.add(cid)
-                # Include shared models (no domain suffix for any domain)
-                elif not any(model.endswith(f"_{d}") for d in domains):
+                elif meta_domain in (None, False):
                     domain_cids.add(cid)
 
             # Filter edges to only those between included contracts
@@ -1035,12 +1051,11 @@ def build_domain_workflows(
                 "edges": domain_edges,
             }
 
-            # Build the workflow with a domain-suffixed name
+            # Build the workflow with a domain-aware name.
             domain_config = {**forge_config}
-            domain_config["_workflow_suffix"] = suffix
             domain_config["_domain"] = domain_name
             wf = build_workflow(domain_config, domain_graph, sql_mode=sql_mode)
-            wf.name = f"{wf.name}{suffix}"
+            wf.name = f"{wf.name}{workflow_suffix}"
             process_workflows.append(wf)
 
     # Build setup + process + teardown workflows
@@ -1064,8 +1079,7 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
     compute_type = forge_config.get("compute", {}).get("type", "serverless")
 
     # Resolve logical catalog name to concrete name
-    active_profile = forge_config.get("active_profile", "dev")
-    profile_config = forge_config.get("profiles", {}).get(active_profile, {})
+    profile_config = resolve_profile(forge_config)
     logical_catalog = profile_config.get("catalog", forge_config.get("catalog", "main"))
     dbt_vars = _resolve_dbt_vars(forge_config)
     resolved_catalog = dbt_vars.get(f"catalog_{logical_catalog}", logical_catalog)
@@ -1257,8 +1271,7 @@ def build_teardown_workflow(forge_config: dict, graph: dict) -> Workflow:
     compute_type = forge_config.get("compute", {}).get("type", "serverless")
 
     # Resolve logical catalog name to concrete name
-    active_profile = forge_config.get("active_profile", "dev")
-    profile_config = forge_config.get("profiles", {}).get(active_profile, {})
+    profile_config = resolve_profile(forge_config)
     logical_catalog = profile_config.get("catalog", forge_config.get("catalog", "main"))
     dbt_vars = _resolve_dbt_vars(forge_config)
     resolved_catalog = dbt_vars.get(f"catalog_{logical_catalog}", logical_catalog)

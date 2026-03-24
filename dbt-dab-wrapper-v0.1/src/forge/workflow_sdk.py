@@ -81,9 +81,9 @@ class WorkflowSDK:
 
     def _create_workspace_client(self) -> WorkspaceClient:
         """Create Databricks workspace client from config."""
-        # Use the active profile from forge config
-        active_profile = self.forge_config.get("active_profile", "dev")
-        profile_config = self.forge_config.get("profiles", {}).get(active_profile, {})
+        from forge.compute_resolver import resolve_profile
+
+        profile_config = resolve_profile(self.forge_config)
         databricks_profile = profile_config.get("databricks_profile", "DEFAULT")
 
         return WorkspaceClient(profile=databricks_profile)
@@ -94,8 +94,9 @@ class WorkflowSDK:
             return None
 
         try:
-            active_profile = self.forge_config.get("active_profile", "dev")
-            profile_config = self.forge_config.get("profiles", {}).get(active_profile, {})
+            from forge.compute_resolver import resolve_profile
+
+            profile_config = resolve_profile(self.forge_config)
             databricks_profile = profile_config.get("databricks_profile", "DEFAULT")
 
             from forge.compute_resolver import read_databrickscfg

@@ -64,11 +64,11 @@ class ForgeTask:
     """
     Context manager for Python tasks in a forge pipeline.
 
-    Reads forge.yml, resolves the active profile, and provides
+    Reads forge.yml, resolves the selected profile, and provides
     helpers to read/write tables with correct catalog.schema names.
 
     Usage:
-        task = ForgeTask()                    # uses active_profile
+        task = ForgeTask()                    # uses the default resolved profile
         task = ForgeTask(profile="dev")       # explicit profile
         task = ForgeTask(config_path="path/to/forge.yml")
 

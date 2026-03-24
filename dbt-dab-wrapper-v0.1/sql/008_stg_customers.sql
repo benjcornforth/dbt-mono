@@ -21,7 +21,7 @@ SELECT
         'ingested_ats', coalesce(_lineage.ingested_ats, array(_inserted_at)),
         'upstream', to_json(_lineage),
         'git_commit', 'unknown',
-        'deployed_at', '2026-03-24T22:14:45.942157+00:00',
+        'deployed_at', '2026-03-24T22:49:10.324394+00:00',
         'compute_type', 'serverless',
         'contract_id', 'ben_sales.stg_customers',
         'version', 'v1',
@@ -74,7 +74,7 @@ SELECT
     current_timestamp() AS completed_at;
 
 -- Lineage log (run_id captured at runtime)
-INSERT INTO `dev_fd_meta`.`ben_sales`.lineage_log
+INSERT INTO `dev_fd_meta`.`ben_lineage`.lineage_log
     (run_id, model, materialized, rows_created, catalog, schema, sources, git_commit, completed_at)
 SELECT
     :run_id,

@@ -1,7 +1,9 @@
 version: 2
 sources:
-- name: seed_meta_config
-  description: Seed data in meta.config
+- name: seed
+  description: Seed data in dev_fd_meta.ben_config
+  database: dev_fd_meta
+  schema: ben_config
   tables:
   - name: ingestion_config
     description: File-matching rules for Volume ingestion
@@ -26,5 +28,3 @@ sources:
       description: CSV delimiter character
     - name: active
       description: Toggle rule on/off
-  database: '{{ var(''catalog_meta'') }}'
-  schema: config

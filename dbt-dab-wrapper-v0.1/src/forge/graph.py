@@ -145,10 +145,10 @@ def build_graph(
         _add_python_udf_nodes(graph, dbt_project_dir or Path("dbt"), catalog, schema, git_commit, now)
 
     # ── Inject SQL UDFs from dbt/ddl ──────────────────
-    _add_sql_udf_nodes(graph, dbt_project_dir or Path("dbt"), catalog, schema, git_commit, now)
+    _add_sql_udf_nodes(graph, dbt_project_dir or Path("dbt"), forge_config, catalog, schema, git_commit, now)
 
     # ── Inject check nodes from dbt/ddl ───────────────
-    _add_check_nodes(graph, dbt_project_dir or Path("dbt"), git_commit, now)
+    _add_check_nodes(graph, dbt_project_dir or Path("dbt"), forge_config, git_commit, now)
 
     # ── Inject DAB workflow node ─────────────────────────
     project_id = forge_config.get("id", project_name)
@@ -563,6 +563,7 @@ def _add_python_udf_nodes(
 def _add_sql_udf_nodes(
     graph: dict,
     dbt_dir: Path,
+    forge_config: dict,
     catalog: str,
     schema: str,
     git_commit: str,
@@ -578,7 +579,7 @@ def _add_sql_udf_nodes(
     if not ddl_path:
         return
 
-    raw = _load_raw_ddl(ddl_path)
+    raw = _load_raw_ddl(ddl_path, forge_config=forge_config)
     udfs = raw.get("udfs", {})
     models = raw.get("models", {})
 
@@ -670,6 +671,7 @@ def _add_sql_udf_nodes(
 def _add_check_nodes(
     graph: dict,
     dbt_dir: Path,
+    forge_config: dict,
     git_commit: str,
     now: str,
 ) -> None:
@@ -683,7 +685,7 @@ def _add_check_nodes(
     if not ddl_path:
         return
 
-    raw = _load_raw_ddl(ddl_path)
+    raw = _load_raw_ddl(ddl_path, forge_config=forge_config)
     models = raw.get("models", {})
     project = graph["metadata"]["project"]
     schema = graph["metadata"]["schema"]
@@ -1020,6 +1022,7 @@ def walk_column_lineage(
     model_name: str,
     column_name: str,
     dbt_dir: Path = Path("dbt"),
+    forge_config: dict | None = None,
 ) -> dict:
     """
     Walk backwards from a column to its sources: expressions, UDFs, checks, git, version.
@@ -1038,7 +1041,7 @@ def walk_column_lineage(
     if not ddl_path:
         return {"error": f"No canonical dbt/ddl directory found in {dbt_dir}"}
 
-    raw = _load_raw_ddl(ddl_path)
+    raw = _load_raw_ddl(ddl_path, forge_config=forge_config)
     models = raw.get("models", {})
     udfs = raw.get("udfs", {})
 
@@ -1183,7 +1186,7 @@ def walk_column_lineage(
         for src_col in source_columns:
             if src_col in source_cols:
                 upstream.append(
-                    walk_column_lineage(graph, source_model, src_col, dbt_dir)
+                    walk_column_lineage(graph, source_model, src_col, dbt_dir, forge_config=forge_config)
                 )
     elif source_model and source_model in seeds:
         # Terminal node: data originates from a seed

@@ -67,7 +67,6 @@ Open `forge.yml`. The key settings:
 name: sales_data
 scope: fd
 id: sales
-active_profile: dev
 
 catalog_pattern: "{env}_{scope}_{catalog}"    # → dev_fd_bronze
 schema_pattern:  "{user}_{id}"                # → ben_sales
@@ -592,6 +591,8 @@ forge deploy    # deploys all domain instances
 
 Each domain can read from its own source with `domain_sources:` in the model DDL.
 See `docs/examples/multi_domain_project/` for the full pattern.
+
+Per-domain workflow splitting is driven by domain metadata in the compiled graph, not by parsing model-name suffixes.
 
 ### SQL-only mode (no dbt at runtime)
 

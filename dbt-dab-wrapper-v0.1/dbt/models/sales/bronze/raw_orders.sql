@@ -1,6 +1,6 @@
-{{ config(materialized='table', schema=var("schema_bronze"), database=var("catalog_bronze")) }}
+{{ config(materialized='table', schema='ben_sales', database='dev_fd_bronze') }}
 
--- managed_by: python
+-- managed_by: ingest_from_volume
 -- This table is populated by an external process.
 -- Forge generates CREATE TABLE to keep it in the graph with tests.
 

@@ -57,6 +57,8 @@ from typing import Any
 
 import yaml
 
+from forge.compute_resolver import resolve_profile
+
 
 def _git_info() -> dict[str, str]:
     """Best-effort git sha + branch. Returns empty strings if not in a repo."""
@@ -343,7 +345,7 @@ def build_teardown_plan(
     project_id = forge_config.get("id", project_name)
     scope = forge_config.get("scope", "")
     environment = forge_config.get("environment", "dev")
-    profile = resolve_active_profile(forge_config)
+    profile = resolve_default_profile(forge_config)
     env = profile.get("env", environment)
     catalog_pattern = forge_config.get("catalog_pattern", "{catalog}")
     schema_pattern = forge_config.get("schema_pattern", "{schema}")
@@ -678,11 +680,9 @@ def build_teardown_plan(
 # HELPERS
 # =============================================
 
-def resolve_active_profile(forge_config: dict) -> dict:
-    """Get the active profile dict from forge.yml."""
-    active = forge_config.get("active_profile", "dev")
-    profiles = forge_config.get("profiles", {})
-    return profiles.get(active, {})
+def resolve_default_profile(forge_config: dict) -> dict:
+    """Get the default resolved profile dict from forge.yml."""
+    return resolve_profile(forge_config)
 
 
 def _resolve_catalog(pattern: str, env: str, scope: str, catalog: str) -> str:
@@ -776,7 +776,7 @@ def build_backup(
     project_name = forge_config.get("name", "unnamed")
     project_id = forge_config.get("id", project_name)
     scope = forge_config.get("scope", "")
-    profile = resolve_active_profile(forge_config)
+    profile = resolve_default_profile(forge_config)
     env = profile.get("env", forge_config.get("environment", "dev"))
     catalog_pattern = forge_config.get("catalog_pattern", "{catalog}")
     schema_pattern = forge_config.get("schema_pattern", "{schema}")
@@ -1049,7 +1049,7 @@ def restore_snapshot(
 
 def _get_archive_table_name(forge_config: dict) -> str:
     """Resolve the fully-qualified _backup_archive table name from forge.yml."""
-    profile = resolve_active_profile(forge_config)
+    profile = resolve_default_profile(forge_config)
     env = profile.get("env", forge_config.get("environment", "dev"))
     scope = forge_config.get("scope", "")
     catalog_pattern = forge_config.get("catalog_pattern", "{catalog}")
@@ -1202,7 +1202,7 @@ def restore_table_data(
             log.append(f"  {row_count} rows to restore")
 
             # Resolve the target table's qualified name
-            profile = resolve_active_profile(forge_config)
+            profile = resolve_default_profile(forge_config)
             env = profile.get("env", forge_config.get("environment", "dev"))
             scope = forge_config.get("scope", "")
             project_id = forge_config.get("id", forge_config.get("name", ""))

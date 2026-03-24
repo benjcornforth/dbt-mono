@@ -60,6 +60,23 @@ class ConnectionInfo:
         return self.platform == "databricks"
 
 
+@dataclass
+class AssetLocation:
+    """Resolved placement information for an authored or system asset."""
+
+    name: str
+    kind: str
+    class_name: str
+    layer: str
+    placement_family: str
+    catalog: str
+    schema: str
+    domain: str | None = None
+    namespace: str | None = None
+    system: str | None = None
+    tokens: dict[str, str] = field(default_factory=dict)
+
+
 # =============================================
 # READ ~/.databrickscfg
 # =============================================
@@ -137,7 +154,7 @@ def resolve_profile(
 
     Profile resolution order:
       1. Explicit --profile flag
-      2. forge.yml → active_profile key
+            2. First entry in forge.yml profiles:
       3. Legacy flat keys (backward compatible)
 
     Returns a merged dict with: platform, catalog, schema, compute, etc.
@@ -145,7 +162,7 @@ def resolve_profile(
     profiles = forge_config.get("profiles", {})
 
     # Determine which profile to use
-    name = profile_name or forge_config.get("active_profile")
+    name = profile_name
 
     if name and name in profiles:
         profile = dict(profiles[name])
@@ -252,6 +269,20 @@ _NO_PREFIX_ENVS = {"prd", "prod", ""}
 _DEFAULT_SCHEMAS = ("bronze", "silver", "gold")
 _DEFAULT_CATALOGS = ("bronze", "silver", "meta", "operations")
 
+ASSET_CLASSES = {"domain", "shared", "system"}
+
+ALLOWED_LAYERS_BY_CLASS = {
+    "domain": {"bronze", "silver", "gold"},
+    "shared": {"meta", "operations"},
+    "system": {"meta", "operations"},
+}
+
+REQUIRED_IDENTITY_BY_CLASS = {
+    "domain": "domain",
+    "shared": "namespace",
+    "system": "system",
+}
+
 
 def _apply_pattern(
     pattern: str,
@@ -295,6 +326,241 @@ def _apply_pattern(
     while "__" in result:
         result = result.replace("__", "_")
     return result.strip("_")
+
+
+def _sanitize_identity(value: str) -> str:
+    """Normalize user-provided identity values so they are safe in object names."""
+    return re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
+
+
+def _current_user_token() -> str:
+    raw_user = getpass.getuser()
+    return _sanitize_identity(raw_user)
+
+
+def _expand_named_pattern(
+    pattern: str,
+    *,
+    tokens: dict[str, str],
+    skip_envs: set[str] | None = None,
+) -> str:
+    """Expand a v1 placement pattern using an arbitrary token dictionary."""
+    result = pattern
+    env = tokens.get("env", "")
+    if skip_envs and env in skip_envs:
+        result = result.replace("{env}_", "").replace("{env}", "")
+
+    for key, value in tokens.items():
+        result = result.replace(f"{{{key}}}", value)
+
+    while "__" in result:
+        result = result.replace("__", "_")
+    return result.strip("_")
+
+
+def _uses_v1_placements(forge_config: dict | None) -> bool:
+    placements = (forge_config or {}).get("placements", {})
+    return isinstance(placements.get("families"), dict) and bool(placements["families"])
+
+
+def _resolve_v1_profile_overrides(
+    profile: dict[str, Any],
+    placement_family: str,
+) -> dict[str, Any]:
+    overrides = profile.get("overrides", {})
+    placement_overrides = overrides.get("placement_families", {})
+    resolved = placement_overrides.get(placement_family, {})
+    return resolved if isinstance(resolved, dict) else {}
+
+
+def _validate_asset_class(class_name: str) -> None:
+    if class_name not in ASSET_CLASSES:
+        raise ValueError(
+            f"Invalid asset class '{class_name}'. Expected one of: {', '.join(sorted(ASSET_CLASSES))}."
+        )
+
+
+def _validate_layer_for_class(class_name: str, layer: str) -> None:
+    allowed = ALLOWED_LAYERS_BY_CLASS[class_name]
+    if layer not in allowed:
+        raise ValueError(
+            f"Invalid layer '{layer}' for class '{class_name}'. "
+            f"Allowed layers: {', '.join(sorted(allowed))}."
+        )
+
+
+def _resolve_v1_identity_tokens(
+    *,
+    asset_name: str,
+    asset_kind: str,
+    asset_def: dict[str, Any],
+    class_name: str,
+    forge_config: dict[str, Any],
+) -> tuple[str, str | None, str | None, str | None]:
+    """Resolve class-specific identity fields and default placement family."""
+    placement_family = asset_def.get("placement_family")
+    domain = asset_def.get("domain")
+    namespace = asset_def.get("namespace")
+    system = asset_def.get("system")
+
+    if class_name == "domain":
+        if not domain:
+            domains = forge_config.get("domains", {})
+            if asset_name in domains and isinstance(domains[asset_name], dict):
+                domain = asset_name
+        if not domain:
+            raise ValueError(f"Asset '{asset_name}' is class 'domain' but does not declare 'domain'.")
+        domain = _sanitize_identity(domain)
+        if not placement_family:
+            domain_cfg = forge_config.get("domains", {}).get(domain, {})
+            if isinstance(domain_cfg, dict):
+                placement_family = domain_cfg.get("placement_family")
+
+    elif class_name == "shared":
+        if not namespace:
+            raise ValueError(f"Asset '{asset_name}' is class 'shared' but does not declare 'namespace'.")
+        namespace = _sanitize_identity(namespace)
+        if not placement_family:
+            ns_cfg = forge_config.get("shared_namespaces", {}).get(namespace, {})
+            if isinstance(ns_cfg, dict):
+                placement_family = ns_cfg.get("placement_family")
+                asset_def.setdefault("layer", ns_cfg.get("layer", asset_def.get("layer")))
+
+    elif class_name == "system":
+        if not system:
+            system_cfg = forge_config.get("system_assets", {}).get(asset_name, {})
+            if isinstance(system_cfg, dict):
+                system = system_cfg.get("system")
+                placement_family = placement_family or system_cfg.get("placement_family")
+                asset_def.setdefault("layer", system_cfg.get("layer", asset_def.get("layer")))
+        if not system:
+            raise ValueError(f"Asset '{asset_name}' is class 'system' but does not declare 'system'.")
+        system = _sanitize_identity(system)
+
+    return placement_family or "", domain, namespace, system
+
+
+def resolve_asset_location(
+    asset_name: str,
+    asset_def: dict[str, Any],
+    profile: dict[str, Any],
+    forge_config: dict | None = None,
+    *,
+    asset_kind: str = "model",
+) -> AssetLocation:
+    """Resolve a fully-qualified location for a v1 or legacy asset definition."""
+    forge_config = forge_config or {}
+    asset_def = dict(asset_def or {})
+
+    if not _uses_v1_placements(forge_config):
+        catalog, schema = resolve_model_schema(asset_name, asset_def, profile, forge_config=forge_config)
+        return AssetLocation(
+            name=asset_name,
+            kind=asset_kind,
+            class_name=asset_def.get("class", "domain"),
+            layer=asset_def.get("layer", ""),
+            placement_family="legacy",
+            catalog=catalog,
+            schema=schema,
+            domain=asset_def.get("domain"),
+            namespace=asset_def.get("namespace"),
+            system=asset_def.get("system"),
+        )
+
+    profile = dict(profile)
+    env = str(profile.get("env", profile.get("_name", "dev"))).lower()
+    class_name = asset_def.get("class", "domain")
+    _validate_asset_class(class_name)
+
+    placement_family, domain, namespace, system = _resolve_v1_identity_tokens(
+        asset_name=asset_name,
+        asset_kind=asset_kind,
+        asset_def=asset_def,
+        class_name=class_name,
+        forge_config=forge_config,
+    )
+    if not placement_family:
+        raise ValueError(
+            f"Asset '{asset_name}' does not resolve a placement_family. "
+            f"Declare one explicitly or configure it in forge.yml."
+        )
+
+    layer = asset_def.get("layer")
+    if not layer:
+        raise ValueError(f"Asset '{asset_name}' does not declare a layer.")
+    layer = _sanitize_identity(layer)
+    _validate_layer_for_class(class_name, layer)
+
+    families = forge_config.get("placements", {}).get("families", {})
+    family = families.get(placement_family)
+    if not isinstance(family, dict):
+        raise ValueError(
+            f"Asset '{asset_name}' references placement_family '{placement_family}' which is not defined in forge.yml."
+        )
+
+    family_classes = set(family.get("allowed_classes", []))
+    if family_classes and class_name not in family_classes:
+        raise ValueError(
+            f"Placement family '{placement_family}' does not allow class '{class_name}'."
+        )
+
+    family_layers = set(family.get("allowed_layers", []))
+    if family_layers and layer not in family_layers:
+        raise ValueError(
+            f"Placement family '{placement_family}' does not allow layer '{layer}'."
+        )
+
+    tokens = {
+        "asset": _sanitize_identity(asset_name),
+        "catalog": layer,
+        "domain": domain or "",
+        "env": env,
+        "id": _sanitize_identity(forge_config.get("id", forge_config.get("name", "project"))),
+        "kind": _sanitize_identity(asset_kind),
+        "layer": layer,
+        "name": _sanitize_identity(asset_name),
+        "namespace": namespace or "",
+        "schema": layer,
+        "scope": _sanitize_identity(forge_config.get("scope", "")),
+        "system": system or "",
+        "user": _current_user_token(),
+    }
+
+    overrides = _resolve_v1_profile_overrides(profile, placement_family)
+    catalog_pattern = overrides.get("catalog_pattern") or family.get("catalog_pattern")
+    schema_pattern = overrides.get("schema_pattern") or family.get("schema_pattern")
+    if not catalog_pattern and not overrides.get("catalog"):
+        raise ValueError(f"Placement family '{placement_family}' has no catalog_pattern.")
+    if not schema_pattern and not overrides.get("schema"):
+        raise ValueError(f"Placement family '{placement_family}' has no schema_pattern.")
+
+    skip_envs = set(forge_config.get("skip_env_prefix", ["prd", "prod"]))
+    catalog = overrides.get("catalog") or _expand_named_pattern(
+        catalog_pattern, tokens=tokens, skip_envs=set(),
+    )
+    schema = overrides.get("schema") or _expand_named_pattern(
+        schema_pattern, tokens=tokens, skip_envs=skip_envs,
+    )
+
+    # Allow explicit asset-level override as the final escape hatch.
+    catalog = asset_def.get("catalog") or catalog
+    schema = asset_def.get("schema") or schema
+    if not catalog or not schema:
+        raise ValueError(f"Asset '{asset_name}' resolved to an empty catalog/schema.")
+
+    return AssetLocation(
+        name=asset_name,
+        kind=asset_kind,
+        class_name=class_name,
+        layer=layer,
+        placement_family=placement_family,
+        catalog=catalog,
+        schema=schema,
+        domain=domain,
+        namespace=namespace,
+        system=system,
+        tokens=tokens,
+    )
 
 
 def _expand_env_prefix(
@@ -388,6 +654,16 @@ def resolve_model_schema(
 
     Returns (catalog, schema).
     """
+    if _uses_v1_placements(forge_config):
+        location = resolve_asset_location(
+            model_name,
+            model_def,
+            profile,
+            forge_config=forge_config,
+            asset_kind="model",
+        )
+        return location.catalog, location.schema
+
     profile = _expand_env_prefix(profile, forge_config)
     schemas_map = profile.get("schemas", {})
     catalogs_map = profile.get("catalogs", {})
@@ -485,7 +761,7 @@ def generate_profiles_yml(
 
     project_name = forge_config.get("name", "dbt_forge").replace("-", "_")
     profiles = forge_config.get("profiles", {})
-    active = forge_config.get("active_profile", "dev")
+    default_target = next(iter(profiles), "dev")
 
     outputs: dict[str, dict] = {}
 
@@ -544,7 +820,7 @@ def generate_profiles_yml(
 
     profile_yml = {
         project_name: {
-            "target": active if active in outputs else next(iter(outputs)),
+            "target": default_target if default_target in outputs else next(iter(outputs)),
             "outputs": outputs,
         }
     }

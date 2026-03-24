@@ -5,7 +5,6 @@
 name: sales_data
 scope: fd
 id: sales
-active_profile: dev
 
 # ── Naming Patterns ──
 # Tokens: {env}, {id}, {scope}, {user}, {catalog}, {schema}

@@ -6,7 +6,6 @@ models:
   raw_customers:
     description: "Raw customer data ingested from Volume"
     managed_by: ingest_from_volume
-    domain: false
     columns:
       customer_id:  { type: int, description: "Unique customer identifier" }
       first_name:   { type: string }

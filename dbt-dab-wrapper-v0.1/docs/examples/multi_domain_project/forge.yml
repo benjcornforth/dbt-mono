@@ -3,7 +3,6 @@
 name: regional_analytics
 scope: fd
 id: regional
-active_profile: dev
 
 catalog_pattern: "{env}_{scope}_{catalog}"
 schema_pattern: "{user}_{id}"

@@ -6,8 +6,14 @@
 # A zero-SQL, zero-Python DDL for users who have
 # never written code before.
 #
-# Users write YAML in one canonical layout:
+# Users write YAML in one canonical layout.
+#
+# Legacy layout:
 #   dbt/ddl/{layer}/{models|udfs|seeds|volumes}/**/*.yml
+#
+# V1 layout:
+#   dbt/ddl/domain/{domain}/{layer}/{models|udfs|seeds|volumes}/**/*.yml
+#   dbt/ddl/shared/{layer}/{models|udfs|seeds|volumes}/**/*.yml
 #
 # The compiler generates all SQL models, schema.yml,
 # and lineage configuration automatically.
@@ -31,22 +37,23 @@ import yaml
 # DDL YAML PARSER
 # =============================================
 
-def load_raw_ddl(ddl_path: Path, forge_config: dict | None = None) -> dict:
-    """Load DDL from the canonical dbt/ddl tree.
+def _uses_v1_placements(forge_config: dict | None) -> bool:
+    placements = (forge_config or {}).get("placements", {})
+    return isinstance(placements.get("families"), dict) and bool(placements["families"])
 
-    Canonical layout:
-      dbt/ddl/{layer}/{models|udfs|seeds|volumes}/**/*.yml
 
-    The top-level layer folder is the source of truth for schema/catalog
-    routing. Model names are never used to infer layers.
-    """
-    if not ddl_path.exists():
-        raise FileNotFoundError(f"DDL path not found: {ddl_path}")
-    if not ddl_path.is_dir():
-        raise ValueError(
-            f"DDL path must be a directory tree rooted at dbt/ddl/. Got: {ddl_path}"
-        )
+def _inject_asset_metadata(defn: dict, **metadata: str) -> dict:
+    if not isinstance(defn, dict):
+        return defn
+    updated = dict(defn)
+    for key, value in metadata.items():
+        if value is not None:
+            updated.setdefault(key, value)
+    return updated
 
+
+def _load_raw_ddl_legacy(ddl_path: Path, forge_config: dict | None = None) -> dict:
+    """Load DDL from the legacy canonical dbt/ddl tree."""
     merged: dict[str, Any] = {"models": {}, "udfs": {}, "seeds": {}, "volumes": {}}
     allowed_layers = set(forge_config.get("schemas", [])) | set(forge_config.get("catalogs", [])) if forge_config else set()
     allowed_sections = {"models", "udfs", "seeds", "volumes"}
@@ -80,7 +87,6 @@ def load_raw_ddl(ddl_path: Path, forge_config: dict | None = None) -> dict:
                 f"Layer '{layer_dir.name}' contains YAML files outside the canonical section folders: {names}"
             )
         if not section_dirs:
-            # Empty layer folders are valid after setup.
             continue
 
         for section_dir in section_dirs:
@@ -110,6 +116,175 @@ def load_raw_ddl(ddl_path: Path, forge_config: dict | None = None) -> dict:
                 )
 
     return merged
+
+
+def _load_raw_ddl_v1(ddl_path: Path) -> dict:
+    """Load DDL from the v1 domain/shared canonical tree."""
+    merged: dict[str, Any] = {"models": {}, "udfs": {}, "seeds": {}, "volumes": {}}
+    allowed_sections = {"models", "udfs", "seeds", "volumes"}
+    allowed_classes = {"domain", "shared"}
+    allowed_domain_layers = {"bronze", "silver", "gold"}
+    allowed_shared_layers = {"meta", "operations"}
+
+    root_ymls = sorted(ddl_path.glob("*.yml"))
+    if root_ymls:
+        names = ", ".join(p.name for p in root_ymls)
+        raise ValueError(
+            "V1 DDL does not allow YAML files directly under dbt/ddl/. "
+            f"Move these into dbt/ddl/domain/... or dbt/ddl/shared/...: {names}"
+        )
+
+    class_dirs = [d for d in sorted(ddl_path.iterdir()) if d.is_dir()]
+    if not class_dirs:
+        raise ValueError(
+            "No DDL class folders found under dbt/ddl/. Expected dbt/ddl/domain/... or dbt/ddl/shared/..."
+        )
+
+    for class_dir in class_dirs:
+        if class_dir.name not in allowed_classes:
+            raise ValueError(
+                f"Invalid top-level DDL folder '{class_dir.name}'. Allowed folders: {sorted(allowed_classes)}"
+            )
+
+        stray_ymls = sorted(class_dir.glob("*.yml"))
+        if stray_ymls:
+            names = ", ".join(p.name for p in stray_ymls)
+            raise ValueError(
+                f"Folder '{class_dir.name}' contains YAML files outside the canonical v1 tree: {names}"
+            )
+
+        if class_dir.name == "domain":
+            domain_dirs = [d for d in sorted(class_dir.iterdir()) if d.is_dir()]
+            if not domain_dirs:
+                continue
+
+            for domain_dir in domain_dirs:
+                stray_domain_ymls = sorted(domain_dir.glob("*.yml"))
+                if stray_domain_ymls:
+                    names = ", ".join(p.name for p in stray_domain_ymls)
+                    raise ValueError(
+                        f"Domain '{domain_dir.name}' contains YAML files outside its layer folders: {names}"
+                    )
+
+                layer_dirs = [d for d in sorted(domain_dir.iterdir()) if d.is_dir()]
+                if not layer_dirs:
+                    continue
+
+                for layer_dir in layer_dirs:
+                    if layer_dir.name not in allowed_domain_layers:
+                        raise ValueError(
+                            f"Invalid domain layer '{layer_dir.name}' under '{domain_dir.name}'. "
+                            f"Allowed layers: {sorted(allowed_domain_layers)}"
+                        )
+                    stray_layer_ymls = sorted(layer_dir.glob("*.yml"))
+                    if stray_layer_ymls:
+                        names = ", ".join(p.name for p in stray_layer_ymls)
+                        raise ValueError(
+                            f"Layer '{domain_dir.name}/{layer_dir.name}' contains YAML files outside section folders: {names}"
+                        )
+
+                    for section_dir in [d for d in sorted(layer_dir.iterdir()) if d.is_dir()]:
+                        if section_dir.name not in allowed_sections:
+                            raise ValueError(
+                                f"Invalid DDL section '{section_dir.name}' under domain layer '{domain_dir.name}/{layer_dir.name}'. "
+                                f"Allowed sections: {sorted(allowed_sections)}"
+                            )
+                        for yml_file in sorted(section_dir.rglob("*.yml")):
+                            raw = yaml.safe_load(yml_file.read_text()) or {}
+                            if section_dir.name not in raw:
+                                raise ValueError(
+                                    f"{yml_file} is under '{section_dir.name}/' but does not define a top-level '{section_dir.name}:' block"
+                                )
+                            unexpected = set(raw) - {section_dir.name}
+                            if unexpected:
+                                raise ValueError(
+                                    f"{yml_file} is under '{section_dir.name}/' but defines unrelated sections: {sorted(unexpected)}"
+                                )
+                            scoped_raw = {
+                                section_dir.name: {
+                                    name: _inject_asset_metadata(
+                                        defn,
+                                        **{
+                                            "class": "domain",
+                                            "domain": domain_dir.name,
+                                            "layer": layer_dir.name,
+                                        },
+                                    )
+                                    for name, defn in raw.get(section_dir.name, {}).items()
+                                }
+                            }
+                            _merge_section(merged, section_dir.name, scoped_raw, yml_file)
+
+        if class_dir.name == "shared":
+            layer_dirs = [d for d in sorted(class_dir.iterdir()) if d.is_dir()]
+            if not layer_dirs:
+                continue
+
+            for layer_dir in layer_dirs:
+                if layer_dir.name not in allowed_shared_layers:
+                    raise ValueError(
+                        f"Invalid shared layer '{layer_dir.name}'. Allowed layers: {sorted(allowed_shared_layers)}"
+                    )
+                stray_layer_ymls = sorted(layer_dir.glob("*.yml"))
+                if stray_layer_ymls:
+                    names = ", ".join(p.name for p in stray_layer_ymls)
+                    raise ValueError(
+                        f"Shared layer '{layer_dir.name}' contains YAML files outside section folders: {names}"
+                    )
+
+                for section_dir in [d for d in sorted(layer_dir.iterdir()) if d.is_dir()]:
+                    if section_dir.name not in allowed_sections:
+                        raise ValueError(
+                            f"Invalid DDL section '{section_dir.name}' under shared layer '{layer_dir.name}'. "
+                            f"Allowed sections: {sorted(allowed_sections)}"
+                        )
+                    for yml_file in sorted(section_dir.rglob("*.yml")):
+                        raw = yaml.safe_load(yml_file.read_text()) or {}
+                        if section_dir.name not in raw:
+                            raise ValueError(
+                                f"{yml_file} is under '{section_dir.name}/' but does not define a top-level '{section_dir.name}:' block"
+                            )
+                        unexpected = set(raw) - {section_dir.name}
+                        if unexpected:
+                            raise ValueError(
+                                f"{yml_file} is under '{section_dir.name}/' but defines unrelated sections: {sorted(unexpected)}"
+                            )
+                        scoped_raw = {
+                            section_dir.name: {
+                                name: _inject_asset_metadata(
+                                    defn,
+                                    **{
+                                        "class": "shared",
+                                        "layer": layer_dir.name,
+                                    },
+                                )
+                                for name, defn in raw.get(section_dir.name, {}).items()
+                            }
+                        }
+                        _merge_section(merged, section_dir.name, scoped_raw, yml_file)
+
+    return merged
+
+def load_raw_ddl(ddl_path: Path, forge_config: dict | None = None) -> dict:
+    """Load DDL from the canonical dbt/ddl tree.
+
+    Legacy layout:
+      dbt/ddl/{layer}/{models|udfs|seeds|volumes}/**/*.yml
+
+    V1 layout:
+      dbt/ddl/domain/{domain}/{layer}/{models|udfs|seeds|volumes}/**/*.yml
+      dbt/ddl/shared/{layer}/{models|udfs|seeds|volumes}/**/*.yml
+    """
+    if not ddl_path.exists():
+        raise FileNotFoundError(f"DDL path not found: {ddl_path}")
+    if not ddl_path.is_dir():
+        raise ValueError(
+            f"DDL path must be a directory tree rooted at dbt/ddl/. Got: {ddl_path}"
+        )
+
+    if _uses_v1_placements(forge_config):
+        return _load_raw_ddl_v1(ddl_path)
+    return _load_raw_ddl_legacy(ddl_path, forge_config=forge_config)
 
 
 def _merge_section(
@@ -152,6 +327,54 @@ def load_seeds(ddl_path: Path, forge_config: dict | None = None) -> dict[str, di
 def load_volumes(ddl_path: Path, forge_config: dict | None = None) -> dict[str, dict]:
     """Load volume definitions from a file or directory."""
     return load_raw_ddl(ddl_path, forge_config=forge_config).get("volumes", {})
+
+
+def _resolve_authored_location(
+    asset_name: str,
+    asset_def: dict,
+    profile: dict[str, Any],
+    forge_config: dict | None = None,
+    *,
+    asset_kind: str = "model",
+) -> tuple[str, str]:
+    from forge.compute_resolver import resolve_asset_location
+
+    location = resolve_asset_location(
+        asset_name,
+        asset_def,
+        profile,
+        forge_config=forge_config,
+        asset_kind=asset_kind,
+    )
+    return location.catalog, location.schema
+
+
+def _resolve_system_location(
+    system_name: str,
+    profile: dict[str, Any],
+    forge_config: dict | None = None,
+    *,
+    default_layer: str,
+) -> tuple[str, str]:
+    from forge.compute_resolver import resolve_asset_location
+
+    system_cfg = ((forge_config or {}).get("system_assets", {}).get(system_name, {}) or {})
+    system_def = {
+        "class": "system",
+        "layer": system_cfg.get("layer", default_layer),
+        "system": system_cfg.get("system", system_name),
+    }
+    if system_cfg.get("placement_family"):
+        system_def["placement_family"] = system_cfg["placement_family"]
+
+    location = resolve_asset_location(
+        system_name,
+        system_def,
+        profile,
+        forge_config=forge_config,
+        asset_kind="system",
+    )
+    return location.catalog, location.schema
 
 
 # =============================================
@@ -235,9 +458,9 @@ def _resolve_base_schema(forge_config: dict, layer: str) -> str:
 
     Used by domain expansion to compute domain schemas like 'ben_demo_eu'.
     """
-    profile_name = forge_config.get("active_profile", "dev")
-    profiles = forge_config.get("profiles", {})
-    profile = profiles.get(profile_name, {})
+    from forge.compute_resolver import resolve_profile
+
+    profile = resolve_profile(forge_config)
 
     # If profile has explicit schemas dict, use it
     if isinstance(profile.get("schemas"), dict):
@@ -271,9 +494,9 @@ def _resolve_catalog(forge_config: dict, layer: str) -> str:
 
     Applies catalog_pattern from forge.yml to generate fully-qualified catalog names.
     """
-    profile_name = forge_config.get("active_profile", "dev")
-    profiles = forge_config.get("profiles", {})
-    profile = profiles.get(profile_name, {})
+    from forge.compute_resolver import resolve_profile
+
+    profile = resolve_profile(forge_config)
 
     # If profile has explicit catalogs dict, use it
     if isinstance(profile.get("catalogs"), dict):
@@ -894,10 +1117,24 @@ def compile_all_udfs(ddl_path: Path, forge_config: dict | None = None) -> dict[s
 
     Returns: {udf_name: sql_statement}
     """
+    from forge.compute_resolver import resolve_profile
+
     udfs = load_udfs(ddl_path, forge_config=forge_config)
+    prof = resolve_profile(forge_config or {}) if forge_config else {"catalog": "main", "schema": "silver"}
     results: dict[str, str] = {}
     for udf_name, udf_def in udfs.items():
-        results[udf_name] = compile_udf_sql(udf_name, udf_def)
+        udf_catalog, udf_schema = _resolve_authored_location(
+            udf_name,
+            udf_def,
+            prof,
+            forge_config=forge_config,
+            asset_kind="udf",
+        )
+        results[udf_name] = compile_udf_sql(
+            udf_name,
+            udf_def,
+            schema=f"`{udf_catalog}`.`{udf_schema}`",
+        )
     return results
 
 
@@ -930,12 +1167,13 @@ def compile_sources_yml(ddl_path: Path, source_name: str = "seed", forge_config:
     Seeds with ``catalog:`` or ``schema:`` overrides are placed in a
     separate source group so dbt routes them to the correct location.
     """
+    from forge.compute_resolver import resolve_profile
+
     seeds = load_seeds(ddl_path, forge_config=forge_config)
     if not seeds:
         return None
+    prof = resolve_profile(forge_config or {}) if forge_config else {"catalog": "main", "schema": "silver"}
 
-    # Group seeds: default vs overridden
-    default_tables = []
     override_groups: dict[tuple[str, str], list[dict]] = {}
 
     for seed_name, seed_def in seeds.items():
@@ -959,41 +1197,27 @@ def compile_sources_yml(ddl_path: Path, source_name: str = "seed", forge_config:
                 col_list.append(col_entry)
             table["columns"] = col_list
 
-        seed_catalog = seed_def.get("catalog")
-        seed_schema = seed_def.get("schema")
-        if seed_catalog or seed_schema:
-            key = (seed_catalog or "", seed_schema or "")
-            override_groups.setdefault(key, []).append(table)
-        else:
-            default_tables.append(table)
+        seed_catalog, seed_schema = _resolve_authored_location(
+            seed_name,
+            seed_def,
+            prof,
+            forge_config=forge_config,
+            asset_kind="seed",
+        )
+        override_groups.setdefault((seed_catalog, seed_schema), []).append(table)
 
     sources_list: list[dict] = []
 
-    if default_tables:
-        sources_list.append({
-            "name": source_name,
-            "description": "Seed data loaded by dbt seed",
-            "schema": "{{ target.schema }}",
-            "tables": default_tables,
-        })
-
     # Each override group gets its own source entry
-    for (cat, sch), tables in override_groups.items():
-        group_name = f"{source_name}_{cat or 'default'}_{sch or 'default'}".replace("-", "_")
+    for index, ((cat, sch), tables) in enumerate(override_groups.items()):
+        group_name = source_name if len(override_groups) == 1 and index == 0 else f"{source_name}_{cat}_{sch}".replace("-", "_")
         entry: dict[str, Any] = {
             "name": group_name,
-            "description": f"Seed data in {cat or 'default'}.{sch or 'default'}",
+            "description": f"Seed data in {cat}.{sch}",
+            "database": cat,
+            "schema": sch,
             "tables": tables,
         }
-        if cat:
-            # Use var() so the catalog resolves via forge's naming pattern
-            # e.g. catalog: meta → var('catalog_meta', 'dev_fd_meta')
-            var_name = f"catalog_{cat}"
-            entry["database"] = "{{ var('" + var_name + "') }}"
-        if sch:
-            entry["schema"] = sch
-        else:
-            entry["schema"] = "{{ target.schema }}"
         sources_list.append(entry)
 
     if not sources_list:
@@ -1096,49 +1320,29 @@ def compile_volumes(
 
     Output goes directly to ``output_dir``.
     """
+    from forge.compute_resolver import resolve_profile
+
     volumes = load_volumes(ddl_path, forge_config=forge_config)
     if not volumes:
         return {}
 
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    domains = (forge_config or {}).get("domains", {})
-    domain_layers = set((forge_config or {}).get("domain_layers", []))
+    prof = resolve_profile(forge_config or {}) if forge_config else {"catalog": "main", "schema": "silver"}
 
     results: dict[str, Path] = {}
 
     for vol_name, vol_def in volumes.items():
-        vol_layer = vol_def.get("layer", "bronze")
-        vol_domain_enabled = vol_def.get("domain", True) is not False
-        is_bifurcated = domains and vol_layer in domain_layers and vol_domain_enabled
-
-        # Resolve catalog and schema using patterns from forge_config
-        resolved_catalog = _resolve_catalog(forge_config, vol_layer) if forge_config else vol_layer
-        base_schema = _resolve_base_schema(forge_config, vol_layer) if forge_config else "default"
-
-        if is_bifurcated:
-            for domain_name, domain_cfg in domains.items():
-                suffix = domain_cfg.get("schema_suffix", f"_{domain_name}")
-                instance_name = f"{vol_name}_{domain_name}"
-                d_schema = f"{base_schema}{suffix}"
-
-                # Support per-domain location overrides
-                d_def = {**vol_def}
-                domain_locs = vol_def.get("domain_locations", {})
-                if domain_name in domain_locs:
-                    d_def["location"] = domain_locs[domain_name]
-                elif vol_def.get("location"):
-                    d_def["location"] = vol_def["location"].rstrip("/") + f"/{domain_name}/"
-
-                sql = compile_volume_sql(instance_name, d_def, resolved_catalog, d_schema)
-                out_path = output_dir / f"{instance_name}.sql"
-                out_path.write_text(sql)
-                results[instance_name] = out_path
-        else:
-            sql = compile_volume_sql(vol_name, vol_def, resolved_catalog, base_schema)
-            out_path = output_dir / f"{vol_name}.sql"
-            out_path.write_text(sql)
-            results[vol_name] = out_path
+        resolved_catalog, resolved_schema = _resolve_authored_location(
+            vol_name,
+            vol_def,
+            prof,
+            forge_config=forge_config,
+            asset_kind="volume",
+        )
+        sql = compile_volume_sql(vol_name, vol_def, resolved_catalog, resolved_schema)
+        out_path = output_dir / f"{vol_name}.sql"
+        out_path.write_text(sql)
+        results[vol_name] = out_path
 
     return results
 
@@ -1169,11 +1373,30 @@ def compile_all(
 
     Returns a dict of {model_name: output_path} for all generated files.
     """
+    from forge.compute_resolver import resolve_profile
+
     models = load_ddl(ddl_path, forge_config=forge_config)
     seeds = load_seeds(ddl_path, forge_config=forge_config)
     seed_names = set(seeds.keys())
     output_dir.mkdir(parents=True, exist_ok=True)
     results: dict[str, Path] = {}
+    prof = resolve_profile(forge_config or {}) if forge_config else {"catalog": "main", "schema": "silver"}
+
+    resolved_models: dict[str, dict] = {}
+    for model_name, model_def in models.items():
+        resolved_catalog, resolved_schema = _resolve_authored_location(
+            model_name,
+            model_def,
+            prof,
+            forge_config=forge_config,
+            asset_kind="model",
+        )
+        resolved_models[model_name] = {
+            **model_def,
+            "catalog": resolved_catalog,
+            "schema": resolved_schema,
+        }
+    models = resolved_models
 
     origin = (forge_config or {}).get("id", "project")
 
@@ -1199,7 +1422,7 @@ def compile_all(
     origin_tracking = lineage_cfg.get("origin_tracking", True)
 
     # Domain config
-    domains = (forge_config or {}).get("domains", {})
+    domains = {} if _uses_v1_placements(forge_config) else (forge_config or {}).get("domains", {})
     domain_layers = set((forge_config or {}).get("domain_layers", list((forge_config or {}).get("schemas", []))))
 
     # Track domain instances for schema.yml generation
@@ -2329,13 +2552,12 @@ def compile_all_pure_sql(
     raw_ → bronze, customer_summary → gold, etc.).
     """
     from datetime import datetime, timezone
-    from forge.compute_resolver import resolve_model_schema
 
     deploy_ts = datetime.now(timezone.utc).isoformat()
     prof = profile or {"catalog": catalog, "schema": schema}
 
-    models = load_ddl(ddl_path)
-    udfs = load_udfs(ddl_path)
+    models = load_ddl(ddl_path, forge_config=forge_config)
+    udfs = load_udfs(ddl_path, forge_config=forge_config)
 
     # Clean stale files — source of truth is always dbt/ddl/*
     if output_dir.exists():
@@ -2348,8 +2570,9 @@ def compile_all_pure_sql(
     # Build a lookup of resolved (catalog, schema) per model
     model_locations: dict[str, tuple[str, str]] = {}
     for model_name, model_def in models.items():
-        model_locations[model_name] = resolve_model_schema(
+        model_locations[model_name] = _resolve_authored_location(
             model_name, model_def, prof, forge_config=forge_config,
+            asset_kind="model",
         )
 
     # ── Validate shared assets aren't in domain-suffixed schemas ──
@@ -2382,8 +2605,8 @@ def compile_all_pure_sql(
     seq = 0
 
     # Resolve meta catalog/schema for lineage tables
-    meta_cat, meta_sch = resolve_model_schema(
-        "_lineage", {"layer": "meta"}, prof, forge_config=forge_config,
+    meta_cat, meta_sch = _resolve_system_location(
+        "lineage", prof, forge_config=forge_config, default_layer="meta",
     )
 
     # ── Collect ALL distinct catalog.schema pairs used anywhere ──
@@ -2402,8 +2625,12 @@ def compile_all_pure_sql(
             udf_schema = udf_def.get("schema")
             if not udf_catalog or not udf_schema:
                 udf_layer = udf_def.get("layer", "silver")
-                resolved_cat, resolved_sch = resolve_model_schema(
-                    udf_name, {"layer": udf_layer}, prof, forge_config=forge_config,
+                resolved_cat, resolved_sch = _resolve_authored_location(
+                    udf_name,
+                    udf_def,
+                    prof,
+                    forge_config=forge_config,
+                    asset_kind="udf",
                 )
                 udf_catalog = udf_catalog or resolved_cat
                 udf_schema = udf_schema or resolved_sch
@@ -2529,9 +2756,12 @@ def compile_all_pure_sql(
             "",
         ]
         for vol_name, vol_def in volumes.items():
-            vol_layer = vol_def.get("layer", "bronze")
-            v_cat, v_sch = resolve_model_schema(
-                vol_name, {"layer": vol_layer}, prof, forge_config=forge_config,
+            v_cat, v_sch = _resolve_authored_location(
+                vol_name,
+                vol_def,
+                prof,
+                forge_config=forge_config,
+                asset_kind="volume",
             )
             vol_lines.append(compile_volume_sql(vol_name, vol_def, v_cat, v_sch))
         vol_path = output_dir / f"{seq:03d}_volumes.sql"
@@ -2544,12 +2774,12 @@ def compile_all_pure_sql(
     for seed_name, seed_def in seeds.items():
         if not isinstance(seed_def, dict):
             continue
-        seed_catalog = seed_def.get("catalog")
-        if not seed_catalog:
-            continue  # default-catalog seeds are handled by dbt seed
-        # Resolve catalog + schema through profile mapping
-        s_cat, s_sch = resolve_model_schema(
-            seed_name, {"layer": seed_catalog}, prof, forge_config=forge_config,
+        s_cat, s_sch = _resolve_authored_location(
+            seed_name,
+            seed_def,
+            prof,
+            forge_config=forge_config,
+            asset_kind="seed",
         )
         # Locate the CSV file
         origin = seed_def.get("origin", {})
@@ -2633,20 +2863,19 @@ def compile_teardown_sql(
     dropped before parents.  UDFs are dropped first (they may reference
     tables).  Lineage tables are dropped last.
     """
-    from forge.compute_resolver import resolve_model_schema
-
     prof = profile or {}
     models = load_ddl(ddl_path, forge_config=forge_config)
     udfs = load_udfs(ddl_path, forge_config=forge_config)
 
     model_locations: dict[str, tuple[str, str]] = {}
     for model_name, model_def in models.items():
-        model_locations[model_name] = resolve_model_schema(
+        model_locations[model_name] = _resolve_authored_location(
             model_name, model_def, prof, forge_config=forge_config,
+            asset_kind="model",
         )
 
-    meta_cat, meta_sch = resolve_model_schema(
-        "_lineage", {"layer": "meta"}, prof, forge_config=forge_config,
+    meta_cat, meta_sch = _resolve_system_location(
+        "lineage", prof, forge_config=forge_config, default_layer="meta",
     )
 
     lines: list[str] = [
@@ -2662,9 +2891,12 @@ def compile_teardown_sql(
         udf_catalog = udf_def.get("catalog")
         udf_schema = udf_def.get("schema")
         if not udf_catalog or not udf_schema:
-            udf_layer = udf_def.get("layer", "silver")
-            udf_catalog, udf_schema = resolve_model_schema(
-                udf_name, {"layer": udf_layer}, prof, forge_config=forge_config,
+            udf_catalog, udf_schema = _resolve_authored_location(
+                udf_name,
+                udf_def,
+                prof,
+                forge_config=forge_config,
+                asset_kind="udf",
             )
         fq = f"`{udf_catalog}`.`{udf_schema}`.{udf_name}"
         lines.append(f"DROP FUNCTION IF EXISTS {fq};")
@@ -2718,35 +2950,28 @@ def compile_backup_sql(
     Runs as a SQL task before teardown in the TEARDOWN workflow.
     """
     import subprocess
-    from forge.compute_resolver import resolve_model_schema
-
     prof = profile or {}
     fc = forge_config or {}
     models = load_ddl(ddl_path, forge_config=forge_config)
 
     model_locations: dict[str, tuple[str, str]] = {}
     for model_name, model_def in models.items():
-        model_locations[model_name] = resolve_model_schema(
+        model_locations[model_name] = _resolve_authored_location(
             model_name, model_def, prof, forge_config=forge_config,
+            asset_kind="model",
         )
 
-    meta_cat, meta_sch = resolve_model_schema(
-        "_lineage", {"layer": "meta"}, prof, forge_config=forge_config,
+    meta_cat, meta_sch = _resolve_system_location(
+        "lineage", prof, forge_config=forge_config, default_layer="meta",
     )
 
     # Resolve backup target: operations catalog + backups schema
-    backup_cat = _resolve_catalog(fc, "operations")
-    user = re.sub(r"[^a-z0-9]+", "_", getpass.getuser().lower()).strip("_")
-    schema_pattern = fc.get("schema_pattern", "{user}_{id}")
+    backup_cat, backup_sch = _resolve_system_location(
+        "backups", prof, forge_config=forge_config, default_layer="operations",
+    )
     project_id = fc.get("id", fc.get("name", "project")).replace("-", "_")
     project_name = fc.get("name", "unnamed")
-    scope = fc.get("scope", "").replace("-", "_")
     env = prof.get("env", "dev")
-    backup_sch = schema_pattern.replace("{user}", user).replace("{id}", "backups")
-    backup_sch = backup_sch.replace("{scope}", scope).replace("{env}", env)
-    while "__" in backup_sch:
-        backup_sch = backup_sch.replace("__", "_")
-    backup_sch = backup_sch.strip("_")
 
     archive_table = f"`{backup_cat}`.`{backup_sch}`.`_backup_archive`"
 
@@ -2959,13 +3184,14 @@ def _validate_sql_schema_ordering(output_dir: Path) -> None:
 def apply_migration(
     ddl_path: Path,
     migration_path: Path,
+    forge_config: dict | None = None,
 ) -> dict[str, Any]:
     """
     Apply a migration YAML to the dbt/ddl DDL.
 
     Returns a summary of changes applied.
     """
-    models = load_ddl(ddl_path)
+    models = load_ddl(ddl_path, forge_config=forge_config)
     migration = yaml.safe_load(migration_path.read_text())
     summary: dict[str, list[str]] = {}
 
@@ -3040,6 +3266,7 @@ def apply_all_migrations(
     ddl_path: Path,
     migrations_dir: Path,
     applied_log: Path | None = None,
+    forge_config: dict | None = None,
 ) -> list[dict]:
     """
     Apply all unapplied migrations in order.
@@ -3065,7 +3292,7 @@ def apply_all_migrations(
 
     results = []
     for mig_file in migration_files:
-        result = apply_migration(ddl_path, mig_file)
+        result = apply_migration(ddl_path, mig_file, forge_config=forge_config)
         results.append(result)
         applied.add(mig_file.stem)
 
@@ -3079,6 +3306,7 @@ def apply_all_migrations_dry_run(
     ddl_path: Path,
     migrations_dir: Path,
     applied_log: Path | None = None,
+    forge_config: dict | None = None,
 ) -> list[dict]:
     """
     Preview all unapplied migrations WITHOUT modifying any files.
@@ -3104,7 +3332,7 @@ def apply_all_migrations_dry_run(
         return []
 
     # Work on in-memory copy
-    models = load_ddl(ddl_path)
+    models = load_ddl(ddl_path, forge_config=forge_config)
 
     results = []
     for mig_file in migration_files:
@@ -3270,13 +3498,14 @@ def _compile_single_check(
 def compile_checks_sql(
     ddl_path: Path,
     model_filter: str | None = None,
+    forge_config: dict | None = None,
 ) -> dict[str, list[dict]]:
     """
     Compile all checks from dbt/ddl into SQL.
 
     Returns: {model_name: [{name, type, scope, severity, sql}, ...]}
     """
-    models = load_ddl(ddl_path)
+    models = load_ddl(ddl_path, forge_config=forge_config)
     results: dict[str, list[dict]] = {}
 
     for model_name, model_def in models.items():
@@ -3324,7 +3553,7 @@ def generate_agent_guide(
     # Load models if DDL exists
     models: dict[str, dict] = {}
     if ddl_path and ddl_path.exists():
-        models = load_ddl(ddl_path)
+        models = load_ddl(ddl_path, forge_config=forge_config)
 
     # Build the guide
     lines: list[str] = []
@@ -3636,7 +3865,7 @@ def generate_agent_guide(
 
     # ── UDF inventory ────────────────────────────
     if ddl_path and ddl_path.exists():
-        udfs_defined = load_udfs(ddl_path)
+        udfs_defined = load_udfs(ddl_path, forge_config=forge_config)
         if udfs_defined:
             lines.append("### Your Current UDFs")
             lines.append("")

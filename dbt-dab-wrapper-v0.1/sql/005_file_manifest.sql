@@ -29,7 +29,7 @@ SELECT
     current_timestamp() AS completed_at;
 
 -- Lineage log (run_id captured at runtime)
-INSERT INTO `dev_fd_meta`.`ben_sales`.lineage_log
+INSERT INTO `dev_fd_meta`.`ben_lineage`.lineage_log
     (run_id, model, materialized, rows_created, catalog, schema, sources, git_commit, completed_at)
 SELECT
     :run_id,

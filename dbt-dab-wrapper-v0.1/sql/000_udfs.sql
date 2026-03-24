@@ -1,9 +1,9 @@
 CREATE SCHEMA IF NOT EXISTS `dev_fd_bronze`.`ben_sales`;
-CREATE SCHEMA IF NOT EXISTS `dev_fd_meta`.`ben_sales`;
+CREATE SCHEMA IF NOT EXISTS `dev_fd_meta`.`ben_lineage`;
 CREATE SCHEMA IF NOT EXISTS `dev_fd_silver`.`ben_sales`;
 
 -- Table stubs for lineage UDFs (forge-internal)
-CREATE TABLE IF NOT EXISTS `dev_fd_meta`.`ben_sales`.`lineage_graph` (
+CREATE TABLE IF NOT EXISTS `dev_fd_meta`.`ben_lineage`.`lineage_graph` (
     target_model STRING NOT NULL,
     source_model STRING NOT NULL,
     target_column STRING,
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS `dev_fd_meta`.`ben_sales`.`lineage_graph` (
 USING DELTA
 TBLPROPERTIES('delta.feature.allowColumnDefaults' = 'supported');
 
-CREATE TABLE IF NOT EXISTS `dev_fd_meta`.`ben_sales`.`lineage_log` (
+CREATE TABLE IF NOT EXISTS `dev_fd_meta`.`ben_lineage`.`lineage_log` (
     run_id STRING NOT NULL,
     model STRING NOT NULL,
     materialized STRING,
@@ -75,8 +75,8 @@ END);
 
 -- UDF: trace_lineage
 -- Trace any value back through the full DAG (max depth 10)
-DROP FUNCTION IF EXISTS `dev_fd_meta`.`ben_sales`.trace_lineage;
-CREATE FUNCTION `dev_fd_meta`.`ben_sales`.trace_lineage(
+DROP FUNCTION IF EXISTS `dev_fd_meta`.`ben_lineage`.trace_lineage;
+CREATE FUNCTION `dev_fd_meta`.`ben_lineage`.trace_lineage(
     start_model STRING, key_col STRING, key_val STRING
 )
 RETURNS STRING
@@ -113,7 +113,7 @@ RETURN (
              g0.expression,
              g0.source_catalog,
              g0.source_schema
-      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      FROM `dev_fd_meta`.`ben_lineage`.lineage_graph g0
       WHERE g0.target_model = start_model
       UNION ALL
       SELECT 2 AS depth,
@@ -125,8 +125,8 @@ RETURN (
              g1.expression,
              g1.source_catalog,
              g1.source_schema
-      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
+      FROM `dev_fd_meta`.`ben_lineage`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g1 ON g0.source_model = g1.target_model
       WHERE g0.target_model = start_model
       UNION ALL
       SELECT 3 AS depth,
@@ -138,9 +138,9 @@ RETURN (
              g2.expression,
              g2.source_catalog,
              g2.source_schema
-      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
+      FROM `dev_fd_meta`.`ben_lineage`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g2 ON g1.source_model = g2.target_model
       WHERE g0.target_model = start_model
       UNION ALL
       SELECT 4 AS depth,
@@ -152,10 +152,10 @@ RETURN (
              g3.expression,
              g3.source_catalog,
              g3.source_schema
-      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
+      FROM `dev_fd_meta`.`ben_lineage`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g3 ON g2.source_model = g3.target_model
       WHERE g0.target_model = start_model
       UNION ALL
       SELECT 5 AS depth,
@@ -167,11 +167,11 @@ RETURN (
              g4.expression,
              g4.source_catalog,
              g4.source_schema
-      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
+      FROM `dev_fd_meta`.`ben_lineage`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g4 ON g3.source_model = g4.target_model
       WHERE g0.target_model = start_model
       UNION ALL
       SELECT 6 AS depth,
@@ -183,12 +183,12 @@ RETURN (
              g5.expression,
              g5.source_catalog,
              g5.source_schema
-      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g5 ON g4.source_model = g5.target_model
+      FROM `dev_fd_meta`.`ben_lineage`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g4 ON g3.source_model = g4.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g5 ON g4.source_model = g5.target_model
       WHERE g0.target_model = start_model
       UNION ALL
       SELECT 7 AS depth,
@@ -200,13 +200,13 @@ RETURN (
              g6.expression,
              g6.source_catalog,
              g6.source_schema
-      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g5 ON g4.source_model = g5.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g6 ON g5.source_model = g6.target_model
+      FROM `dev_fd_meta`.`ben_lineage`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g4 ON g3.source_model = g4.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g5 ON g4.source_model = g5.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g6 ON g5.source_model = g6.target_model
       WHERE g0.target_model = start_model
       UNION ALL
       SELECT 8 AS depth,
@@ -218,14 +218,14 @@ RETURN (
              g7.expression,
              g7.source_catalog,
              g7.source_schema
-      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g5 ON g4.source_model = g5.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g6 ON g5.source_model = g6.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g7 ON g6.source_model = g7.target_model
+      FROM `dev_fd_meta`.`ben_lineage`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g4 ON g3.source_model = g4.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g5 ON g4.source_model = g5.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g6 ON g5.source_model = g6.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g7 ON g6.source_model = g7.target_model
       WHERE g0.target_model = start_model
       UNION ALL
       SELECT 9 AS depth,
@@ -237,15 +237,15 @@ RETURN (
              g8.expression,
              g8.source_catalog,
              g8.source_schema
-      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g5 ON g4.source_model = g5.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g6 ON g5.source_model = g6.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g7 ON g6.source_model = g7.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g8 ON g7.source_model = g8.target_model
+      FROM `dev_fd_meta`.`ben_lineage`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g4 ON g3.source_model = g4.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g5 ON g4.source_model = g5.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g6 ON g5.source_model = g6.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g7 ON g6.source_model = g7.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g8 ON g7.source_model = g8.target_model
       WHERE g0.target_model = start_model
     )
     ORDER BY depth
@@ -254,8 +254,8 @@ RETURN (
 
 -- UDF: trace_lineage_json
 -- Same as trace_lineage but returns structured JSON (max depth 10)
-DROP FUNCTION IF EXISTS `dev_fd_meta`.`ben_sales`.trace_lineage_json;
-CREATE FUNCTION `dev_fd_meta`.`ben_sales`.trace_lineage_json(
+DROP FUNCTION IF EXISTS `dev_fd_meta`.`ben_lineage`.trace_lineage_json;
+CREATE FUNCTION `dev_fd_meta`.`ben_lineage`.trace_lineage_json(
     start_model STRING, key_col STRING, key_val STRING
 )
 RETURNS STRING
@@ -292,7 +292,7 @@ RETURN (
              g0.expression,
              g0.source_catalog,
              g0.source_schema
-      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      FROM `dev_fd_meta`.`ben_lineage`.lineage_graph g0
       WHERE g0.target_model = start_model
       UNION ALL
       SELECT 2 AS depth,
@@ -304,8 +304,8 @@ RETURN (
              g1.expression,
              g1.source_catalog,
              g1.source_schema
-      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
+      FROM `dev_fd_meta`.`ben_lineage`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g1 ON g0.source_model = g1.target_model
       WHERE g0.target_model = start_model
       UNION ALL
       SELECT 3 AS depth,
@@ -317,9 +317,9 @@ RETURN (
              g2.expression,
              g2.source_catalog,
              g2.source_schema
-      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
+      FROM `dev_fd_meta`.`ben_lineage`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g2 ON g1.source_model = g2.target_model
       WHERE g0.target_model = start_model
       UNION ALL
       SELECT 4 AS depth,
@@ -331,10 +331,10 @@ RETURN (
              g3.expression,
              g3.source_catalog,
              g3.source_schema
-      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
+      FROM `dev_fd_meta`.`ben_lineage`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g3 ON g2.source_model = g3.target_model
       WHERE g0.target_model = start_model
       UNION ALL
       SELECT 5 AS depth,
@@ -346,11 +346,11 @@ RETURN (
              g4.expression,
              g4.source_catalog,
              g4.source_schema
-      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
+      FROM `dev_fd_meta`.`ben_lineage`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g4 ON g3.source_model = g4.target_model
       WHERE g0.target_model = start_model
       UNION ALL
       SELECT 6 AS depth,
@@ -362,12 +362,12 @@ RETURN (
              g5.expression,
              g5.source_catalog,
              g5.source_schema
-      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g5 ON g4.source_model = g5.target_model
+      FROM `dev_fd_meta`.`ben_lineage`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g4 ON g3.source_model = g4.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g5 ON g4.source_model = g5.target_model
       WHERE g0.target_model = start_model
       UNION ALL
       SELECT 7 AS depth,
@@ -379,13 +379,13 @@ RETURN (
              g6.expression,
              g6.source_catalog,
              g6.source_schema
-      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g5 ON g4.source_model = g5.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g6 ON g5.source_model = g6.target_model
+      FROM `dev_fd_meta`.`ben_lineage`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g4 ON g3.source_model = g4.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g5 ON g4.source_model = g5.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g6 ON g5.source_model = g6.target_model
       WHERE g0.target_model = start_model
       UNION ALL
       SELECT 8 AS depth,
@@ -397,14 +397,14 @@ RETURN (
              g7.expression,
              g7.source_catalog,
              g7.source_schema
-      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g5 ON g4.source_model = g5.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g6 ON g5.source_model = g6.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g7 ON g6.source_model = g7.target_model
+      FROM `dev_fd_meta`.`ben_lineage`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g4 ON g3.source_model = g4.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g5 ON g4.source_model = g5.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g6 ON g5.source_model = g6.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g7 ON g6.source_model = g7.target_model
       WHERE g0.target_model = start_model
       UNION ALL
       SELECT 9 AS depth,
@@ -416,15 +416,15 @@ RETURN (
              g8.expression,
              g8.source_catalog,
              g8.source_schema
-      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g5 ON g4.source_model = g5.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g6 ON g5.source_model = g6.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g7 ON g6.source_model = g7.target_model
-      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g8 ON g7.source_model = g8.target_model
+      FROM `dev_fd_meta`.`ben_lineage`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g4 ON g3.source_model = g4.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g5 ON g4.source_model = g5.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g6 ON g5.source_model = g6.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g7 ON g6.source_model = g7.target_model
+      JOIN `dev_fd_meta`.`ben_lineage`.lineage_graph g8 ON g7.source_model = g8.target_model
       WHERE g0.target_model = start_model
     )
     ORDER BY depth
@@ -433,11 +433,11 @@ RETURN (
 
 -- UDF: last_run_id
 -- Returns the most recent run_id for a model
-DROP FUNCTION IF EXISTS `dev_fd_meta`.`ben_sales`.last_run_id;
-CREATE FUNCTION `dev_fd_meta`.`ben_sales`.last_run_id(model_name STRING)
+DROP FUNCTION IF EXISTS `dev_fd_meta`.`ben_lineage`.last_run_id;
+CREATE FUNCTION `dev_fd_meta`.`ben_lineage`.last_run_id(model_name STRING)
 RETURNS STRING
 RETURN (
-  SELECT run_id FROM `dev_fd_meta`.`ben_sales`.lineage_log
+  SELECT run_id FROM `dev_fd_meta`.`ben_lineage`.lineage_log
   WHERE model = model_name
   ORDER BY completed_at DESC
   LIMIT 1

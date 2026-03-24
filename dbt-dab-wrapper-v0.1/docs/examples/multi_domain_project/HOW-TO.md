@@ -384,7 +384,7 @@ ref the single shared table, not a non-existent `country_codes_eu`.
    - Rewrites upstream refs to domain-specific variants
    - Applies `domain_sources:` overrides if defined (optional, advanced)
 3. Each instance is a real dbt model — tests, docs, graph, workflow all work
-4. `build_domain_workflows()` splits the graph into per-domain subsets
+4. `build_domain_workflows()` splits the graph using per-contract domain metadata, not model-name suffix parsing
 
 ---
 
@@ -397,7 +397,7 @@ ref the single shared table, not a non-existent `country_codes_eu`.
 | Domain-specific source | `domain_sources:` in model DDL (advanced, for non-bifurcated overrides) |
 | Opt a model out | `domain: false` in model DDL |
 | Shared workflow | `domain_workflows: shared` in forge.yml |
-| Separate workflows (default) | One workflow per domain, runs in parallel |
+| Separate workflows (default) | One workflow per domain, runs in parallel; names are generated from the project id plus the domain when needed |
 | Check compiled source | `grep "from" dbt/models/.../eu/stg_customers_eu.sql` |
 | Deploy all domains | `forge deploy` (no extra flags) |
 | Declare a per-domain Volume | `domain: true` in `dbt/ddl/{layer}/volumes/*.yml` |
