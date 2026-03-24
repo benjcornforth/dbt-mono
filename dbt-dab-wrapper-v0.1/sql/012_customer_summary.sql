@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS `dev_fd_silver`.`ben_sales`.`customer_summary` (
     first_order_date DATE,
     last_order_date DATE,
     tier STRING,
-    _lineage STRUCT<schema_version: STRING, model: STRING, sources: STRING, git_commit: STRING, deployed_at: STRING, compute_type: STRING, contract_id: STRING, version: STRING, columns: ARRAY<STRUCT<name: STRING, expression: STRING, op: STRING>>>
+    _lineage STRUCT<schema_version: STRING, model: STRING, sources: STRING, origin_files: ARRAY<STRING>, ingested_ats: ARRAY<TIMESTAMP>, upstream: STRING, git_commit: STRING, deployed_at: STRING, compute_type: STRING, contract_id: STRING, version: STRING, columns: ARRAY<STRUCT<name: STRING, expression: STRING, op: STRING>>>
 ) USING DELTA;
 
 TRUNCATE TABLE `dev_fd_silver`.`ben_sales`.`customer_summary`;
@@ -31,7 +31,9 @@ WITH _agg AS (
         count(order_id) as total_orders,
         sum(line_total) as total_revenue,
         min(order_date) as first_order_date,
-        max(order_date) as last_order_date
+        max(order_date) as last_order_date,
+        array_distinct(flatten(collect_list(coalesce(_lineage.origin_files, array(_origin_file))))) as _collected_origin_files,
+        array_distinct(flatten(collect_list(coalesce(_lineage.ingested_ats, array(_inserted_at))))) as _collected_ingested_ats
     FROM `dev_fd_silver`.`ben_sales`.`customer_orders`
     GROUP BY
         customer_id, first_name, last_name, email, country
@@ -48,11 +50,14 @@ SELECT
     last_order_date,
     `dev_fd_silver`.`ben_sales`.loyalty_tier(total_revenue) as tier,
     named_struct(
-        'schema_version', '3',
+        'schema_version', '4',
         'model', 'customer_summary',
         'sources', 'customer_orders',
+        'origin_files', _collected_origin_files,
+        'ingested_ats', _collected_ingested_ats,
+        'upstream', cast(null as string),
         'git_commit', 'unknown',
-        'deployed_at', '2026-03-24T18:49:47.139643+00:00',
+        'deployed_at', '2026-03-24T20:44:44.215280+00:00',
         'compute_type', 'serverless',
         'contract_id', 'ben_sales.customer_summary',
         'version', 'v1',
@@ -123,7 +128,7 @@ SELECT
 INSERT INTO `dev_fd_meta`.`ben_sales`.lineage_log
     (run_id, model, materialized, rows_created, catalog, schema, sources, git_commit, completed_at)
 SELECT
-    '{{job.run_id}}',
+    :run_id,
     'customer_summary',
     'table',
     COUNT(*),

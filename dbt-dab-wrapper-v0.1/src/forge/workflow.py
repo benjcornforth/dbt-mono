@@ -264,6 +264,11 @@ class Workflow:
                 }
                 if self.warehouse_id:
                     sql_config["warehouse_id"] = self.warehouse_id
+                # Pass dynamic value refs as named parameters for :param SQL syntax
+                sql_config["parameters"] = {
+                    **(sql_config.get("parameters") or {}),
+                    "run_id": "{{job.run_id}}",
+                }
                 task_def["sql_task"] = sql_config
             elif task.task_type == "notebook" and task.notebook_path:
                 # notebook_task — runs a Databricks notebook
@@ -731,6 +736,12 @@ def build_workflow(
     from forge.python_task import load_python_tasks
     python_tasks = load_python_tasks()
 
+    # ── Load DDL model defs for managed_by column schemas ──
+    from forge.simple_ddl import load_ddl
+    dbt_dir = Path(forge_config.get("dbt_project_dir", "dbt"))
+    ddl_path = dbt_dir / "ddl" if (dbt_dir / "ddl").is_dir() else dbt_dir / "models.yml"
+    ddl_models = load_ddl(ddl_path, forge_config=forge_config) if ddl_path.exists() else {}
+
     # ── Load custom_tasks from forge.yml ──────────────
     custom_tasks = load_custom_tasks(forge_config)
     custom_by_stage: dict[str, list[dict]] = {s: [] for s in STAGES}
@@ -868,6 +879,24 @@ def build_workflow(
             params = list(runtime_params)
             if domain_name:
                 params.append(f"--domain={domain_name}")
+
+            # Bake DDL column schemas for managed_by models so the python
+            # task can cast CSV columns without reading the target table.
+            for m_name, m_def in ddl_models.items():
+                if not isinstance(m_def, dict) or not m_def.get("managed_by"):
+                    continue
+                cols = m_def.get("columns", {})
+                if cols:
+                    col_parts = []
+                    for c_name, c_def in cols.items():
+                        if isinstance(c_def, str):
+                            c_type = c_def
+                        elif isinstance(c_def, dict):
+                            c_type = c_def.get("type", "string")
+                        else:
+                            c_type = "string"
+                        col_parts.append(f"{c_name}:{c_type}")
+                    params.append(f"--schema_{m_name}={'|'.join(col_parts)}")
 
             pt_config: dict[str, Any] | None = {"parameters": params} if params else None
 
@@ -1098,6 +1127,23 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
             depends_on=lineage_deps,
             compute_type=compute_type,
         ))
+
+    # Quarantine tables task — creates transform_quarantine + ingest_quarantine
+    sql_dir_setup = Path("sql")
+    if sql_dir_setup.is_dir():
+        for f in sorted(sql_dir_setup.iterdir()):
+            if f.name.endswith("_quarantine_tables.sql"):
+                q_deps = [tasks[-1].name] if tasks else ["setup"]
+                tasks.append(WorkflowTask(
+                    name="create_quarantine_tables",
+                    stage="ingest",
+                    task_type="sql",
+                    sql_file=f"sql/{f.name}",
+                    models=[],
+                    depends_on=q_deps,
+                    compute_type=compute_type,
+                ))
+                break
 
     # Volumes task — CREATE VOLUME IF NOT EXISTS
     sql_dir = Path("sql")

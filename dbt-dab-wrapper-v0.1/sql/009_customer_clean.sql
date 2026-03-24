@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS `dev_fd_silver`.`ben_sales`.`customer_clean` (
     signup_date DATE,
     country STRING,
     revenue DECIMAL(10,2),
-    _lineage STRUCT<schema_version: STRING, model: STRING, sources: STRING, git_commit: STRING, deployed_at: STRING, compute_type: STRING, contract_id: STRING, version: STRING, columns: ARRAY<STRUCT<name: STRING, expression: STRING, op: STRING>>>
+    _lineage STRUCT<schema_version: STRING, model: STRING, sources: STRING, origin_files: ARRAY<STRING>, ingested_ats: ARRAY<TIMESTAMP>, upstream: STRING, git_commit: STRING, deployed_at: STRING, compute_type: STRING, contract_id: STRING, version: STRING, columns: ARRAY<STRUCT<name: STRING, expression: STRING, op: STRING>>>
 ) USING DELTA;
 
 TRUNCATE TABLE `dev_fd_silver`.`ben_sales`.`customer_clean`;
@@ -27,11 +27,14 @@ SELECT
     country,
     revenue,
     named_struct(
-        'schema_version', '3',
+        'schema_version', '4',
         'model', 'customer_clean',
         'sources', 'stg_customers',
+        'origin_files', coalesce(_lineage.origin_files, array(_origin_file)),
+        'ingested_ats', coalesce(_lineage.ingested_ats, array(_inserted_at)),
+        'upstream', to_json(_lineage),
         'git_commit', 'unknown',
-        'deployed_at', '2026-03-24T18:49:47.139643+00:00',
+        'deployed_at', '2026-03-24T20:44:44.215280+00:00',
         'compute_type', 'serverless',
         'contract_id', 'ben_sales.customer_clean',
         'version', 'v2',
@@ -74,6 +77,7 @@ SELECT
     )
     ) AS _lineage
 FROM `dev_fd_bronze`.`ben_sales`.`stg_customers`
+WHERE NOT (email IS NULL OR revenue < 0)
 ;
 
 -- Execution summary
@@ -87,7 +91,7 @@ SELECT
 INSERT INTO `dev_fd_meta`.`ben_sales`.lineage_log
     (run_id, model, materialized, rows_created, catalog, schema, sources, git_commit, completed_at)
 SELECT
-    '{{job.run_id}}',
+    :run_id,
     'customer_clean',
     'table',
     COUNT(*),

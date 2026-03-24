@@ -17,12 +17,17 @@ resources:
           - --catalog_meta=dev_fd_meta
           - --git_commit=local
           - --compute_type=serverless
+          - --schema_file_manifest=file_path:string|file_name:string|model_name:string|domain:string|file_format:string|row_count:int|file_size_bytes:int|checksum:string|ingested_at:timestamp|status:string
+          - --schema_raw_customers=customer_id:int|first_name:string|last_name:string|email:string|signup_date:date|country:string|revenue:decimal(10,2)
+          - --schema_raw_orders=order_id:int|customer_id:int|product:string|quantity:int|unit_price:decimal(10,2)|order_date:date
       - task_key: stage_customer_orders
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/010_customer_orders.sql
+            path: ../../sql/011_customer_orders.sql
           warehouse_id: 724607f766691c81
+          parameters:
+            run_id: '{{job.run_id}}'
         depends_on:
         - task_key: clean_customer_clean
         - task_key: stage_stg_orders
@@ -30,40 +35,50 @@ resources:
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/011_customer_summary.sql
+            path: ../../sql/012_customer_summary.sql
           warehouse_id: 724607f766691c81
+          parameters:
+            run_id: '{{job.run_id}}'
         depends_on:
         - task_key: stage_customer_orders
       - task_key: stage_stg_customers
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/007_stg_customers.sql
+            path: ../../sql/008_stg_customers.sql
           warehouse_id: 724607f766691c81
+          parameters:
+            run_id: '{{job.run_id}}'
         depends_on:
         - task_key: ingest_py_ingest_from_volume
       - task_key: stage_stg_orders
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/009_stg_orders.sql
+            path: ../../sql/010_stg_orders.sql
           warehouse_id: 724607f766691c81
+          parameters:
+            run_id: '{{job.run_id}}'
         depends_on:
         - task_key: ingest_py_ingest_from_volume
       - task_key: clean_customer_clean
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/008_customer_clean.sql
+            path: ../../sql/009_customer_clean.sql
           warehouse_id: 724607f766691c81
+          parameters:
+            run_id: '{{job.run_id}}'
         depends_on:
         - task_key: stage_stg_customers
       - task_key: clean_customer_clean_quarantine
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/008_customer_clean_quarantine.sql
+            path: ../../sql/009_customer_clean_quarantine.sql
           warehouse_id: 724607f766691c81
+          parameters:
+            run_id: '{{job.run_id}}'
         depends_on:
         - task_key: clean_customer_clean
       environments:

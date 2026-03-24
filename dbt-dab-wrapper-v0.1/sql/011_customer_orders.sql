@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS `dev_fd_silver`.`ben_sales`.`customer_orders` (
     unit_price STRING,
     line_total STRING,
     order_date STRING,
-    _lineage STRUCT<schema_version: STRING, model: STRING, sources: STRING, git_commit: STRING, deployed_at: STRING, compute_type: STRING, contract_id: STRING, version: STRING, columns: ARRAY<STRUCT<name: STRING, expression: STRING, op: STRING>>>
+    _lineage STRUCT<schema_version: STRING, model: STRING, sources: STRING, origin_files: ARRAY<STRING>, ingested_ats: ARRAY<TIMESTAMP>, upstream: STRING, git_commit: STRING, deployed_at: STRING, compute_type: STRING, contract_id: STRING, version: STRING, columns: ARRAY<STRUCT<name: STRING, expression: STRING, op: STRING>>>
 ) USING DELTA;
 
 TRUNCATE TABLE `dev_fd_silver`.`ben_sales`.`customer_orders`;
@@ -35,11 +35,14 @@ SELECT
     o.line_total,
     o.order_date,
     named_struct(
-        'schema_version', '3',
+        'schema_version', '4',
         'model', 'customer_orders',
         'sources', 'customer_clean, stg_orders',
+        'origin_files', array_union(coalesce(c._lineage.origin_files, array(c._origin_file)), coalesce(o._lineage.origin_files, array(o._origin_file))),
+        'ingested_ats', array_union(coalesce(c._lineage.ingested_ats, array(c._inserted_at)), coalesce(o._lineage.ingested_ats, array(o._inserted_at))),
+        'upstream', concat('[', coalesce(to_json(c._lineage), 'null'), ',', coalesce(to_json(o._lineage), 'null'), ']'),
         'git_commit', 'unknown',
-        'deployed_at', '2026-03-24T18:49:47.139643+00:00',
+        'deployed_at', '2026-03-24T20:44:44.215280+00:00',
         'compute_type', 'serverless',
         'contract_id', 'ben_sales.customer_orders',
         'version', 'v1',
@@ -117,7 +120,7 @@ SELECT
 INSERT INTO `dev_fd_meta`.`ben_sales`.lineage_log
     (run_id, model, materialized, rows_created, catalog, schema, sources, git_commit, completed_at)
 SELECT
-    '{{job.run_id}}',
+    :run_id,
     'customer_orders',
     'table',
     COUNT(*),

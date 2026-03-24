@@ -14,11 +14,14 @@ SELECT
     quantity * unit_price as line_total,
     cast(order_date as date) as order_date,
     named_struct(
-        'schema_version', '3',
+        'schema_version', '4',
         'model', 'stg_orders',
         'sources', 'raw_orders',
+        'origin_files', coalesce(_lineage.origin_files, array(_origin_file)),
+        'ingested_ats', coalesce(_lineage.ingested_ats, array(_inserted_at)),
+        'upstream', to_json(_lineage),
         'git_commit', 'unknown',
-        'deployed_at', '2026-03-24T18:49:47.139643+00:00',
+        'deployed_at', '2026-03-24T20:44:44.215280+00:00',
         'compute_type', 'serverless',
         'contract_id', 'ben_sales.stg_orders',
         'version', 'v1',
@@ -74,7 +77,7 @@ SELECT
 INSERT INTO `dev_fd_meta`.`ben_sales`.lineage_log
     (run_id, model, materialized, rows_created, catalog, schema, sources, git_commit, completed_at)
 SELECT
-    '{{job.run_id}}',
+    :run_id,
     'stg_orders',
     'view',
     COUNT(*),

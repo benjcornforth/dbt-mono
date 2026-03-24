@@ -20,8 +20,8 @@ CREATE TABLE IF NOT EXISTS `dev_fd_meta`.`ben_sales`.`ingestion_config` (
 TRUNCATE TABLE `dev_fd_meta`.`ben_sales`.`ingestion_config`;
 
 INSERT INTO `dev_fd_meta`.`ben_sales`.`ingestion_config` (config_id, ingest_type, source_name, target_model, volume_name, file_regex, file_format, has_header, delimiter, active) VALUES
-  (1, 'volume', 'customer_feed', 'raw_customers', 'landing', '^customers_.*\.csv$', 'csv', true, ',', true),
-  (2, 'volume', 'order_feed', 'raw_orders', 'landing', '^orders_.*\.csv$', 'csv', true, ',', true);
+  (1, 'volume', 'customer_feed', 'raw_customers', 'landing', '^raw_customers.*\.csv$', 'csv', true, ',', true),
+  (2, 'volume', 'order_feed', 'raw_orders', 'landing', '^raw_orders.*\.csv$', 'csv', true, ',', true);
 
 -- Execution summary
 SELECT

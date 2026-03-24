@@ -1413,9 +1413,16 @@ def _compile_lineage_struct(
     compute_type: str,
     columns: dict[str, dict],
     platform: str = "databricks",
+    *,
+    is_agg: bool = False,
+    agg_from_cte: bool = False,
 ) -> str:
     """
     Compile static lineage metadata as a named_struct() / jsonb_build_object().
+
+    Includes origin_files (array of source file paths) and ingested_ats
+    (array of ingestion timestamps) for full pipeline traceability.
+    Aggregations collect all contributing values via collect_list.
 
     No Jinja. No dbt context. Pure SQL.
     """
@@ -1427,8 +1434,46 @@ def _compile_lineage_struct(
     for src in model_def.get("sources", {}).values():
         source_names.append(src)
 
+    is_join = "sources" in model_def
     contract_id = f"{schema}.{model_name}"
     sources_str = ", ".join(source_names)
+
+    # Build origin_files, ingested_ats, and upstream SQL expressions
+    # _origin_file and _inserted_at are plain columns on managed_by (raw) tables.
+    # Downstream models carry them forward via _lineage array fields.
+    # Aggregations use collect_list to combine all contributing values.
+    if is_agg and agg_from_cte:
+        # CTE path: collect_list was computed in the CTE
+        origin_files_sql = "_collected_origin_files"
+        ingested_ats_sql = "_collected_ingested_ats"
+        upstream_sql = "cast(null as string)"
+    elif is_agg:
+        # Standard agg path: use collect_list inline
+        origin_files_sql = "array_distinct(flatten(collect_list(coalesce(_lineage.origin_files, array(_origin_file)))))"
+        ingested_ats_sql = "array_distinct(flatten(collect_list(coalesce(_lineage.ingested_ats, array(_inserted_at)))))"
+        upstream_sql = "cast(null as string)"
+    elif is_join:
+        aliases = list(model_def["sources"].keys())
+        # Combine origin_files arrays from all join sides
+        of_parts = [f"coalesce({a}._lineage.origin_files, array({a}._origin_file))" for a in aliases]
+        origin_files_sql = of_parts[0]
+        for p in of_parts[1:]:
+            origin_files_sql = f"array_union({origin_files_sql}, {p})"
+        # Combine ingested_ats arrays from all join sides
+        ia_parts = [f"coalesce({a}._lineage.ingested_ats, array({a}._inserted_at))" for a in aliases]
+        ingested_ats_sql = ia_parts[0]
+        for p in ia_parts[1:]:
+            ingested_ats_sql = f"array_union({ingested_ats_sql}, {p})"
+        json_parts = [f"coalesce(to_json({a}._lineage), 'null')" for a in aliases]
+        upstream_sql = "concat('[', " + ", ',', ".join(json_parts) + ", ']')"
+    elif "source" in model_def:
+        origin_files_sql = "coalesce(_lineage.origin_files, array(_origin_file))"
+        ingested_ats_sql = "coalesce(_lineage.ingested_ats, array(_inserted_at))"
+        upstream_sql = "to_json(_lineage)"
+    else:
+        origin_files_sql = "cast(null as array<string>)"
+        ingested_ats_sql = "cast(null as array<timestamp>)"
+        upstream_sql = "cast(null as string)"
 
     # Build per-column lineage entries
     col_entries: list[dict[str, Any]] = []
@@ -1478,9 +1523,12 @@ def _compile_lineage_struct(
 
         return (
             f"    named_struct(\n"
-            f"        'schema_version', '3',\n"
+            f"        'schema_version', '4',\n"
             f"        'model', '{model_name}',\n"
             f"        'sources', '{sources_str}',\n"
+            f"        'origin_files', {origin_files_sql},\n"
+            f"        'ingested_ats', {ingested_ats_sql},\n"
+            f"        'upstream', {upstream_sql},\n"
             f"        'git_commit', '{git_commit}',\n"
             f"        'deployed_at', '{deploy_ts}',\n"
             f"        'compute_type', '{compute_type}',\n"
@@ -1493,9 +1541,12 @@ def _compile_lineage_struct(
         # Postgres / generic fallback
         import json
         meta = {
-            "schema_version": "3",
+            "schema_version": "4",
             "model": model_name,
             "sources": sources_str,
+            "origin_files": None,
+            "ingested_ats": None,
+            "upstream": None,
             "git_commit": git_commit,
             "deployed_at": deploy_ts,
             "compute_type": compute_type,
@@ -1569,6 +1620,10 @@ def compile_pure_sql_model(
                 constraints += " NOT NULL"
             col_defs.append(f"    {col_name} {resolved_type}{constraints}")
 
+        # Add ingestion metadata columns to managed_by tables (set by ingest script)
+        col_defs.append("    _origin_file STRING")
+        col_defs.append("    _inserted_at TIMESTAMP")
+
         lines.append(f"CREATE TABLE IF NOT EXISTS {fq_name} (")
         lines.append(",\n".join(col_defs))
         lines.append(")")
@@ -1631,6 +1686,7 @@ def compile_pure_sql_model(
         if platform in ("databricks", "spark"):
             lineage_type = (
                 "STRUCT<schema_version: STRING, model: STRING, sources: STRING, "
+                "origin_files: ARRAY<STRING>, ingested_ats: ARRAY<TIMESTAMP>, upstream: STRING, "
                 "git_commit: STRING, deployed_at: STRING, compute_type: STRING, "
                 "contract_id: STRING, version: STRING, "
                 "columns: ARRAY<STRUCT<name: STRING, expression: STRING, op: STRING>>>"
@@ -1709,6 +1765,10 @@ def compile_pure_sql_model(
 
         group_cols = model_def.get("group_by", [])
 
+        # Add collect_list columns for origin_files and ingested_ats
+        inner_col_lines.append("    array_distinct(flatten(collect_list(coalesce(_lineage.origin_files, array(_origin_file))))) as _collected_origin_files")
+        inner_col_lines.append("    array_distinct(flatten(collect_list(coalesce(_lineage.ingested_ats, array(_inserted_at))))) as _collected_ingested_ats")
+
         lines.append(f"WITH _agg AS (")
         lines.append("    SELECT")
         lines.append(",\n".join(f"    {cl}" for cl in inner_col_lines))
@@ -1734,12 +1794,20 @@ def compile_pure_sql_model(
 
         lineage_sql = _compile_lineage_struct(
             model_name, model_def, schema, git_commit, deploy_ts, compute_type, columns, platform,
+            is_agg=True,
+            agg_from_cte=True,
         )
         outer_col_lines.append(lineage_sql)
 
         lines.append("SELECT")
         lines.append(",\n".join(outer_col_lines))
         lines.append("FROM _agg")
+
+        # Quarantine: exclude bad rows from the main table
+        quarantine_filter = model_def.get("quarantine")
+        if quarantine_filter:
+            lines.append(f"WHERE NOT ({quarantine_filter})")
+
         lines.append(";")
     else:
         # Standard path: no CTE needed
@@ -1754,6 +1822,7 @@ def compile_pure_sql_model(
         # Lineage struct (static, no Jinja)
         lineage_sql = _compile_lineage_struct(
             model_name, model_def, schema, git_commit, deploy_ts, compute_type, columns, platform,
+            is_agg=is_agg,
         )
         col_lines.append(lineage_sql)
 
@@ -1792,6 +1861,11 @@ def compile_pure_sql_model(
                 lines.append("GROUP BY")
                 lines.append(f"    {', '.join(group_cols)}")
 
+        # Quarantine: exclude bad rows from the main table
+        quarantine_filter = model_def.get("quarantine")
+        if quarantine_filter:
+            lines.append(f"WHERE NOT ({quarantine_filter})")
+
         lines.append(";")
 
     # ── Execution summary (shown as sql_task output) ──
@@ -1807,45 +1881,80 @@ def compile_pure_sql_model(
     return "\n".join(lines) + "\n"
 
 
+def compile_quarantine_tables_sql(
+    meta_cat: str,
+    meta_sch: str,
+) -> str:
+    """Compile DDL for the two pipeline-wide quarantine tables.
+
+    Called once during SETUP to create:
+      - transform_quarantine  (row-level quarantine from SQL models)
+      - ingest_quarantine     (file-level quarantine from volume ingestion)
+    """
+    fq = f"`{meta_cat}`.`{meta_sch}`"
+    return (
+        f"-- Quarantine tables\n"
+        f"-- Generated by: forge compile --pure-sql\n"
+        f"CREATE SCHEMA IF NOT EXISTS {fq};\n"
+        f"\n"
+        f"CREATE TABLE IF NOT EXISTS {fq}.`transform_quarantine` (\n"
+        f"    model_name STRING NOT NULL,\n"
+        f"    source_table STRING,\n"
+        f"    quarantine_rule STRING NOT NULL,\n"
+        f"    row_data STRING NOT NULL,\n"
+        f"    git_commit STRING,\n"
+        f"    detected_at TIMESTAMP\n"
+        f") USING DELTA;\n"
+        f"\n"
+        f"CREATE TABLE IF NOT EXISTS {fq}.`ingest_quarantine` (\n"
+        f"    file_path STRING NOT NULL,\n"
+        f"    file_name STRING NOT NULL,\n"
+        f"    target_model STRING,\n"
+        f"    file_format STRING,\n"
+        f"    file_size_bytes BIGINT,\n"
+        f"    error_message STRING,\n"
+        f"    git_commit STRING,\n"
+        f"    detected_at TIMESTAMP\n"
+        f") USING DELTA;\n"
+    )
+
+
 def compile_pure_sql_quarantine(
     model_name: str,
     condition: str,
-    catalog: str,
-    schema: str,
+    meta_cat: str,
+    meta_sch: str,
     git_commit: str = "unknown",
-    deploy_ts: str = "",
+    source_fq: str | None = None,
+    model_fq: str | None = None,
 ) -> str:
-    """
-    Compile quarantine as a standalone SQL statement.
+    """Compile quarantine INSERT for a single model.
 
-    Creates a sidecar table with rows matching the failing condition.
+    Reads bad rows from the upstream source (WHERE NOT filters them from
+    the main model) and appends them to the central ``transform_quarantine``
+    table with ``to_json(struct(*))`` for generic row storage.
     """
-    if not deploy_ts:
-        from datetime import datetime, timezone
-        deploy_ts = datetime.now(timezone.utc).isoformat()
-
-    fq_model = f"`{catalog}`.`{schema}`.`{model_name}`"
-    fq_quarantine = f"`{catalog}`.`{schema}`.`{model_name}_quarantine`"
+    fq_quarantine = f"`{meta_cat}`.`{meta_sch}`.`transform_quarantine`"
+    fq_source = source_fq or model_fq or f"`{meta_cat}`.`{meta_sch}`.`{model_name}`"
+    fq_model = model_fq or fq_source
 
     return (
         f"-- Quarantine: {model_name}\n"
-        f"CREATE SCHEMA IF NOT EXISTS `{catalog}`.`{schema}`;\n"
-        f"\n"
-        f"CREATE OR REPLACE TABLE {fq_quarantine}\n"
-        f"USING DELTA\n"
-        f"AS\n"
-        f"SELECT *,\n"
-        f"    '{model_name}' AS _quarantine_source,\n"
-        f"    '{git_commit}' AS _quarantine_git_commit,\n"
-        f"    '{deploy_ts}' AS _quarantine_detected_at\n"
-        f"FROM {fq_model}\n"
+        f"INSERT INTO {fq_quarantine}\n"
+        f"SELECT\n"
+        f"    '{model_name}' AS model_name,\n"
+        f"    '{fq_source}' AS source_table,\n"
+        f"    '{condition}' AS quarantine_rule,\n"
+        f"    to_json(struct(*)) AS row_data,\n"
+        f"    '{git_commit}' AS git_commit,\n"
+        f"    current_timestamp() AS detected_at\n"
+        f"FROM {fq_source}\n"
         f"WHERE {condition};\n"
         f"\n"
         f"-- Execution summary\n"
         f"SELECT\n"
-        f"    '{model_name}_quarantine' AS model,\n"
-        f"    'quarantine' AS materialized,\n"
-        f"    (SELECT COUNT(*) FROM {fq_quarantine}) AS rows_quarantined,\n"
+        f"    '{model_name}' AS quarantine_source,\n"
+        f"    (SELECT COUNT(*) FROM {fq_quarantine} WHERE model_name = '{model_name}') AS rows_quarantined,\n"
         f"    (SELECT COUNT(*) FROM {fq_model}) AS rows_passed,\n"
         f"    current_timestamp() AS completed_at;\n"
     )
@@ -2053,7 +2162,7 @@ def compile_lineage_log_insert(
     Compile an INSERT INTO lineage_log for a single model execution.
 
     Appended to each model's SQL file so run_id is captured per task.
-    Uses {{job.run_id}} which Databricks resolves at runtime.
+    Uses :run_id named parameter — the sql_task passes {{job.run_id}} via parameters.
     """
     fq_log = f"`{meta_catalog}`.`{meta_schema}`.lineage_log"
     fq_model = f"`{catalog}`.`{schema}`.`{model_name}`"
@@ -2078,7 +2187,7 @@ def compile_lineage_log_insert(
         f"INSERT INTO {fq_log}\n"
         f"    (run_id, model, materialized, rows_created, catalog, schema, sources, git_commit, completed_at)\n"
         f"SELECT\n"
-        f"    '{{{{job.run_id}}}}',\n"
+        f"    :run_id,\n"
         f"    '{model_name}',\n"
         f"    '{materialized}',\n"
         f"    COUNT(*),\n"
@@ -2442,6 +2551,13 @@ def compile_all_pure_sql(
     results["_lineage_graph"] = lineage_path
     seq += 1
 
+    # Step 1b: Quarantine tables (transform + ingest)
+    quarantine_ddl = compile_quarantine_tables_sql(meta_cat, meta_sch)
+    q_ddl_path = output_dir / f"{seq:03d}_quarantine_tables.sql"
+    q_ddl_path.write_text(quarantine_ddl)
+    results["_quarantine_tables"] = q_ddl_path
+    seq += 1
+
     # Step 1a: Volumes (CREATE VOLUME IF NOT EXISTS)
     volumes = load_volumes(ddl_path, forge_config=forge_config)
     if volumes:
@@ -2516,9 +2632,20 @@ def compile_all_pure_sql(
         # Quarantine (runs immediately after the model)
         quarantine = model_def.get("quarantine")
         if quarantine:
+            # Resolve source table for quarantine — read bad rows from
+            # the upstream source since they're filtered out of the model.
+            q_source = model_def.get("source", "")
+            q_source_fq = None
+            if q_source and q_source in model_locations:
+                s_cat, s_sch = model_locations[q_source]
+                q_source_fq = f"`{s_cat}`.`{s_sch}`.`{q_source}`"
+
+            fq_model = f"`{m_catalog}`.`{m_schema}`.`{model_name}`"
             q_sql = compile_pure_sql_quarantine(
-                model_name, quarantine, m_catalog, m_schema,
-                git_commit=git_commit, deploy_ts=deploy_ts,
+                model_name, quarantine, meta_cat, meta_sch,
+                git_commit=git_commit,
+                source_fq=q_source_fq,
+                model_fq=fq_model,
             )
             q_path = output_dir / f"{seq:03d}_{model_name}_quarantine.sql"
             q_path.write_text(q_sql)
@@ -2593,15 +2720,15 @@ def compile_teardown_sql(
         m_cat, m_sch = model_locations[model_name]
         fq = f"`{m_cat}`.`{m_sch}`.`{model_name}`"
         materialized = model_def.get("materialized", "view") if isinstance(model_def, dict) else "view"
-        # Quarantine sibling
-        quarantine = model_def.get("quarantine") if isinstance(model_def, dict) else None
-        if quarantine:
-            lines.append(f"DROP TABLE IF EXISTS `{m_cat}`.`{m_sch}`.`{model_name}_quarantine`;")
         if materialized in ("table", "incremental") or model_def.get("managed_by"):
             lines.append(f"DROP TABLE IF EXISTS {fq};")
         else:
             lines.append(f"DROP VIEW IF EXISTS {fq};")
     lines.append("")
+
+    # Drop quarantine tables (pipeline-wide)
+    lines.append(f"DROP TABLE IF EXISTS {fq_meta}.transform_quarantine;")
+    lines.append(f"DROP TABLE IF EXISTS {fq_meta}.ingest_quarantine;")
 
     # Drop lineage tables
     lines.append(f"DROP TABLE IF EXISTS {fq_meta}.lineage_graph;")

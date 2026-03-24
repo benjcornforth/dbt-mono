@@ -13,13 +13,14 @@ DROP FUNCTION IF EXISTS `dev_fd_meta`.`ben_sales`.last_run_id;
 DROP TABLE IF EXISTS `dev_fd_silver`.`ben_sales`.`customer_summary`;
 DROP TABLE IF EXISTS `dev_fd_silver`.`ben_sales`.`customer_orders`;
 DROP VIEW IF EXISTS `dev_fd_bronze`.`ben_sales`.`stg_orders`;
-DROP TABLE IF EXISTS `dev_fd_silver`.`ben_sales`.`customer_clean_quarantine`;
 DROP TABLE IF EXISTS `dev_fd_silver`.`ben_sales`.`customer_clean`;
 DROP VIEW IF EXISTS `dev_fd_bronze`.`ben_sales`.`stg_customers`;
 DROP TABLE IF EXISTS `dev_fd_bronze`.`ben_sales`.`raw_orders`;
 DROP TABLE IF EXISTS `dev_fd_bronze`.`ben_sales`.`raw_customers`;
 DROP TABLE IF EXISTS `dev_fd_bronze`.`ben_sales`.`file_manifest`;
 
+DROP TABLE IF EXISTS `dev_fd_meta`.`ben_sales`.transform_quarantine;
+DROP TABLE IF EXISTS `dev_fd_meta`.`ben_sales`.ingest_quarantine;
 DROP TABLE IF EXISTS `dev_fd_meta`.`ben_sales`.lineage_graph;
 DROP TABLE IF EXISTS `dev_fd_meta`.`ben_sales`.lineage_log;
 
