@@ -692,6 +692,9 @@ def build_workflow(
             continue
         if cid.startswith(("workflow.", "custom_task.", "check.", "volume.", "source.", "seed.")):
             continue
+        # Skip managed_by models — schema created in SETUP, data populated by python task
+        if contract.get("_meta", {}).get("managed_by"):
+            continue
 
         model_name = contract["dataset"]["name"]
         depth = depths.get(cid, 0)
@@ -1048,6 +1051,36 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
             depends_on=lineage_deps,
             compute_type=compute_type,
         ))
+
+    # Managed-by-python models — CREATE TABLE IF NOT EXISTS (schema only)
+    # These must run before PROCESS so the python ingest task can write to them.
+    sql_dir = Path("sql")
+    if sql_dir.is_dir():
+        last_setup_task = tasks[-1].name if tasks else "setup"
+        for f in sorted(sql_dir.iterdir()):
+            if f.suffix != ".sql":
+                continue
+            # Check for managed_by marker in file header
+            try:
+                header = f.read_text().split("\n", 5)[:5]
+            except Exception:
+                continue
+            if not any("-- Managed by:" in line for line in header):
+                continue
+            # Extract model name from "NNN_model_name.sql"
+            parts = f.stem.split("_", 1)
+            if not (parts[0].isdigit() and len(parts) > 1):
+                continue
+            model_name = parts[1]
+            tasks.append(WorkflowTask(
+                name=f"create_{model_name}",
+                stage="ingest",
+                task_type="sql",
+                sql_file=f"sql/{f.name}",
+                models=[],
+                depends_on=[last_setup_task],
+                compute_type=compute_type,
+            ))
 
     return Workflow(
         name=f"SETUP_{project_id}",

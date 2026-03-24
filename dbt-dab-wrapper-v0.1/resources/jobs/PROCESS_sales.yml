@@ -3,29 +3,11 @@ resources:
     PROCESS_sales:
       name: PROCESS_sales (dev)
       tasks:
-      - task_key: ingest_file_manifest
-        timeout_seconds: 3600
-        sql_task:
-          file:
-            path: ../../sql/001_file_manifest.sql
-          warehouse_id: 724607f766691c81
-      - task_key: ingest_raw_customers
-        timeout_seconds: 3600
-        sql_task:
-          file:
-            path: ../../sql/002_raw_customers.sql
-          warehouse_id: 724607f766691c81
-      - task_key: ingest_raw_orders
-        timeout_seconds: 3600
-        sql_task:
-          file:
-            path: ../../sql/003_raw_orders.sql
-          warehouse_id: 724607f766691c81
       - task_key: stage_customer_orders
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/007_customer_orders.sql
+            path: ../../sql/008_customer_orders.sql
           warehouse_id: 724607f766691c81
         depends_on:
         - task_key: clean_customer_clean
@@ -34,7 +16,7 @@ resources:
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/008_customer_summary.sql
+            path: ../../sql/009_customer_summary.sql
           warehouse_id: 724607f766691c81
         depends_on:
         - task_key: stage_customer_orders
@@ -42,23 +24,19 @@ resources:
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/004_stg_customers.sql
+            path: ../../sql/005_stg_customers.sql
           warehouse_id: 724607f766691c81
-        depends_on:
-        - task_key: ingest_raw_customers
       - task_key: stage_stg_orders
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/006_stg_orders.sql
+            path: ../../sql/007_stg_orders.sql
           warehouse_id: 724607f766691c81
-        depends_on:
-        - task_key: ingest_raw_orders
       - task_key: clean_customer_clean
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/005_customer_clean.sql
+            path: ../../sql/006_customer_clean.sql
           warehouse_id: 724607f766691c81
         depends_on:
         - task_key: stage_stg_customers
@@ -66,7 +44,7 @@ resources:
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/005_customer_clean_quarantine.sql
+            path: ../../sql/006_customer_clean_quarantine.sql
           warehouse_id: 724607f766691c81
         depends_on:
         - task_key: clean_customer_clean
@@ -75,8 +53,6 @@ resources:
         environment_key: default
         spark_python_task:
           python_file: ../../python/ingest_from_volume.py
-        depends_on:
-        - task_key: ingest_raw_orders
       environments:
       - environment_key: default
         spec:

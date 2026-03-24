@@ -1,3 +1,7 @@
+CREATE SCHEMA IF NOT EXISTS `dev_fd_bronze`.`ben_sales`;
+CREATE SCHEMA IF NOT EXISTS `dev_fd_meta`.`ben_sales`;
+CREATE SCHEMA IF NOT EXISTS `dev_fd_silver`.`ben_sales`;
+
 -- UDF: loyalty_tier
 -- Assigns GOLD/SILVER/BRONZE based on revenue
 DROP FUNCTION IF EXISTS `dev_fd_silver`.`ben_sales`.loyalty_tier;

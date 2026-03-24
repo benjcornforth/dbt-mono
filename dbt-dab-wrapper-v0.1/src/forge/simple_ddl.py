@@ -1901,24 +1901,39 @@ def compile_all_pure_sql(
         "_lineage", {"layer": "meta"}, prof, forge_config=forge_config,
     )
 
+    # ── Collect ALL distinct catalog.schema pairs used anywhere ──
+    all_schemas: set[tuple[str, str]] = set()
+    all_schemas.add((meta_cat, meta_sch))
+    for cat, sch in model_locations.values():
+        all_schemas.add((cat, sch))
+
     # Step 0: UDFs (must exist before any model references them)
     if udfs:
-        udf_lines = []
+        # Pre-resolve UDF schemas so they're included in all_schemas
+        udf_schemas: list[tuple[str, str, str]] = []  # (udf_name, catalog, schema)
         for udf_name, udf_def in udfs.items():
-            # Resolve UDF catalog/schema — use explicit udf-level keys,
-            # then fall back to the profile's default resolved names
             udf_catalog = udf_def.get("catalog")
             udf_schema = udf_def.get("schema")
             if not udf_catalog or not udf_schema:
-                # Use the same resolution as models — default layer is "silver"
                 udf_layer = udf_def.get("layer", "silver")
                 resolved_cat, resolved_sch = resolve_model_schema(
                     udf_name, {"layer": udf_layer}, prof, forge_config=forge_config,
                 )
                 udf_catalog = udf_catalog or resolved_cat
                 udf_schema = udf_schema or resolved_sch
+            all_schemas.add((udf_catalog, udf_schema))
+            udf_schemas.append((udf_name, udf_catalog, udf_schema))
+
+        udf_lines = []
+
+        # Ensure all schemas exist before any DDL runs
+        for cat, sch in sorted(all_schemas):
+            udf_lines.append(f"CREATE SCHEMA IF NOT EXISTS `{cat}`.`{sch}`;")
+        udf_lines.append("")
+
+        for udf_name, udf_catalog, udf_schema in udf_schemas:
             fq_schema = f"`{udf_catalog}`.`{udf_schema}`"
-            udf_lines.append(compile_udf_sql(udf_name, udf_def, schema=fq_schema, compute_type=compute_type))
+            udf_lines.append(compile_udf_sql(udf_name, udfs[udf_name], schema=fq_schema, compute_type=compute_type))
             udf_lines.append("")
 
         # Lineage UDFs (trace_lineage, trace_lineage_json, last_run_id)
@@ -1929,8 +1944,12 @@ def compile_all_pure_sql(
         results["_udfs"] = udf_path
         seq += 1
     else:
-        # Even without user UDFs, generate lineage UDFs
-        lineage_udf_sql = compile_trace_lineage_udf(meta_cat, meta_sch, compute_type=compute_type)
+        # Even without user UDFs, ensure schemas + generate lineage UDFs
+        schema_lines = []
+        for cat, sch in sorted(all_schemas):
+            schema_lines.append(f"CREATE SCHEMA IF NOT EXISTS `{cat}`.`{sch}`;")
+        schema_lines.append("")
+        lineage_udf_sql = "\n".join(schema_lines) + compile_trace_lineage_udf(meta_cat, meta_sch, compute_type=compute_type)
         udf_path = output_dir / f"{seq:03d}_udfs.sql"
         udf_path.write_text(lineage_udf_sql)
         results["_udfs"] = udf_path
@@ -1983,7 +2002,56 @@ def compile_all_pure_sql(
 
         seq += 1
 
+    # ── Post-compile validation: verify schema ordering ──
+    _validate_sql_schema_ordering(output_dir)
+
     return results
+
+
+def _validate_sql_schema_ordering(output_dir: Path) -> None:
+    """
+    Validate that every catalog.schema referenced in generated SQL files
+    has a CREATE SCHEMA IF NOT EXISTS in a same-or-prior file.
+
+    Raises CompileError if any schema is used before it is guaranteed to exist.
+    This turns runtime TABLE_OR_VIEW_NOT_FOUND into compile-time errors.
+    """
+    import re
+
+    ref_pattern = re.compile(r"`([^`]+)`\.`([^`]+)`\.")
+    create_pattern = re.compile(
+        r"CREATE\s+SCHEMA\s+IF\s+NOT\s+EXISTS\s+`([^`]+)`\.`([^`]+)`",
+        re.IGNORECASE,
+    )
+
+    # Walk files in order — they're numbered NNN_name.sql
+    created_schemas: set[tuple[str, str]] = set()
+    errors: list[str] = []
+
+    for sql_file in sorted(output_dir.glob("*.sql")):
+        content = sql_file.read_text()
+
+        # Schemas created in this file (available to this file and later)
+        for m in create_pattern.finditer(content):
+            created_schemas.add((m.group(1), m.group(2)))
+
+        # Schemas referenced in this file
+        for m in ref_pattern.finditer(content):
+            ref = (m.group(1), m.group(2))
+            if ref not in created_schemas:
+                errors.append(
+                    f"  {sql_file.name}: references `{ref[0]}`.`{ref[1]}` "
+                    f"but no prior file creates this schema"
+                )
+
+    if errors:
+        raise RuntimeError(
+            "Compile error: SQL files reference schemas that are not "
+            "guaranteed to exist.\n"
+            + "\n".join(errors)
+            + "\n\nEnsure all schemas are created with CREATE SCHEMA IF NOT EXISTS "
+            "before use."
+        )
 
 
 # =============================================
