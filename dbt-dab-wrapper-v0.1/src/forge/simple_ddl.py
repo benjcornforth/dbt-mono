@@ -801,7 +801,10 @@ def compile_sources_yml(ddl_path: Path, source_name: str = "seed", forge_config:
             "tables": tables,
         }
         if cat:
-            entry["database"] = cat
+            # Use var() so the catalog resolves via forge's naming pattern
+            # e.g. catalog: meta → var('catalog_meta', 'dev_fd_meta')
+            var_name = f"catalog_{cat}"
+            entry["database"] = "{{ var('" + var_name + "') }}"
         if sch:
             entry["schema"] = sch
         else:
@@ -1369,6 +1372,17 @@ def compile_pure_sql_model(
             lines.append(f"    {', '.join(group_cols)}")
 
     lines.append(";")
+
+    # ── Execution summary (shown as sql_task output) ──
+    fq_name = f"`{catalog}`.`{schema}`.`{model_name}`"
+    lines.append("")
+    lines.append(f"-- Execution summary")
+    lines.append(f"SELECT")
+    lines.append(f"    '{model_name}' AS model,")
+    lines.append(f"    '{materialized}' AS materialized,")
+    lines.append(f"    (SELECT COUNT(*) FROM {fq_name}) AS rows_created,")
+    lines.append(f"    current_timestamp() AS completed_at;")
+
     return "\n".join(lines) + "\n"
 
 
@@ -1403,6 +1417,14 @@ def compile_pure_sql_quarantine(
         f"    '{deploy_ts}' AS _quarantine_detected_at\n"
         f"FROM {fq_model}\n"
         f"WHERE {condition};\n"
+        f"\n"
+        f"-- Execution summary\n"
+        f"SELECT\n"
+        f"    '{model_name}_quarantine' AS model,\n"
+        f"    'quarantine' AS materialized,\n"
+        f"    (SELECT COUNT(*) FROM {fq_quarantine}) AS rows_quarantined,\n"
+        f"    (SELECT COUNT(*) FROM {fq_model}) AS rows_passed,\n"
+        f"    current_timestamp() AS completed_at;\n"
     )
 
 

@@ -212,6 +212,7 @@ def deploy(
     env: str = typer.Option("dev", "--env", help="Environment to deploy"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Forge profile (from forge.yml profiles:)"),
     local: bool = typer.Option(False, "--local", help="Run setup/dbt locally instead of uploading as DAB tasks"),
+    sql: bool = typer.Option(False, "--sql", help="Use sql_task (pure SQL) instead of dbt_task for PROCESS workflow"),
 ):
     """forge deploy → reads forge.yml → auto-generates DAB → runs dbt
 
@@ -419,11 +420,21 @@ def deploy(
         except FileNotFoundError:
             typer.echo("💡 Tip: install dbt-databricks with poetry if needed")
 
+    # Vendor forge runtime modules so Python tasks can import them on Databricks
+    forge_src = Path("src/forge")
+    forge_dest = Path("forge")
+    if forge_src.is_dir():
+        import shutil
+        if forge_dest.exists():
+            shutil.rmtree(forge_dest)
+        shutil.copytree(forge_src, forge_dest)
+        typer.echo("📦 Vendored forge/ runtime for Python tasks")
+
     # Vendor dbt-dab-tools into the project so DAB syncs it to the workspace
     job_yaml_paths = []
     try:
         graph = build_graph(config)
-        workflows = build_domain_workflows(config, graph)
+        workflows = build_domain_workflows(config, graph, sql_mode=sql)
         for wf in workflows:
             wf_path = Path(f"resources/jobs/{wf.name}.yml")
             wf_path.parent.mkdir(parents=True, exist_ok=True)
@@ -439,7 +450,7 @@ def deploy(
     # Generate root databricks.yml and run bundle deploy
     if job_yaml_paths:
         try:
-            bundle_yml = generate_bundle_config(config, job_yaml_paths)
+            bundle_yml = generate_bundle_config(config, job_yaml_paths, sql_mode=sql)
             bundle_path = Path("databricks.yml")
             bundle_path.write_text(bundle_yml)
             typer.echo(f"📦 DAB bundle config → {bundle_path}")
@@ -888,6 +899,7 @@ def codegen(
 def workflow(
     mermaid: bool = typer.Option(False, "--mermaid", help="Output Mermaid diagram"),
     dab: bool = typer.Option(False, "--dab", help="Output databricks.yml jobs section"),
+    sql: bool = typer.Option(False, "--sql", help="Use sql_task (pure SQL) instead of dbt_task for PROCESS workflow"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Write output to file (default: resources/jobs/<name>.yml for --dab)"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Forge profile (from forge.yml profiles:)"),
 ):
@@ -906,7 +918,7 @@ def workflow(
         config["environment"] = prof["_name"]
 
     graph = build_graph(config)
-    workflows = build_domain_workflows(config, graph)
+    workflows = build_domain_workflows(config, graph, sql_mode=sql)
 
     if mermaid:
         result = "\n\n".join(wf.to_mermaid() for wf in workflows)

@@ -1,10 +1,13 @@
 bundle:
   name: sales_data_sales
 include:
+- resources/jobs/SETUP_sales.yml
 - resources/jobs/PROCESS_sales.yml
+- resources/jobs/TEARDOWN_sales.yml
 sync:
   include:
   - dbt-dab-tools/
+  - forge/
 targets:
   dev:
     workspace:

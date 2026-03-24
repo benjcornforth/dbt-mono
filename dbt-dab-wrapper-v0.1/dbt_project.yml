@@ -37,6 +37,21 @@ vars:
   git_commit: "local"
   compute_type: "serverless"
   methodology_version: "v1"
+  catalog_bronze: "dev_fd_bronze"
+  catalog_silver: "dev_fd_silver"
+  catalog_meta: "dev_fd_meta"
+  schema_bronze: "ben_sales"
+  schema_silver: "ben_sales"
+  schema_gold: "ben_sales"
+
+# =============================================
+# SEED DEFAULTS
+# =============================================
+seeds:
+  sales_data:
+    ingestion_config:
+      +database: "{{ var('catalog_meta', 'dev_fd_meta') }}"
+      +schema: config
 
 # =============================================
 # MODEL DEFAULTS

@@ -26,5 +26,5 @@ sources:
       description: CSV delimiter character
     - name: active
       description: Toggle rule on/off
-  database: meta
+  database: '{{ var(''catalog_meta'') }}'
   schema: config

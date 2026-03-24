@@ -45,7 +45,7 @@ from typing import Any
 import yaml
 
 
-from forge.compute_resolver import read_databrickscfg
+from forge.compute_resolver import read_databrickscfg, get_schema_variables
 
 
 # =============================================
@@ -159,6 +159,7 @@ class Workflow:
     schema: str = "default"
     compute_type: str = "serverless"
     warehouse_id: str | None = None
+    dbt_vars: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         """Serialise to a plain dict."""
@@ -219,7 +220,9 @@ class Workflow:
                 "spec": {
                     "client": "2",
                     "dependencies": [
-                        "dbt-databricks"
+                        "dbt-databricks",
+                        "pydantic>=2.0",
+                        "pyyaml",
                     ]
                 }
             }
@@ -229,8 +232,11 @@ class Workflow:
             task_def: dict[str, Any] = {
                 "task_key": task.name,
                 "timeout_seconds": task.timeout_minutes * 60,
-                "environment_key": "default",
             }
+
+            # environment_key only for dbt and python tasks (not sql/notebook)
+            if task.task_type in ("dbt", "python"):
+                task_def["environment_key"] = "default"
 
             if task.task_type == "python" and task.python_file:
                 # spark_python_task — runs a .py file on the cluster
@@ -246,10 +252,13 @@ class Workflow:
                 sql_file_path = task.sql_file
                 if not sql_file_path.startswith("/"):
                     sql_file_path = "../../" + sql_file_path
-                task_def["sql_task"] = {
+                sql_config: dict[str, Any] = {
                     "file": {"path": sql_file_path},
                     **(task.additional_config or {}),
                 }
+                if self.warehouse_id:
+                    sql_config["warehouse_id"] = self.warehouse_id
+                task_def["sql_task"] = sql_config
             elif task.task_type == "notebook" and task.notebook_path:
                 # notebook_task — runs a Databricks notebook
                 notebook_path = task.notebook_path
@@ -265,9 +274,17 @@ class Workflow:
                     "dbt deps",
                     f"dbt run --select {' '.join(task.models)}"
                 ]
+                # Inject --vars for catalog/schema resolution
+                if self.dbt_vars:
+                    vars_yaml = json.dumps(self.dbt_vars)
+                    commands = [
+                        f"{cmd} --vars '{vars_yaml}'" if cmd.startswith("dbt ") and not cmd.startswith("dbt deps") else cmd
+                        for cmd in commands
+                    ]
                 dbt_config = {
                     "project_directory": "${workspace.file_path}",
                     "commands": commands,
+                    "catalog": self.catalog,
                 }
                 if self.warehouse_id:
                     dbt_config["warehouse_id"] = self.warehouse_id
@@ -335,7 +352,7 @@ class Workflow:
 # DATABRICKS BUNDLE CONFIG (databricks.yml)
 # =============================================
 
-def generate_bundle_config(forge_config: dict, job_yaml_paths: list[str] | None = None) -> str:
+def generate_bundle_config(forge_config: dict, job_yaml_paths: list[str] | None = None, sql_mode: bool = False) -> str:
     """
     Generate a root databricks.yml that ties the DAB bundle together.
 
@@ -351,13 +368,17 @@ def generate_bundle_config(forge_config: dict, job_yaml_paths: list[str] | None 
     active_prof = profiles.get(profile, {})
     databricks_profile = active_prof.get("databricks_profile", "DEFAULT")
 
+    sync_include = ["dbt-dab-tools/", "forge/"]
+    if sql_mode:
+        sync_include.append("sql/")
+
     bundle: dict[str, Any] = {
         "bundle": {
             "name": f"{project_name}_{project_id}",
         },
         "include": job_yaml_paths or ["resources/jobs/*.yml"],
         "sync": {
-            "include": ["dbt-dab-tools/"],
+            "include": sync_include,
         },
     }
 
@@ -576,9 +597,25 @@ def _compute_depths(graph: dict) -> dict[str, int]:
     return depths
 
 
+def _resolve_dbt_vars(forge_config: dict) -> dict[str, str]:
+    """Compute catalog/schema dbt variables from the active profile."""
+    active_profile = forge_config.get("active_profile", "dev")
+    profile_config = forge_config.get("profiles", {}).get(active_profile, {})
+    if not profile_config:
+        return {}
+    schema_vars = get_schema_variables(profile_config, forge_config)
+    # Also include lineage provenance vars from forge_config
+    extra = {
+        "git_commit": forge_config.get("git_commit", "local"),
+        "compute_type": forge_config.get("compute", {}).get("type", "serverless"),
+    }
+    return {**schema_vars, **extra}
+
+
 def build_workflow(
     forge_config: dict,
     graph: dict,
+    sql_mode: bool = False,
 ) -> Workflow:
     """
     Build a Databricks Workflow from the lineage graph.
@@ -588,6 +625,7 @@ def build_workflow(
     Task naming: {stage}_{model_name} (e.g. ingest_raw_customers).
 
     Set per_model_tasks: false in forge.yml to group models by stage instead.
+    Set sql_mode: true to use sql_task (pure SQL files) instead of dbt_task.
 
     Python tasks and custom tasks are merged in by stage.
     """
@@ -595,9 +633,15 @@ def build_workflow(
     project_id = forge_config.get("id", project_name)
     wf_prefix = f"PROCESS_{project_id}"
     environment = forge_config.get("environment", "dev")
-    catalog = forge_config.get("catalog", "main")
     schema = forge_config.get("schema", "default")
     compute_type = forge_config.get("compute", {}).get("type", "serverless")
+
+    # Resolve the actual catalog name via the profile's naming pattern
+    active_profile = forge_config.get("active_profile", "dev")
+    profile_config = forge_config.get("profiles", {}).get(active_profile, {})
+    logical_catalog = profile_config.get("catalog", forge_config.get("catalog", "main"))
+    dbt_vars = _resolve_dbt_vars(forge_config)
+    resolved_catalog = dbt_vars.get(f"catalog_{logical_catalog}", logical_catalog)
     
     # Get warehouse_id for serverless compute
     warehouse_id = None
@@ -684,9 +728,35 @@ def build_workflow(
             + "\nCreate these files or remove the tasks from forge.yml."
         )
 
+    # ── Build sql file index (sql_mode) ─────────────
+    sql_file_map: dict[str, str] = {}  # model_name → sql/NNN_model.sql
+    if sql_mode:
+        sql_dir = Path("sql")
+        if sql_dir.is_dir():
+            for f in sorted(sql_dir.iterdir()):
+                if f.suffix == ".sql" and "_" in f.stem:
+                    # Extract model name: "002_customer_clean" → "customer_clean"
+                    parts = f.stem.split("_", 1)
+                    if parts[0].isdigit() and len(parts) > 1:
+                        sql_file_map[parts[1]] = f"sql/{f.name}"
+
     # ── Build tasks ───────────────────────────────────
     tasks: list[WorkflowTask] = []
     model_to_task: dict[str, str] = {}  # model_name → task_key
+
+    # UDFs task (sql_mode only) — must run before any model
+    udf_task_name: str | None = None
+    if sql_mode and "udfs" in sql_file_map:
+        udf_task_name = "ingest_udfs"
+        tasks.append(WorkflowTask(
+            name=udf_task_name,
+            stage="ingest",
+            task_type="sql",
+            sql_file=sql_file_map["udfs"],
+            models=[],
+            depends_on=[],
+            compute_type=compute_type,
+        ))
 
     if per_model:
         # ── Per-model mode (default) ──────────────────
@@ -695,25 +765,54 @@ def build_workflow(
             models = sorted(stage_models[stage])
             for model_name in models:
                 task_name = f"{stage}_{model_name}"
+
+                if sql_mode and model_name in sql_file_map:
+                    task_type = "sql"
+                    sql_file = sql_file_map[model_name]
+                    # Also add quarantine sibling if it exists
+                    q_key = f"{model_name}_quarantine"
+                    q_file = sql_file_map.get(q_key)
+                else:
+                    task_type = "dbt"
+                    sql_file = None
+                    q_file = None
+
                 tasks.append(WorkflowTask(
                     name=task_name,
                     stage=stage,
-                    task_type="dbt",
+                    task_type=task_type,
+                    sql_file=sql_file,
                     models=[model_name],
                     depends_on=[],
                     compute_type=compute_type,
                 ))
                 model_to_task[model_name] = task_name
 
+                # Quarantine task (sql_mode only)
+                if q_file:
+                    q_task_name = f"{stage}_{model_name}_quarantine"
+                    tasks.append(WorkflowTask(
+                        name=q_task_name,
+                        stage=stage,
+                        task_type="sql",
+                        sql_file=q_file,
+                        models=[],
+                        depends_on=[task_name],
+                        compute_type=compute_type,
+                    ))
+
         # Pass 2: wire real lineage deps
         for task in tasks:
-            if task.task_type != "dbt" or not task.models:
+            if task.task_type not in ("dbt", "sql") or not task.models:
                 continue
             model_name = task.models[0]
             for parent in model_parents.get(model_name, []):
                 parent_task = model_to_task.get(parent)
                 if parent_task and parent_task not in task.depends_on:
                     task.depends_on.append(parent_task)
+            # Root models depend on UDFs task (sql_mode)
+            if udf_task_name and not task.depends_on:
+                task.depends_on.append(udf_task_name)
     else:
         # ── Stage-level mode (opt-in) ─────────────────
         prev_task_name: str | None = None
@@ -804,16 +903,18 @@ def build_workflow(
         tasks=tasks,
         schedule=schedule,
         environment=environment,
-        catalog=catalog,
+        catalog=resolved_catalog,
         schema=schema,
         compute_type=compute_type,
         warehouse_id=warehouse_id,
+        dbt_vars=dbt_vars,
     )
 
 
 def build_domain_workflows(
     forge_config: dict,
     graph: dict,
+    sql_mode: bool = False,
 ) -> list[Workflow]:
     """Build one Databricks Workflow per domain.
 
@@ -830,7 +931,7 @@ def build_domain_workflows(
     mode = forge_config.get("domain_workflows", "separate")  # "separate" | "shared"
 
     if not domains or mode == "shared":
-        process_workflows = [build_workflow(forge_config, graph)]
+        process_workflows = [build_workflow(forge_config, graph, sql_mode=sql_mode)]
     else:
         process_workflows = []
         contracts = graph.get("contracts", {})
@@ -864,7 +965,7 @@ def build_domain_workflows(
             domain_config = {**forge_config}
             domain_config["_workflow_suffix"] = suffix
             domain_config["_domain"] = domain_name
-            wf = build_workflow(domain_config, domain_graph)
+            wf = build_workflow(domain_config, domain_graph, sql_mode=sql_mode)
             wf.name = f"{wf.name}{suffix}"
             process_workflows.append(wf)
 
@@ -885,15 +986,19 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
     project_name = forge_config.get("name", "unnamed")
     project_id = forge_config.get("id", project_name)
     environment = forge_config.get("environment", "dev")
-    catalog = forge_config.get("catalog", "main")
     schema = forge_config.get("schema", "default")
     compute_type = forge_config.get("compute", {}).get("type", "serverless")
+
+    # Resolve logical catalog name to concrete name
+    active_profile = forge_config.get("active_profile", "dev")
+    profile_config = forge_config.get("profiles", {}).get(active_profile, {})
+    logical_catalog = profile_config.get("catalog", forge_config.get("catalog", "main"))
+    dbt_vars = _resolve_dbt_vars(forge_config)
+    resolved_catalog = dbt_vars.get(f"catalog_{logical_catalog}", logical_catalog)
 
     warehouse_id = None
     if compute_type == "serverless":
         try:
-            active_profile = forge_config.get("active_profile", "dev")
-            profile_config = forge_config.get("profiles", {}).get(active_profile, {})
             databricks_profile = profile_config.get("databricks_profile", "DEFAULT")
             config = read_databrickscfg(databricks_profile)
             http_path = config.get("http_path")
@@ -924,10 +1029,11 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
         name=f"SETUP_{project_id}",
         tasks=tasks,
         environment=environment,
-        catalog=catalog,
+        catalog=resolved_catalog,
         schema=schema,
         compute_type=compute_type,
         warehouse_id=warehouse_id,
+        dbt_vars=dbt_vars,
     )
 
 
@@ -939,15 +1045,19 @@ def build_teardown_workflow(forge_config: dict, graph: dict) -> Workflow:
     project_name = forge_config.get("name", "unnamed")
     project_id = forge_config.get("id", project_name)
     environment = forge_config.get("environment", "dev")
-    catalog = forge_config.get("catalog", "main")
     schema = forge_config.get("schema", "default")
     compute_type = forge_config.get("compute", {}).get("type", "serverless")
+
+    # Resolve logical catalog name to concrete name
+    active_profile = forge_config.get("active_profile", "dev")
+    profile_config = forge_config.get("profiles", {}).get(active_profile, {})
+    logical_catalog = profile_config.get("catalog", forge_config.get("catalog", "main"))
+    dbt_vars = _resolve_dbt_vars(forge_config)
+    resolved_catalog = dbt_vars.get(f"catalog_{logical_catalog}", logical_catalog)
 
     warehouse_id = None
     if compute_type == "serverless":
         try:
-            active_profile = forge_config.get("active_profile", "dev")
-            profile_config = forge_config.get("profiles", {}).get(active_profile, {})
             databricks_profile = profile_config.get("databricks_profile", "DEFAULT")
             config = read_databrickscfg(databricks_profile)
             http_path = config.get("http_path")
@@ -991,8 +1101,9 @@ def build_teardown_workflow(forge_config: dict, graph: dict) -> Workflow:
         name=f"TEARDOWN_{project_id}",
         tasks=tasks,
         environment=environment,
-        catalog=catalog,
+        catalog=resolved_catalog,
         schema=schema,
         compute_type=compute_type,
         warehouse_id=warehouse_id,
+        dbt_vars=dbt_vars,
     )

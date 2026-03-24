@@ -10,7 +10,11 @@ resources:
           project_directory: ${workspace.file_path}
           commands:
           - dbt deps
-          - dbt run-operation drop_all_models
+          - 'dbt run-operation drop_all_models --vars ''{"schema_bronze": "ben_sales",
+            "schema_silver": "ben_sales", "schema_gold": "ben_sales", "catalog_bronze":
+            "dev_fd_bronze", "catalog_silver": "dev_fd_silver", "catalog_meta": "dev_fd_meta",
+            "git_commit": "local", "compute_type": "serverless"}'''
+          catalog: dev_fd_bronze
           warehouse_id: 724607f766691c81
       environments:
       - environment_key: default
@@ -18,3 +22,5 @@ resources:
           client: '2'
           dependencies:
           - dbt-databricks
+          - pydantic>=2.0
+          - pyyaml
