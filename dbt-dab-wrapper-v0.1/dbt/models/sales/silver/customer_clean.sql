@@ -1,5 +1,5 @@
 {{ config(
-    materialized='table', schema='ben_sales', database='dev_fd_silver', meta={'version': 'v2'}, post_hook="{{ dbt_dab_tools.quarantine('email IS NULL OR revenue < 0') }}"
+    materialized='table', schema='ben_sales', database='dev_fd_silver', meta={'version': 'v2'}, post_hook="{{ quarantine('email IS NULL OR revenue < 0') }}"
 ) }}
 
 select
@@ -10,5 +10,5 @@ select
     signup_date,
     country,
     revenue,
-    {{ dbt_dab_tools.lineage_columns() }}
+    {{ lineage_columns() }}
 from {{ ref('stg_customers') }}

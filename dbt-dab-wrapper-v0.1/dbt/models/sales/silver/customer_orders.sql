@@ -14,7 +14,7 @@ select /*+ BROADCAST(c) */
     o.unit_price,
     o.line_total,
     o.order_date,
-    {{ dbt_dab_tools.lineage_columns() }}
+    {{ lineage_columns() }}
 from {{ ref('customer_clean') }} c
 inner join {{ ref('stg_orders') }} o
     on c.customer_id = o.customer_id

@@ -629,7 +629,7 @@ def compile_model(model_name: str, model_def: dict, forge_config: dict | None = 
         config_parts.append(f"meta={{'version': '{version}'}}")
     if quarantine:
         config_parts.append(
-            f'post_hook="{{{{ dbt_dab_tools.quarantine(\'{quarantine}\') }}}}"'
+            f'post_hook="{{{{ quarantine(\'{quarantine}\') }}}}"'
         )
 
     lines.append("{{ config(")
@@ -722,9 +722,9 @@ def compile_model(model_name: str, model_def: dict, forge_config: dict | None = 
         lineage_args.append(f"lineage_mode='{lineage_mode}'")
 
     if lineage_args:
-        col_lines.append(f"    {{{{ dbt_dab_tools.lineage_columns({', '.join(lineage_args)}) }}}}")
+        col_lines.append(f"    {{{{ lineage_columns({', '.join(lineage_args)}) }}}}")
     else:
-        col_lines.append("    {{ dbt_dab_tools.lineage_columns() }}")
+        col_lines.append("    {{ lineage_columns() }}")
 
     # Broadcast hint (Databricks join optimisation)
     broadcast = model_def.get("broadcast")
@@ -1244,6 +1244,29 @@ _GENERATE_SCHEMA_NAME_SQL = """\
     {%- endif -%}
 {%- endmacro %}
 """
+
+
+def _reset_sql_output_dir(output_dir: Path) -> None:
+    """Clear previously generated SQL files while preserving the root directory."""
+    if not output_dir.exists():
+        return
+    for old_sql in output_dir.rglob("*.sql"):
+        old_sql.unlink()
+    for child in sorted(output_dir.iterdir(), reverse=True):
+        if child.is_dir():
+            try:
+                child.rmdir()
+            except OSError:
+                pass
+
+
+def _phase_sql_dirs(output_dir: Path) -> dict[str, Path]:
+    """Return the setup/process/teardown directories for pure SQL artifacts."""
+    return {
+        "setup": output_dir / "setup",
+        "process": output_dir / "process",
+        "teardown": output_dir / "teardown",
+    }
 
 
 def _ensure_generate_schema_name_macro(forge_config: dict | None = None) -> None:
@@ -2560,11 +2583,11 @@ def compile_all_pure_sql(
     udfs = load_udfs(ddl_path, forge_config=forge_config)
 
     # Clean stale files — source of truth is always dbt/ddl/*
-    if output_dir.exists():
-        for old_sql in output_dir.glob("*.sql"):
-            old_sql.unlink()
-
+    _reset_sql_output_dir(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    phase_dirs = _phase_sql_dirs(output_dir)
+    for phase_dir in phase_dirs.values():
+        phase_dir.mkdir(parents=True, exist_ok=True)
     results: dict[str, Path] = {}
 
     # Build a lookup of resolved (catalog, schema) per model
@@ -2708,7 +2731,7 @@ def compile_all_pure_sql(
         # Lineage UDFs (trace_lineage, trace_lineage_json, last_run_id)
         udf_lines.append(compile_trace_lineage_udf(meta_cat, meta_sch, compute_type=compute_type))
 
-        udf_path = output_dir / f"{seq:03d}_udfs.sql"
+        udf_path = phase_dirs["setup"] / f"{seq:03d}_udfs.sql"
         udf_path.write_text("\n".join(udf_lines))
         results["_udfs"] = udf_path
         seq += 1
@@ -2725,7 +2748,7 @@ def compile_all_pure_sql(
         schema_lines.append(_compile_table_stub("lineage_log", _LINEAGE_LOG_COLUMNS, meta_cat, meta_sch))
         schema_lines.append("")
         lineage_udf_sql = "\n".join(schema_lines) + compile_trace_lineage_udf(meta_cat, meta_sch, compute_type=compute_type)
-        udf_path = output_dir / f"{seq:03d}_udfs.sql"
+        udf_path = phase_dirs["setup"] / f"{seq:03d}_udfs.sql"
         udf_path.write_text(lineage_udf_sql)
         results["_udfs"] = udf_path
         seq += 1
@@ -2735,14 +2758,14 @@ def compile_all_pure_sql(
         models, model_locations, meta_cat, meta_sch,
         git_commit=git_commit, deploy_ts=deploy_ts,
     )
-    lineage_path = output_dir / f"{seq:03d}_lineage_graph.sql"
+    lineage_path = phase_dirs["setup"] / f"{seq:03d}_lineage_graph.sql"
     lineage_path.write_text(lineage_sql)
     results["_lineage_graph"] = lineage_path
     seq += 1
 
     # Step 1b: Quarantine tables (transform + ingest)
     quarantine_ddl = compile_quarantine_tables_sql(meta_cat, meta_sch)
-    q_ddl_path = output_dir / f"{seq:03d}_quarantine_tables.sql"
+    q_ddl_path = phase_dirs["setup"] / f"{seq:03d}_quarantine_tables.sql"
     q_ddl_path.write_text(quarantine_ddl)
     results["_quarantine_tables"] = q_ddl_path
     seq += 1
@@ -2764,7 +2787,7 @@ def compile_all_pure_sql(
                 asset_kind="volume",
             )
             vol_lines.append(compile_volume_sql(vol_name, vol_def, v_cat, v_sch))
-        vol_path = output_dir / f"{seq:03d}_volumes.sql"
+        vol_path = phase_dirs["setup"] / f"{seq:03d}_volumes.sql"
         vol_path.write_text("\n".join(vol_lines))
         results["_volumes"] = vol_path
         seq += 1
@@ -2791,7 +2814,7 @@ def compile_all_pure_sql(
                 csv_path = Path(csv_rel)  # try relative to cwd
 
         seed_sql = compile_pure_sql_seed(seed_name, seed_def, s_cat, s_sch, csv_path)
-        seed_path = output_dir / f"{seq:03d}_{seed_name}.sql"
+        seed_path = phase_dirs["setup"] / f"{seq:03d}_{seed_name}.sql"
         seed_path.write_text(seed_sql)
         results[seed_name] = seed_path
         seq += 1
@@ -2817,7 +2840,7 @@ def compile_all_pure_sql(
             meta_cat, meta_sch, git_commit=git_commit,
         )
 
-        out_path = output_dir / f"{seq:03d}_{model_name}.sql"
+        out_path = phase_dirs["process"] / f"{seq:03d}_{model_name}.sql"
         out_path.write_text(sql)
         results[model_name] = out_path
 
@@ -2839,7 +2862,7 @@ def compile_all_pure_sql(
                 source_fq=q_source_fq,
                 model_fq=fq_model,
             )
-            q_path = output_dir / f"{seq:03d}_{model_name}_quarantine.sql"
+            q_path = phase_dirs["process"] / f"{seq:03d}_{model_name}_quarantine.sql"
             q_path.write_text(q_sql)
             results[f"{model_name}_quarantine"] = q_path
 
@@ -2929,8 +2952,9 @@ def compile_teardown_sql(
     lines.append(f"DROP TABLE IF EXISTS {fq_meta}.lineage_log;")
     lines.append("")
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_dir / "teardown.sql"
+    phase_dir = _phase_sql_dirs(output_dir)["teardown"]
+    phase_dir.mkdir(parents=True, exist_ok=True)
+    out_path = phase_dir / "teardown.sql"
     out_path.write_text("\n".join(lines) + "\n")
     return out_path
 
@@ -3085,8 +3109,9 @@ def compile_backup_sql(
     )
     lines.append("")
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_dir / "backup.sql"
+    phase_dir = _phase_sql_dirs(output_dir)["teardown"]
+    phase_dir.mkdir(parents=True, exist_ok=True)
+    out_path = phase_dir / "backup.sql"
     out_path.write_text("\n".join(lines) + "\n")
     return out_path
 
@@ -3120,7 +3145,7 @@ def _validate_sql_schema_ordering(output_dir: Path) -> None:
 
     errors: list[str] = []
 
-    for sql_file in sorted(output_dir.glob("*.sql")):
+    for sql_file in sorted(output_dir.rglob("*.sql")):
         content = sql_file.read_text()
 
         # Schemas created in THIS file
@@ -3910,7 +3935,7 @@ def generate_agent_guide(
     lines.append("You never need to know these to be successful — but here's what's happening behind the scenes:")
     lines.append("")
     lines.append("- **Jinja** = dbt's templating language (the wrapper writes it for you)")
-    lines.append("- **Macros** = reusable SQL snippets (all live in external `../dbt-dab-tools`)")
+    lines.append("- **Macros** = reusable SQL snippets bundled in `macros/`")
     lines.append("- **Tests** = data quality checks (wrapper's `checks:` + `quarantine:` replace raw dbt tests)")
     lines.append("- **Incremental models & snapshots** = performance tricks (wrapper uses `materialized:` + `prior_version`)")
     lines.append("")

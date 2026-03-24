@@ -5,7 +5,7 @@
 #
 # This is the dbt project config for forge.
 # Forge reads forge.yml, but dbt needs this file.
-# External macros live in dbt-tools/ (macro-paths below).
+# Project macros live in macros/.
 
 name: 'sales_data'
 version: '0.2.0'

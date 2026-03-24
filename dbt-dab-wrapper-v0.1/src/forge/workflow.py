@@ -54,6 +54,14 @@ from forge.compute_resolver import read_databrickscfg, get_schema_variables, res
 
 STAGES = ["ingest", "stage", "clean", "enrich", "serve"]
 
+SQL_SETUP_DIR = Path("sql") / "setup"
+SQL_PROCESS_DIR = Path("sql") / "process"
+SQL_TEARDOWN_DIR = Path("sql") / "teardown"
+
+
+def _sql_task_path(file_path: Path) -> str:
+    return file_path.as_posix()
+
 # Name-prefix conventions for auto-assignment
 _STAGE_PREFIXES: dict[str, str] = {
     "raw_": "ingest",
@@ -386,8 +394,6 @@ def generate_bundle_config(
     databricks_profile = active_prof.get("databricks_profile", "DEFAULT")
 
     sync_include: list[str] = []
-    if Path("dbt-dab-tools").is_dir():
-        sync_include.append("dbt-dab-tools/")
     if sql_mode:
         sync_include.append("sql/")
     if Path("dist").is_dir():
@@ -778,14 +784,14 @@ def build_workflow(
     # ── Build sql file index (sql_mode) ─────────────
     sql_file_map: dict[str, str] = {}  # model_name → sql/NNN_model.sql
     if sql_mode:
-        sql_dir = Path("sql")
+        sql_dir = SQL_PROCESS_DIR
         if sql_dir.is_dir():
             for f in sorted(sql_dir.iterdir()):
                 if f.suffix == ".sql" and "_" in f.stem:
                     # Extract model name: "002_customer_clean" → "customer_clean"
                     parts = f.stem.split("_", 1)
                     if parts[0].isdigit() and len(parts) > 1:
-                        sql_file_map[parts[1]] = f"sql/{f.name}"
+                        sql_file_map[parts[1]] = _sql_task_path(f)
 
     # ── Build tasks ───────────────────────────────────
     tasks: list[WorkflowTask] = []
@@ -1096,7 +1102,9 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
             pass
 
     # Build setup commands
-    commands = ["dbt deps"]
+    commands: list[str] = []
+    if Path("packages.yml").exists():
+        commands.append("dbt deps")
     has_seeds = Path("dbt/seeds").is_dir() and any(Path("dbt/seeds").glob("*.csv"))
     if has_seeds:
         commands.append("dbt seed --full-refresh")
@@ -1114,34 +1122,34 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
     ]
 
     # UDFs task — runs after setup so catalog/schema exist
-    udf_sql = Path("sql/000_udfs.sql")
+    udf_sql = SQL_SETUP_DIR / "000_udfs.sql"
     if udf_sql.exists():
         tasks.append(WorkflowTask(
             name="create_udfs",
             stage="ingest",
             task_type="sql",
-            sql_file="sql/000_udfs.sql",
+            sql_file=_sql_task_path(udf_sql),
             models=[],
             depends_on=["setup"],
             compute_type=compute_type,
         ))
 
     # Lineage graph task — creates tables + seeds DAG edges
-    lineage_sql = Path("sql/001_lineage_graph.sql")
+    lineage_sql = SQL_SETUP_DIR / "001_lineage_graph.sql"
     if lineage_sql.exists():
         lineage_deps = ["create_udfs"] if udf_sql.exists() else ["setup"]
         tasks.append(WorkflowTask(
             name="seed_lineage_graph",
             stage="ingest",
             task_type="sql",
-            sql_file="sql/001_lineage_graph.sql",
+            sql_file=_sql_task_path(lineage_sql),
             models=[],
             depends_on=lineage_deps,
             compute_type=compute_type,
         ))
 
     # Quarantine tables task — creates transform_quarantine + ingest_quarantine
-    sql_dir_setup = Path("sql")
+    sql_dir_setup = SQL_SETUP_DIR
     if sql_dir_setup.is_dir():
         for f in sorted(sql_dir_setup.iterdir()):
             if f.name.endswith("_quarantine_tables.sql"):
@@ -1150,7 +1158,7 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
                     name="create_quarantine_tables",
                     stage="ingest",
                     task_type="sql",
-                    sql_file=f"sql/{f.name}",
+                    sql_file=_sql_task_path(f),
                     models=[],
                     depends_on=q_deps,
                     compute_type=compute_type,
@@ -1158,7 +1166,7 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
                 break
 
     # Volumes task — CREATE VOLUME IF NOT EXISTS
-    sql_dir = Path("sql")
+    sql_dir = SQL_SETUP_DIR
     if sql_dir.is_dir():
         for f in sorted(sql_dir.iterdir()):
             if f.name.endswith("_volumes.sql"):
@@ -1172,7 +1180,7 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
                         name="create_volumes",
                         stage="ingest",
                         task_type="sql",
-                        sql_file=f"sql/{f.name}",
+                        sql_file=_sql_task_path(f),
                         models=[],
                         depends_on=vol_deps,
                         compute_type=compute_type,
@@ -1183,7 +1191,7 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
     # DDL managed_by values drive which python tasks belong in SETUP.
     managed_by_tasks: list[str] = []
     managed_by_values: set[str] = set()  # e.g. {"python"} or {"ingest_from_volume"}
-    sql_dir = Path("sql")
+    sql_dir = SQL_SETUP_DIR
     if sql_dir.is_dir():
         last_setup_task = tasks[-1].name if tasks else "setup"
         for f in sorted(sql_dir.iterdir()):
@@ -1212,7 +1220,7 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
                 name=task_name,
                 stage="ingest",
                 task_type="sql",
-                sql_file=f"sql/{f.name}",
+                sql_file=_sql_task_path(f),
                 models=[],
                 depends_on=[last_setup_task],
                 compute_type=compute_type,
@@ -1241,7 +1249,7 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
                 name=task_name,
                 stage="ingest",
                 task_type="sql",
-                sql_file=f"sql/{f.name}",
+                sql_file=_sql_task_path(f),
                 models=[],
                 depends_on=[last_setup_task],
                 compute_type=compute_type,
@@ -1307,7 +1315,7 @@ def build_teardown_workflow(forge_config: dict, graph: dict) -> Workflow:
             name="backup",
             stage="serve",
             task_type="sql",
-            sql_file="sql/backup.sql",
+            sql_file=_sql_task_path(SQL_TEARDOWN_DIR / "backup.sql"),
             models=[],
             depends_on=[],
             compute_type=compute_type,
@@ -1316,7 +1324,7 @@ def build_teardown_workflow(forge_config: dict, graph: dict) -> Workflow:
             name="teardown",
             stage="serve",
             task_type="sql",
-            sql_file="sql/teardown.sql",
+            sql_file=_sql_task_path(SQL_TEARDOWN_DIR / "teardown.sql"),
             models=[],
             depends_on=["backup"],
             compute_type=compute_type,

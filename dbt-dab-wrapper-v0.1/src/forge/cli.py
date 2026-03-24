@@ -12,7 +12,7 @@
 #   forge diff       ← shows graph changes
 # 
 # Everything else (quarantine, Python UDFs, compute resolver, portability)
-# lives in the EXTERNAL dbt-dab-tools package (pulled via packages.yml).
+# lives in the local Forge runtime and project macros.
 # 
 # A child types: forge setup → forge deploy → done.
 # An engineer sees every line explained.
@@ -74,7 +74,7 @@ from forge.compute_resolver import (
 
 app = typer.Typer(
     help="forge – dbt pipelines on Databricks, so simple a child could use it. "
-         "One forge.yml. External dbt-dab-tools package. Graph diffs. "
+         "One forge.yml. Local bundled macros. Graph diffs. "
          "Quarantine + provenance + Python UDFs built-in."
 )
 
@@ -158,6 +158,14 @@ def _artifact_targets_root() -> Path:
 
 def _target_artifact_root(target: str) -> Path:
     return _artifact_targets_root() / target
+
+
+def _default_compile_output(profile_name: str) -> Path:
+    return _target_artifact_root(profile_name) / "dbt" / "models"
+
+
+def _default_pure_sql_output(profile_name: str) -> Path:
+    return _target_artifact_root(profile_name) / "sql"
 
 
 @contextmanager
@@ -530,7 +538,7 @@ def setup(
         generate_profiles_yml(config, output_path=profiles_path)
         typer.echo("✅ Generated profiles.yml from forge.yml profiles")
 
-    typer.echo("🔗 All macros (quarantine, python_udf, prior_version) live in dbt-dab-tools (via packages.yml)")
+    typer.echo("🔗 Core macros (quarantine, lineage, python_udf, prior_version) are bundled in this project under macros/")
     typer.echo("")
     typer.echo("💡 Databricks auth — choose one:")
     typer.echo("   a) databricks configure --profile DEFAULT   (recommended — zero env vars)")
@@ -769,14 +777,15 @@ def deploy(
             except FileNotFoundError:
                 pass
 
-        # Install dbt package dependencies
-        typer.echo("📦 Installing dbt packages...")
-        try:
-            subprocess.run(["dbt", "deps", "--project-dir", "."], check=True, env=dbt_env)
-        except subprocess.CalledProcessError as e:
-            typer.echo(f"  ⚠️  dbt deps failed (exit {e.returncode})")
-        except FileNotFoundError:
-            pass
+        # Install dbt package dependencies only when the project declares them.
+        if Path("packages.yml").exists():
+            typer.echo("📦 Installing dbt packages...")
+            try:
+                subprocess.run(["dbt", "deps", "--project-dir", "."], check=True, env=dbt_env)
+            except subprocess.CalledProcessError as e:
+                typer.echo(f"  ⚠️  dbt deps failed (exit {e.returncode})")
+            except FileNotFoundError:
+                pass
 
         # Run dbt (SQL-only models – zero cold starts on serverless)
         typer.echo("✅ Running dbt...")
@@ -785,7 +794,6 @@ def deploy(
         except FileNotFoundError:
             typer.echo("💡 Tip: install dbt-databricks with poetry if needed")
 
-    # Vendor dbt-dab-tools into the project so DAB syncs it to the workspace
     job_yaml_paths = []
     try:
         graph = build_graph(config)
@@ -1408,7 +1416,7 @@ def python_task(
 @app.command()
 def compile(
     ddl: str = typer.Option(DDL_DEFAULT, "--ddl", help="Path to DDL file or directory"),
-    output: str = typer.Option("dbt/models", "--output", "-o", help="Output directory for SQL files"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output directory for generated artifacts"),
     pure_sql: bool = typer.Option(False, "--pure-sql", help="Emit standalone SQL (no dbt/Jinja). Runs directly on SQL warehouse."),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Forge profile (from forge.yml profiles:)"),
 ):
@@ -1433,7 +1441,7 @@ def compile(
         compute_type = prof.get("compute", {}).get("type", "serverless") if isinstance(prof.get("compute"), dict) else "serverless"
         platform = prof.get("platform", "databricks")
 
-        sql_dir = Path("sql")
+        sql_dir = Path(output) if output else _default_pure_sql_output(selected_profile)
         results = compile_all_pure_sql(
             ddl_path, sql_dir,
             catalog=catalog, schema=schema,
@@ -1448,22 +1456,22 @@ def compile(
 
         for name, path in results.items():
             if name == "_udfs":
-                typer.echo(f"  🔧 {path.name} → UDF definitions + lineage UDFs")
+                typer.echo(f"  🔧 {path.relative_to(sql_dir.parent)} → UDF definitions + lineage UDFs")
             elif name == "_lineage_graph":
-                typer.echo(f"  🔗 {path.name} → lineage graph + log tables")
+                typer.echo(f"  🔗 {path.relative_to(sql_dir.parent)} → lineage graph + log tables")
             elif name.endswith("_quarantine"):
-                typer.echo(f"  🔶 {path.name} → quarantine sidecar")
+                typer.echo(f"  🔶 {path.relative_to(sql_dir.parent)} → quarantine sidecar")
             else:
-                typer.echo(f"  ✅ {path.name}")
+                typer.echo(f"  ✅ {path.relative_to(sql_dir.parent)}")
 
         model_count = len([k for k in results if not k.startswith("_") and not k.endswith("_quarantine")])
         typer.echo(f"")
-        typer.echo(f"🎉 Compiled {model_count} models → sql/ (pure SQL, no dbt needed)")
-        typer.echo(f"   Run files in order on any SQL warehouse.")
+        typer.echo(f"🎉 Compiled {model_count} models → {sql_dir}")
+        typer.echo("   SQL is grouped by phase: setup/, process/, teardown/.")
         return
 
     # Standard dbt mode
-    output_dir = Path(output)
+    output_dir = Path(output) if output else _default_compile_output(selected_profile)
     results = compile_all(ddl_path, output_dir, forge_config=config)
 
     for name, path in results.items():
@@ -1480,11 +1488,11 @@ def compile(
     udf_count = len([k for k in results if k.startswith("_udf_")])
     extras = []
     if udf_count:
-        extras.append(f"{udf_count} UDFs → dbt/functions/")
+        extras.append(f"{udf_count} UDFs → {output_dir.parent / 'functions'}")
     if "_sources" in results:
-        extras.append("sources → dbt/sources/")
+        extras.append(f"sources → {output_dir.parent / 'sources'}")
     extra_note = f" + {', '.join(extras)}" if extras else ""
-    typer.echo(f"🎉 Compiled {model_count} models{extra_note} from {ddl_path}. Run 'forge deploy' next.")
+    typer.echo(f"🎉 Compiled {model_count} models{extra_note} from {ddl_path} → {output_dir}.")
 
 
 # =============================================
@@ -1917,7 +1925,7 @@ if __name__ == "__main__":
 # =============================================
 # • Typer = beautiful help text, zero flags needed
 # • setup/deploy/teardown/diff = exactly the 3 commands we promised
-# • All heavy lifting (compute, graph, macros) stays in EXTERNAL dbt-dab-tools package
+# • All heavy lifting (compute, graph, macros) stays in the local Forge runtime and project macros
 # • SQL preferred, Python UDFs allowed via macros
 # • Portability baked in (target_platform switch works later)
 # • Every single line has a comment → THE CODE IS THE DOCUMENTATION

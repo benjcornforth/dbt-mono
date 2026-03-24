@@ -1,8 +1,0 @@
-# =============================================
-# packages.yml — dbt package dependencies
-# =============================================
-# dbt-dab-tools is vendored into ./dbt-dab-tools/ during deploy
-# so the same local reference works both locally and on Databricks.
-
-packages:
-  - local: ./dbt-dab-tools
