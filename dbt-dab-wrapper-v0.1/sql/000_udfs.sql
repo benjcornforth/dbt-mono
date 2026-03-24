@@ -1,7 +1,7 @@
 -- UDF: loyalty_tier
 -- Assigns GOLD/SILVER/BRONZE based on revenue
-DROP FUNCTION IF EXISTS `bronze`.`silver`.loyalty_tier;
-CREATE FUNCTION `bronze`.`silver`.loyalty_tier(revenue decimal(18,2))
+DROP FUNCTION IF EXISTS `dev_fd_silver`.`ben_sales`.loyalty_tier;
+CREATE FUNCTION `dev_fd_silver`.`ben_sales`.loyalty_tier(revenue decimal(18,2))
 RETURNS string
 RETURN (CASE
   WHEN revenue >= 1000 THEN 'GOLD'
@@ -11,8 +11,8 @@ END);
 
 -- UDF: clean_email
 -- Lowercase and trim email addresses
-DROP FUNCTION IF EXISTS `bronze`.`silver`.clean_email;
-CREATE FUNCTION `bronze`.`silver`.clean_email(raw_email string)
+DROP FUNCTION IF EXISTS `dev_fd_silver`.`ben_sales`.clean_email;
+CREATE FUNCTION `dev_fd_silver`.`ben_sales`.clean_email(raw_email string)
 RETURNS string
 LANGUAGE PYTHON
 RUNTIME_VERSION = '3.11'
@@ -27,8 +27,8 @@ $$;
 -- UDF: average_score
 -- Pandas vectorized UDF
 -- Vectorized average using pandas — fast on large batches
-DROP FUNCTION IF EXISTS `bronze`.`silver`.average_score;
-CREATE FUNCTION `bronze`.`silver`.average_score(score_a double, score_b double)
+DROP FUNCTION IF EXISTS `dev_fd_silver`.`ben_sales`.average_score;
+CREATE FUNCTION `dev_fd_silver`.`ben_sales`.average_score(score_a double, score_b double)
 RETURNS double
 LANGUAGE PYTHON
 RUNTIME_VERSION = '3.11'

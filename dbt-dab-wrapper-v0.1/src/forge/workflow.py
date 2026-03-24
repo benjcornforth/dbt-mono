@@ -755,20 +755,6 @@ def build_workflow(
     tasks: list[WorkflowTask] = []
     model_to_task: dict[str, str] = {}  # model_name → task_key
 
-    # UDFs task (sql_mode only) — must run before any model
-    udf_task_name: str | None = None
-    if sql_mode and "udfs" in sql_file_map:
-        udf_task_name = "ingest_udfs"
-        tasks.append(WorkflowTask(
-            name=udf_task_name,
-            stage="ingest",
-            task_type="sql",
-            sql_file=sql_file_map["udfs"],
-            models=[],
-            depends_on=[],
-            compute_type=compute_type,
-        ))
-
     if per_model:
         # ── Per-model mode (default) ──────────────────
         # Pass 1: create all tasks (deps filled in pass 2)
@@ -821,9 +807,6 @@ def build_workflow(
                 parent_task = model_to_task.get(parent)
                 if parent_task and parent_task not in task.depends_on:
                     task.depends_on.append(parent_task)
-            # Root models depend on UDFs task (sql_mode)
-            if udf_task_name and not task.depends_on:
-                task.depends_on.append(udf_task_name)
     else:
         # ── Stage-level mode (opt-in) ─────────────────
         prev_task_name: str | None = None
@@ -1036,6 +1019,19 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
             compute_type=compute_type,
         )
     ]
+
+    # UDFs task — runs after setup so catalog/schema exist
+    udf_sql = Path("sql/000_udfs.sql")
+    if udf_sql.exists():
+        tasks.append(WorkflowTask(
+            name="create_udfs",
+            stage="ingest",
+            task_type="sql",
+            sql_file="sql/000_udfs.sql",
+            models=[],
+            depends_on=["setup"],
+            compute_type=compute_type,
+        ))
 
     return Workflow(
         name=f"SETUP_{project_id}",

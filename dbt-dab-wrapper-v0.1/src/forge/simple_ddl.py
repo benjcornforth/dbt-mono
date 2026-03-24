@@ -1473,7 +1473,19 @@ def compile_all_pure_sql(
     if udfs:
         udf_lines = []
         for udf_name, udf_def in udfs.items():
-            fq_schema = f"`{catalog}`.`{schema}`"
+            # Resolve UDF catalog/schema — use explicit udf-level keys,
+            # then fall back to the profile's default resolved names
+            udf_catalog = udf_def.get("catalog")
+            udf_schema = udf_def.get("schema")
+            if not udf_catalog or not udf_schema:
+                # Use the same resolution as models — default layer is "silver"
+                udf_layer = udf_def.get("layer", "silver")
+                resolved_cat, resolved_sch = resolve_model_schema(
+                    udf_name, {"layer": udf_layer}, prof, forge_config=forge_config,
+                )
+                udf_catalog = udf_catalog or resolved_cat
+                udf_schema = udf_schema or resolved_sch
+            fq_schema = f"`{udf_catalog}`.`{udf_schema}`"
             udf_lines.append(compile_udf_sql(udf_name, udf_def, schema=fq_schema))
             udf_lines.append("")
         udf_path = output_dir / f"{seq:03d}_udfs.sql"
