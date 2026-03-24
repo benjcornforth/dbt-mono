@@ -148,7 +148,7 @@ class ForgeTask:
             task.table("customer_summary")
             # → "dev_fd_silver.dev_demo.customer_summary"
 
-        Pass model_def to override layer/schema (from models.yml).
+        Pass model_def to override layer/schema (from dbt/ddl).
         """
         model_def = model_def or {}
         catalog, schema = resolve_model_schema(

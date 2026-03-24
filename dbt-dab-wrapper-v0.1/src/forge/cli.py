@@ -105,26 +105,18 @@ def _find_project_root(start: Path = None) -> Path:
 _PROJECT_ROOT = _find_project_root()
 CONFIG_FILE = _PROJECT_ROOT / "forge.yml"
 
-# Anchor cwd to project root so all relative paths (dbt/models, resources/, etc.) resolve correctly
+# Anchor cwd to project root so all relative paths (dbt/ddl, resources/, etc.) resolve correctly
 # even when `forge` is invoked from a parent or sibling directory.
 if _PROJECT_ROOT != Path.cwd():
     os.chdir(_PROJECT_ROOT)
 
-# DDL can live in a file (dbt/models.yml) or a directory (dbt/ddl/)
-DDL_DEFAULT = "dbt/models.yml"
+# Canonical DDL source of truth.
+DDL_DEFAULT = "dbt/ddl"
 
 
 def _resolve_ddl(ddl: str) -> Path:
-    """Resolve DDL path: dbt/ddl/ directory wins over dbt/models.yml file."""
-    p = Path(ddl)
-    # Auto-detect: prefer dbt/ddl/ directory if it exists
-    ddl_dir = Path("dbt/ddl")
-    if ddl_dir.is_dir():
-        return ddl_dir
-    # If user passed explicit path and it exists, use it
-    if p.exists():
-        return p
-    return p  # fall back (caller checks .exists())
+    """Resolve the canonical DDL directory under dbt/ddl/."""
+    return Path(ddl)
 
 
 DEFAULT_CONFIG = {
@@ -181,13 +173,15 @@ def setup(
         CONFIG_FILE.write_text(yaml.dump(config, sort_keys=False, default_flow_style=False))
         typer.echo(f"✅ Created {CONFIG_FILE} – this is the ONLY file you ever edit!")
 
-    # Create business-logic folders (dbt stays clean)
+    # Create canonical DDL tree plus generated-output folders.
     (project_root / "dbt" / "models").mkdir(parents=True, exist_ok=True)
-    (project_root / "dbt" / "seeds").mkdir(parents=True, exist_ok=True)
-    (project_root / "dbt" / "sources").mkdir(parents=True, exist_ok=True)
+    layer_roots = set(config.get("schemas", [])) | set(config.get("catalogs", []))
+    for layer in sorted(layer_roots):
+        for asset_kind in ("models", "udfs", "seeds", "volumes"):
+            (project_root / "dbt" / "ddl" / layer / asset_kind).mkdir(parents=True, exist_ok=True)
     (project_root / "artifacts").mkdir(parents=True, exist_ok=True)
 
-    typer.echo("✅ Created dbt/models/, seeds/, sources/ – pure business logic only")
+    typer.echo("✅ Created dbt/ddl/<layer>/{models,udfs,seeds,volumes}/ + dbt/models/")
 
     # Auto-generate profiles.yml from forge.yml
     config = yaml.safe_load(CONFIG_FILE.read_text())
@@ -419,16 +413,6 @@ def deploy(
             subprocess.run(["dbt", "run", "--project-dir", "."] + dbt_vars_flag, check=True, env=dbt_env)
         except FileNotFoundError:
             typer.echo("💡 Tip: install dbt-databricks with poetry if needed")
-
-    # Vendor forge runtime modules so Python tasks can import them on Databricks
-    forge_src = Path("src/forge")
-    forge_dest = Path("forge")
-    if forge_src.is_dir():
-        import shutil
-        if forge_dest.exists():
-            shutil.rmtree(forge_dest)
-        shutil.copytree(forge_src, forge_dest)
-        typer.echo("📦 Vendored forge/ runtime for Python tasks")
 
     # Vendor dbt-dab-tools into the project so DAB syncs it to the workspace
     job_yaml_paths = []
@@ -807,7 +791,7 @@ def explain(
     dbt_dir = ddl_path.parent if ddl_path.is_file() else ddl_path.parent
 
     if not ddl_path.exists():
-        typer.echo(f"❌ {ddl} not found. Create dbt/models.yml or dbt/ddl/ directory.")
+        typer.echo(f"❌ {ddl} not found. Create the canonical dbt/ddl/ tree first.")
         raise typer.Exit(1)
 
     if not CONFIG_FILE.exists():
@@ -1005,7 +989,7 @@ def python_task(
 
 
 # =============================================
-# COMPILE – models.yml → SQL (no coding needed)
+# COMPILE – dbt/ddl → SQL (no coding needed)
 # =============================================
 @app.command()
 def compile(
@@ -1014,10 +998,10 @@ def compile(
     pure_sql: bool = typer.Option(False, "--pure-sql", help="Emit standalone SQL (no dbt/Jinja). Runs directly on SQL warehouse."),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Forge profile (from forge.yml profiles:)"),
 ):
-    """forge compile → turns DDL into SQL + schema.yml (no SQL needed)"""
+    """forge compile → turns dbt/ddl into SQL + schema.yml (no SQL needed)"""
     ddl_path = _resolve_ddl(ddl)
     if not ddl_path.exists():
-        typer.echo(f"❌ {ddl} not found. Create dbt/models.yml or dbt/ddl/ directory.")
+        typer.echo(f"❌ {ddl} not found. Create the canonical dbt/ddl/ tree first.")
         raise typer.Exit(1)
 
     if pure_sql:
@@ -1097,12 +1081,12 @@ def migrate(
     recompile: bool = typer.Option(True, help="Recompile SQL after migrating"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without applying"),
 ):
-    """forge migrate → applies migration YAMLs to models.yml + recompiles"""
+    """forge migrate → applies migration YAMLs to dbt/ddl + recompiles"""
     ddl_path = _resolve_ddl(ddl)
     mig_dir = Path(migrations)
 
     if not ddl_path.exists():
-        typer.echo(f"❌ {ddl} not found. Create dbt/models.yml or dbt/ddl/ directory.")
+        typer.echo(f"❌ {ddl} not found. Create the canonical dbt/ddl/ tree first.")
         raise typer.Exit(1)
 
     if not mig_dir.exists():
@@ -1167,7 +1151,7 @@ def guide(
 
 
 # =============================================
-# UDFS – manage SQL/Python UDFs from models.yml
+# UDFS – manage SQL/Python UDFs from dbt/ddl
 # =============================================
 @app.command()
 def udfs(
@@ -1224,7 +1208,7 @@ def udfs(
 
 
 # =============================================
-# VALIDATE – run checks defined in models.yml
+# VALIDATE – run checks defined in dbt/ddl
 # =============================================
 @app.command()
 def validate(
@@ -1331,7 +1315,7 @@ def dev(
     """forge dev → watches DDL files, auto-compiles on save"""
     ddl_path = _resolve_ddl(ddl)
     if not ddl_path.exists():
-        typer.echo(f"❌ {ddl} not found. Create dbt/models.yml or dbt/ddl/ directory.")
+        typer.echo(f"❌ {ddl} not found. Create the canonical dbt/ddl/ tree first.")
         raise typer.Exit(1)
 
     output_dir = Path(output)

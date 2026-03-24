@@ -2,14 +2,14 @@
 # Tracks every file processed by the ingestion pipeline.
 # Used for dedup (skip already-ingested files) and audit.
 #
-# managed_by: python → forge creates the table schema (CREATE TABLE)
+# managed_by: ingest_from_volume → forge creates the table schema (CREATE TABLE)
 # but each row is appended by the ingest_from_volume Python task.
 # domain: true → one manifest per domain (file_manifest_eu, etc.)
 # forge codegen generates a Pydantic class: FileManifest
 models:
   file_manifest:
     description: "Tracks files ingested from Volumes"
-    managed_by: python
+    managed_by: ingest_from_volume
     domain: true
     columns:
       file_path:       { type: string, required: true, description: "Full Volume path to the ingested file" }

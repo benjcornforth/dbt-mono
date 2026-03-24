@@ -6,62 +6,11 @@
 # A zero-SQL, zero-Python DDL for users who have
 # never written code before.
 #
-# Users write YAML in one of two layouts:
-#   1. Single file:  dbt/models.yml        (simple projects)
-#   2. Directory:    dbt/ddl/*.yml          (split by layer)
+# Users write YAML in one canonical layout:
+#   dbt/ddl/{layer}/{models|udfs|seeds|volumes}/**/*.yml
 #
 # The compiler generates all SQL models, schema.yml,
 # and lineage configuration automatically.
-#
-# Example models.yml:
-#
-#   models:
-#     stg_customers:
-#       description: "Staged customers"
-#       source: raw_customers
-#       columns:
-#         customer_id:  { type: int, required: true, unique: true }
-#         email:        { type: string }
-#         signup_date:  { type: date, cast: true }
-#         revenue:      { type: decimal(10,2), cast: true }
-#
-#     customer_clean:
-#       description: "Clean customers"
-#       source: stg_customers
-#       stage: clean
-#       materialized: table
-#       version: v2
-#       quarantine: "email IS NULL OR revenue < 0"
-#       columns:
-#         customer_id:  { type: int, required: true, unique: true }
-#         email:        { type: string, required: true }
-#         revenue:      { type: decimal(10,2) }
-#
-#     customer_orders:
-#       description: "Customers joined with orders"
-#       sources:
-#         c: customer_clean
-#         o: stg_orders
-#       join: "c.customer_id = o.customer_id"
-#       materialized: table
-#       columns:
-#         customer_id:  { from: c }
-#         email:        { from: c }
-#         order_id:     { from: o, required: true, unique: true }
-#         product:      { from: o }
-#         line_total:   { from: o }
-#
-#     customer_summary:
-#       description: "Customer metrics"
-#       source: customer_orders
-#       materialized: table
-#       group_by: [customer_id, first_name, last_name, email, country]
-#       columns:
-#         customer_id:  { type: int, required: true, unique: true }
-#         total_orders: { expr: "count(order_id)", type: int }
-#         total_revenue:{ expr: "sum(line_total)", type: decimal(10,2) }
-#         first_order:  { expr: "min(order_date)", type: date }
-#         last_order:   { expr: "max(order_date)", type: date }
 #
 # Then:  forge compile   → generates all .sql + schema.yml
 #        forge deploy    → runs everything
@@ -83,71 +32,84 @@ import yaml
 # =============================================
 
 def load_raw_ddl(ddl_path: Path, forge_config: dict | None = None) -> dict:
-    """Load DDL from a single file or a directory tree of YAML files.
+    """Load DDL from the canonical dbt/ddl tree.
 
-    Supports three layouts:
-      1. Single file:  dbt/models.yml
-      2. Flat dir:     dbt/ddl/*.yml  (all files at root level)
-      3. Layer tree:   dbt/ddl/{layer}/**/*.yml  (folder = layer)
+    Canonical layout:
+      dbt/ddl/{layer}/{models|udfs|seeds|volumes}/**/*.yml
 
-    In layout 3, top-level subdirectories (bronze/, silver/, gold/) are
-    treated as layer names.  Each layer name is validated against the
-    ``schemas`` list in *forge_config* (from forge.yml).  The layer is
-    injected into every model definition as ``layer: <folder>``.
-
-    Duplicate model, UDF, or seed names across files raise ValueError.
+    The top-level layer folder is the source of truth for schema/catalog
+    routing. Model names are never used to infer layers.
     """
-    if ddl_path.is_file():
-        return yaml.safe_load(ddl_path.read_text()) or {}
+    if not ddl_path.exists():
+        raise FileNotFoundError(f"DDL path not found: {ddl_path}")
+    if not ddl_path.is_dir():
+        raise ValueError(
+            f"DDL path must be a directory tree rooted at dbt/ddl/. Got: {ddl_path}"
+        )
 
-    if ddl_path.is_dir():
-        merged: dict[str, Any] = {"models": {}, "udfs": {}, "seeds": {}, "volumes": {}}
+    merged: dict[str, Any] = {"models": {}, "udfs": {}, "seeds": {}, "volumes": {}}
+    allowed_layers = set(forge_config.get("schemas", [])) | set(forge_config.get("catalogs", [])) if forge_config else set()
+    allowed_sections = {"models", "udfs", "seeds", "volumes"}
 
-        # Collect allowed layer names from forge.yml
-        allowed_layers: set[str] | None = None
-        if forge_config:
-            # Union of schemas + catalogs = valid folder names
-            allowed_layers = set(forge_config.get("schemas", []))
-            allowed_layers |= set(forge_config.get("catalogs", []))
+    root_ymls = sorted(ddl_path.glob("*.yml"))
+    if root_ymls:
+        names = ", ".join(p.name for p in root_ymls)
+        raise ValueError(
+            "Canonical DDL does not allow YAML files directly under dbt/ddl/. "
+            f"Move these into dbt/ddl/<layer>/<section>/: {names}"
+        )
 
-        # Detect layout: are there layer subdirectories?
-        subdirs = [d for d in sorted(ddl_path.iterdir()) if d.is_dir()]
-        root_ymls = sorted(ddl_path.glob("*.yml"))
+    layer_dirs = [d for d in sorted(ddl_path.iterdir()) if d.is_dir()]
+    if not layer_dirs:
+        raise ValueError(
+            "No layer folders found under dbt/ddl/. Expected dbt/ddl/<layer>/<section>/*.yml"
+        )
 
-        if subdirs:
-            # Layout 3: layer tree — validate folder names
-            if allowed_layers:
-                for d in subdirs:
-                    if d.name not in allowed_layers:
-                        raise ValueError(
-                            f"Folder '{d.name}' in {ddl_path} is not a valid layer. "
-                            f"Allowed layers (from forge.yml schemas + catalogs): "
-                            f"{sorted(allowed_layers)}"
-                        )
+    for layer_dir in layer_dirs:
+        if allowed_layers and layer_dir.name not in allowed_layers:
+            raise ValueError(
+                f"Folder '{layer_dir.name}' in {ddl_path} is not a valid layer. "
+                f"Allowed layers (from forge.yml schemas + catalogs): {sorted(allowed_layers)}"
+            )
 
-            # Walk all YAML files recursively; infer layer from top-level folder
-            for yml_file in sorted(ddl_path.rglob("*.yml")):
-                rel = yml_file.relative_to(ddl_path)
-                parts = rel.parts  # e.g. ('silver', 'staging', 'stg_customers.yml')
-                layer = parts[0] if len(parts) > 1 else None
+        section_dirs = [d for d in sorted(layer_dir.iterdir()) if d.is_dir()]
+        stray_ymls = sorted(layer_dir.glob("*.yml"))
+        if stray_ymls:
+            names = ", ".join(p.name for p in stray_ymls)
+            raise ValueError(
+                f"Layer '{layer_dir.name}' contains YAML files outside the canonical section folders: {names}"
+            )
+        if not section_dirs:
+            # Empty layer folders are valid after setup.
+            continue
 
+        for section_dir in section_dirs:
+            if section_dir.name not in allowed_sections:
+                raise ValueError(
+                    f"Invalid DDL section '{section_dir.name}' under layer '{layer_dir.name}'. "
+                    f"Allowed sections: {sorted(allowed_sections)}"
+                )
+
+            for yml_file in sorted(section_dir.rglob("*.yml")):
                 raw = yaml.safe_load(yml_file.read_text()) or {}
-                _merge_section(merged, "models", raw, yml_file, inject_layer=layer)
-                _merge_section(merged, "udfs", raw, yml_file)
-                _merge_section(merged, "seeds", raw, yml_file)
-                _merge_section(merged, "volumes", raw, yml_file)
-        else:
-            # Layout 2: flat directory — root-level *.yml only
-            for yml_file in root_ymls:
-                raw = yaml.safe_load(yml_file.read_text()) or {}
-                _merge_section(merged, "models", raw, yml_file)
-                _merge_section(merged, "udfs", raw, yml_file)
-                _merge_section(merged, "seeds", raw, yml_file)
-                _merge_section(merged, "volumes", raw, yml_file)
+                if section_dir.name not in raw:
+                    raise ValueError(
+                        f"{yml_file} is under '{section_dir.name}/' but does not define a top-level '{section_dir.name}:' block"
+                    )
+                unexpected = set(raw) - {section_dir.name}
+                if unexpected:
+                    raise ValueError(
+                        f"{yml_file} is under '{section_dir.name}/' but defines unrelated sections: {sorted(unexpected)}"
+                    )
+                _merge_section(
+                    merged,
+                    section_dir.name,
+                    raw,
+                    yml_file,
+                    inject_layer=layer_dir.name,
+                )
 
-        return merged
-
-    raise FileNotFoundError(f"DDL path not found: {ddl_path}")
+    return merged
 
 
 def _merge_section(
@@ -159,7 +121,7 @@ def _merge_section(
 ) -> None:
     """Merge a section (models/udfs/seeds) from *raw* into *merged*.
 
-    Raises on duplicates.  For models, injects ``layer`` when provided.
+    Raises on duplicates. For layer-scoped assets, injects ``layer`` when provided.
     """
     for name, defn in raw.get(section, {}).items():
         if name in merged[section]:
@@ -167,7 +129,7 @@ def _merge_section(
                 f"Duplicate {section.rstrip('s')} '{name}' in {yml_file.name} "
                 f"(already defined in an earlier file)"
             )
-        if inject_layer and section in ("models", "udfs") and isinstance(defn, dict):
+        if inject_layer and section in ("models", "udfs", "volumes") and isinstance(defn, dict):
             defn.setdefault("layer", inject_layer)
         merged[section][name] = defn
 
@@ -642,7 +604,7 @@ def compile_schema_yml(models: dict[str, dict]) -> str:
 # =============================================
 # UDF COMPILER: udfs: block → CREATE FUNCTION SQL
 # =============================================
-# UDFs are defined in the same models.yml:
+# UDFs are defined in the canonical dbt/ddl tree:
 #
 #   udfs:
 #     loyalty_tier:
@@ -928,7 +890,7 @@ def compile_pure_sql_seed(
 
 def compile_all_udfs(ddl_path: Path, forge_config: dict | None = None) -> dict[str, str]:
     """
-    Compile all UDFs from models.yml.
+    Compile all UDFs from dbt/ddl.
 
     Returns: {udf_name: sql_statement}
     """
@@ -1182,7 +1144,7 @@ def compile_volumes(
 
 
 # =============================================
-# FULL COMPILE: models.yml → .sql + schema.yml
+# FULL COMPILE: dbt/ddl → .sql + schema.yml
 # =============================================
 
 def compile_all(
@@ -2357,7 +2319,7 @@ def compile_all_pure_sql(
     forge_config: dict | None = None,
 ) -> dict[str, Path]:
     """
-    Compile models.yml into numbered, standalone SQL files.
+    Compile dbt/ddl into numbered, standalone SQL files.
 
     No Jinja. No dbt. Runs directly on a SQL warehouse.
     Files are numbered for execution order (topological sort).
@@ -2475,7 +2437,7 @@ def compile_all_pure_sql(
                 if dep not in models:
                     dep_errors.append(
                         f"  UDF '{udf_name}': depends_on '{dep}' but no model "
-                        f"with that name exists in models.yml"
+                        f"with that name exists in dbt/ddl"
                     )
                     continue
                 dep_def = models[dep]
@@ -2992,14 +2954,14 @@ def _validate_sql_schema_ordering(output_dir: Path) -> None:
 #     - model: customer_orders
 #       remove_columns: [legacy_field]
 #
-# Then:  forge migrate   → applies changes to models.yml + recompiles
+# Then:  forge migrate   → applies changes to dbt/ddl + recompiles
 
 def apply_migration(
     ddl_path: Path,
     migration_path: Path,
 ) -> dict[str, Any]:
     """
-    Apply a migration YAML to the models.yml DDL.
+    Apply a migration YAML to the dbt/ddl DDL.
 
     Returns a summary of changes applied.
     """
@@ -3122,7 +3084,7 @@ def apply_all_migrations_dry_run(
     Preview all unapplied migrations WITHOUT modifying any files.
 
     Same logic as apply_all_migrations but operates on an in-memory
-    copy of models.yml and never writes back.
+    copy of the dbt/ddl tree and never writes back.
     """
     if not migrations_dir.exists():
         return []
@@ -3188,7 +3150,7 @@ def apply_all_migrations_dry_run(
 # =============================================
 # DATA CHECKS ENGINE
 # =============================================
-# Checks are defined inline in models.yml under
+# Checks are defined inline in dbt/ddl under
 # each model's `checks:` block.
 #
 # Supported check types:
@@ -3310,7 +3272,7 @@ def compile_checks_sql(
     model_filter: str | None = None,
 ) -> dict[str, list[dict]]:
     """
-    Compile all checks from models.yml into SQL.
+    Compile all checks from dbt/ddl into SQL.
 
     Returns: {model_name: [{name, type, scope, severity, sql}, ...]}
     """
@@ -3348,7 +3310,7 @@ def generate_agent_guide(
     """
     Generate a project-specific agent guide / onboarding document.
 
-    Reads forge.yml + models.yml to produce contextual instructions
+    Reads forge.yml + dbt/ddl to produce contextual instructions
     that an LLM agent or new team member can follow.
     """
     project_name = forge_config.get("name", "unnamed")
@@ -3381,7 +3343,7 @@ def generate_agent_guide(
     lines.append("forge setup")
     lines.append("")
     lines.append("# 2. Edit your models (no SQL needed!)")
-    lines.append("# Open: dbt/models.yml")
+    lines.append("# Open: dbt/ddl/<layer>/<section>/*.yml")
     lines.append("")
     lines.append("# 3. Compile YAML into SQL")
     lines.append("forge compile")
@@ -3420,7 +3382,7 @@ def generate_agent_guide(
     lines.append("| Command | What it does |")
     lines.append("|---------|-------------|")
     lines.append("| `forge setup` | Creates project structure + forge.yml |")
-    lines.append("| `forge compile` | Turns models.yml into SQL (no coding needed) |")
+    lines.append("| `forge compile` | Turns dbt/ddl into SQL (no coding needed) |")
     lines.append("| `forge deploy` | Builds + deploys to Databricks |")
     lines.append("| `forge diff` | Shows what changed since last deploy |")
     lines.append("| `forge diff --mermaid` | Visual diagram of changes (color-coded) |")
@@ -3444,7 +3406,7 @@ def generate_agent_guide(
     # ── How to Define Models ─────────────────────
     lines.append("## How to Define Models (No SQL Required)")
     lines.append("")
-    lines.append("Edit `dbt/models.yml` using this format:")
+    lines.append("Edit files under `dbt/ddl/<layer>/<section>/` using this format:")
     lines.append("")
     lines.append("### Simple staging model (reads from a source)")
     lines.append("")
@@ -3940,7 +3902,7 @@ def generate_agent_guide(
     lines.append("| Problem | Solution |")
     lines.append("|---------|----------|")
     lines.append("| `forge.yml not found` | Run `forge setup` first |")
-    lines.append("| Models not updating | Run `forge compile` after editing models.yml |")
+    lines.append("| Models not updating | Run `forge compile` after editing dbt/ddl |")
     lines.append("| Bad data in table | Add a `quarantine` rule to the model |")
     lines.append("| Need to rename a column | Create a migration YAML file |")
     lines.append("| Want to see the pipeline | Run `forge workflow --mermaid` |")

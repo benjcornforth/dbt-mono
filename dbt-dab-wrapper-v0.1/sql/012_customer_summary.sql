@@ -57,7 +57,7 @@ SELECT
         'ingested_ats', _collected_ingested_ats,
         'upstream', cast(null as string),
         'git_commit', 'unknown',
-        'deployed_at', '2026-03-24T20:44:44.215280+00:00',
+        'deployed_at', '2026-03-24T22:14:45.942157+00:00',
         'compute_type', 'serverless',
         'contract_id', 'ben_sales.customer_summary',
         'version', 'v1',

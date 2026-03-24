@@ -17,7 +17,7 @@ cd dbt-forge
 # 2. Configure Databricks
 databricks auth login
 
-# 3. Define your tables in dbt/models.yml
+# 3. Define your tables under dbt/ddl/<layer>/<section>/
 # 4. Deploy
 python -m src.forge.cli workflow
 databricks bundle deploy --target dev
@@ -29,7 +29,7 @@ databricks bundle deploy --target dev
 
 A CLI that sits on top of **dbt** and **Databricks Asset Bundles (DAB)**. It turns a declarative YAML definition of your tables into a fully deployed, tested, lineage-tracked data pipeline.
 
-**The two-file contract:** you only edit `forge.yml` (project config) and `dbt/models.yml` (table definitions). Everything else — SQL, schema.yml, DAB bundles, UDF scripts — is generated.
+**The source-of-truth contract:** you edit `forge.yml` and the canonical DDL tree under `dbt/ddl/<layer>/<section>/`. Everything else — SQL, schema.yml, DAB bundles, UDF scripts — is generated.
 
 ---
 
@@ -68,8 +68,8 @@ databricks --version
 # 1. Authenticate with Databricks
 databricks auth login
 
-# 2. Define your tables in dbt/models.yml
-#    (columns, types, sources, checks, UDFs — all in one place)
+# 2. Define your assets in dbt/ddl/<layer>/<section>/
+#    (models, UDFs, seeds, volumes)
 
 # 3. Generate workflows
 python -m src.forge.cli workflow
@@ -78,7 +78,7 @@ python -m src.forge.cli workflow
 databricks bundle deploy --target dev
 ```
 
-That's the core loop. Edit `dbt/models.yml` → `python -m src.forge.cli workflow` → `databricks bundle deploy`.
+That's the core loop. Edit `dbt/ddl/` → `python -m src.forge.cli workflow` → `databricks bundle deploy`.
 
 ### Atomic Commands
 
@@ -213,7 +213,7 @@ sql/005_customer_summary.sql
 | **Automatic lineage** | Every row carries `_lineage` (model, sources, git commit, deploy timestamp) |
 | **Column-level provenance** | `forge explain` traces any column through expressions, UDFs, joins → back to raw source |
 | **Data quality checks** | Inline `checks:` block (range, recency, row_count, regex, custom SQL) — no extra framework |
-| **Reusable UDFs** | SQL-first, Python fallback. Defined in `models.yml`, deployed via `dbt run-operation` |
+| **Reusable UDFs** | SQL-first, Python fallback. Defined in `dbt/ddl`, deployed via `dbt run-operation` |
 | **Multi-platform profiles** | `databricks_profile: PROD` reads `~/.databrickscfg` — zero env vars. Postgres, Redshift profiles too |
 | **Pattern-based naming** | `catalog_pattern: "{env}_{id}_{catalog}"` → `dev_myproject_bronze`. Configurable per-project, auto-expands per env |
 | **Medallion layer routing** | Models auto-route to bronze/silver/gold schemas + catalogs by name prefix. Per-profile `schemas:` / `catalogs:` |
@@ -237,7 +237,7 @@ sql/005_customer_summary.sql
 
 ```
 forge.yml                ← project config + profiles (YOU edit)
-dbt/models.yml           ← table definitions (YOU edit)
+dbt/ddl/                ← canonical YAML source of truth (YOU edit)
 dbt/models/*.sql         ← generated (never edit)
 dbt/models/schema.yml    ← generated tests
 dbt/migrations/*.yml     ← schema changes (you create)

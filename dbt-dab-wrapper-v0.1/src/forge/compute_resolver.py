@@ -370,23 +370,6 @@ def _expand_env_prefix(
     return profile
 
 
-# Model name prefix → medallion layer
-_LAYER_PREFIXES: dict[str, str] = {
-    "raw_": "bronze",
-    "src_": "bronze",
-    "seed_": "bronze",
-    "stg_": "silver",
-    "staging_": "silver",
-    "clean_": "silver",
-    "int_": "silver",
-    "fct_": "gold",
-    "dim_": "gold",
-    "agg_": "gold",
-    "rpt_": "gold",
-    "pub_": "gold",
-}
-
-
 def resolve_model_schema(
     model_name: str,
     model_def: dict,
@@ -396,11 +379,10 @@ def resolve_model_schema(
     """
     Resolve catalog and schema for a specific model.
 
-    Resolution order:
-      1. Explicit model-level schema/catalog keys in models.yml
-      2. schemas: mapping (name prefix → layer → schema name)
-      3. catalogs: mapping (layer → catalog name)
-      4. Profile-level defaults (catalog, schema)
+        Resolution order:
+            1. Explicit model-level schema/catalog keys in DDL
+            2. Explicit model-level layer injected from canonical dbt/ddl tree
+            3. Profile-level defaults (catalog, schema) only when explicit schema is set
 
     Automatically expands naming patterns via ``forge_config``.
 
@@ -427,21 +409,20 @@ def resolve_model_schema(
     if model_schema:
         return model_catalog or default_catalog, model_schema
 
-    # 2. Determine layer from model name prefix
-    layer = model_def.get("layer")  # explicit layer key
-    if not layer:
-        for prefix, lyr in _LAYER_PREFIXES.items():
-            if model_name.startswith(prefix):
-                layer = lyr
-                break
-
-    # 3. Resolve from schemas/catalogs maps
+    # 2. Resolve from the explicit canonical-tree layer
+    layer = model_def.get("layer")
     if layer and schemas_map:
         resolved_schema = schemas_map.get(layer, default_schema)
         resolved_catalog = catalogs_map.get(layer, default_catalog) if catalogs_map else default_catalog
         return model_catalog or resolved_catalog, resolved_schema
 
-    return model_catalog or default_catalog, default_schema
+    if layer:
+        return model_catalog or default_catalog, default_schema
+
+    raise ValueError(
+        f"Model '{model_name}' has no explicit layer. Define it via the canonical dbt/ddl/<layer>/... tree "
+        f"or provide an explicit schema/catalog override in its DDL."
+    )
 
 
 def get_schema_variables(

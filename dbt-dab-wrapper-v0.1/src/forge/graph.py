@@ -33,13 +33,10 @@ from forge.simple_ddl import load_raw_ddl as _load_raw_ddl
 
 
 def _resolve_ddl_path(dbt_dir: Path) -> Path | None:
-    """Return the DDL path (file or directory), or None if not found."""
-    ddl_file = dbt_dir / "models.yml"
+    """Return the canonical DDL directory, or None if not found."""
     ddl_dir = dbt_dir / "ddl"
     if ddl_dir.is_dir():
         return ddl_dir
-    if ddl_file.is_file():
-        return ddl_file
     return None
 
 # =============================================
@@ -147,10 +144,10 @@ def build_graph(
     if features.get("python_udfs"):
         _add_python_udf_nodes(graph, dbt_project_dir or Path("dbt"), catalog, schema, git_commit, now)
 
-    # ── Inject SQL UDFs from models.yml ──────────────────
+    # ── Inject SQL UDFs from dbt/ddl ──────────────────
     _add_sql_udf_nodes(graph, dbt_project_dir or Path("dbt"), catalog, schema, git_commit, now)
 
-    # ── Inject check nodes from models.yml ───────────────
+    # ── Inject check nodes from dbt/ddl ───────────────
     _add_check_nodes(graph, dbt_project_dir or Path("dbt"), git_commit, now)
 
     # ── Inject DAB workflow node ─────────────────────────
@@ -572,7 +569,7 @@ def _add_sql_udf_nodes(
     now: str,
 ) -> None:
     """
-    Read udfs: block from models.yml and add UDF nodes to the graph.
+    Read udfs: blocks from dbt/ddl and add UDF nodes to the graph.
 
     Also scans model columns for udf: references and creates edges.
     Purple UDF nodes in Mermaid.
@@ -677,7 +674,7 @@ def _add_check_nodes(
     now: str,
 ) -> None:
     """
-    Read checks: blocks from models.yml and add check nodes + edges.
+    Read checks: blocks from dbt/ddl and add check nodes + edges.
 
     Orange hexagons in Mermaid. Each check is a node connected to its model.
     Cross-model checks (reconcile) also connect to the parent model.
@@ -1039,14 +1036,14 @@ def walk_column_lineage(
     """
     ddl_path = _resolve_ddl_path(dbt_dir)
     if not ddl_path:
-        return {"error": f"No models.yml or ddl/ directory found in {dbt_dir}"}
+        return {"error": f"No canonical dbt/ddl directory found in {dbt_dir}"}
 
     raw = _load_raw_ddl(ddl_path)
     models = raw.get("models", {})
     udfs = raw.get("udfs", {})
 
     if model_name not in models:
-        return {"error": f"Model '{model_name}' not found in models.yml"}
+        return {"error": f"Model '{model_name}' not found in dbt/ddl"}
 
     model_def = models[model_name]
     columns = model_def.get("columns", {})

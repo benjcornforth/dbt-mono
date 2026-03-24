@@ -382,11 +382,9 @@ def generate_bundle_config(forge_config: dict, job_yaml_paths: list[str] | None 
     sync_include = ["dbt-dab-tools/"]
     if sql_mode:
         sync_include.append("sql/")
-    # Python tasks need the script files and the vendored forge package
+    # Python tasks need the script files; the forge runtime comes from the wheel.
     if Path("python").is_dir():
         sync_include.append("python/")
-    if Path("forge").is_dir():
-        sync_include.append("forge/")
     # dbt metadata (schema.yml) needed by build_models() at runtime
     if Path("dbt").is_dir():
         sync_include.append("dbt/")
@@ -739,7 +737,7 @@ def build_workflow(
     # ── Load DDL model defs for managed_by column schemas ──
     from forge.simple_ddl import load_ddl
     dbt_dir = Path(forge_config.get("dbt_project_dir", "dbt"))
-    ddl_path = dbt_dir / "ddl" if (dbt_dir / "ddl").is_dir() else dbt_dir / "models.yml"
+    ddl_path = dbt_dir / "ddl"
     ddl_models = load_ddl(ddl_path, forge_config=forge_config) if ddl_path.exists() else {}
 
     # ── Load custom_tasks from forge.yml ──────────────

@@ -5,7 +5,7 @@
 models:
   raw_orders:
     description: "Raw order data ingested from Volume"
-    managed_by: python
+    managed_by: ingest_from_volume
     domain: false
     columns:
       order_id:     { type: int, description: "Unique order identifier" }

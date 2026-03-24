@@ -42,7 +42,7 @@ SELECT
         'ingested_ats', array_union(coalesce(c._lineage.ingested_ats, array(c._inserted_at)), coalesce(o._lineage.ingested_ats, array(o._inserted_at))),
         'upstream', concat('[', coalesce(to_json(c._lineage), 'null'), ',', coalesce(to_json(o._lineage), 'null'), ']'),
         'git_commit', 'unknown',
-        'deployed_at', '2026-03-24T20:44:44.215280+00:00',
+        'deployed_at', '2026-03-24T22:14:45.942157+00:00',
         'compute_type', 'serverless',
         'contract_id', 'ben_sales.customer_orders',
         'version', 'v1',
@@ -105,7 +105,7 @@ SELECT
     )
     ) AS _lineage
 FROM `dev_fd_silver`.`ben_sales`.`customer_clean` c
-INNER JOIN `dev_fd_bronze`.`ben_sales`.`stg_orders` o
+INNER JOIN `dev_fd_silver`.`ben_sales`.`stg_orders` o
     ON c.customer_id = o.customer_id
 ;
 
