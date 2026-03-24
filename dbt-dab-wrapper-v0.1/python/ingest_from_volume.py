@@ -15,8 +15,15 @@ Pydantic validation is provided by forge codegen (sdk/models.py).
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import sys
 from datetime import datetime, timezone
+
+# Add the DAB bundle files root to sys.path so vendored forge/ is importable
+_bundle_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _bundle_root not in sys.path:
+    sys.path.insert(0, _bundle_root)
 
 from forge.python_task import ForgeTask
 from forge.type_safe import build_models

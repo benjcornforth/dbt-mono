@@ -8,6 +8,7 @@ sync:
   include:
   - dbt-dab-tools/
   - forge/
+  - sql/
 targets:
   dev:
     workspace:

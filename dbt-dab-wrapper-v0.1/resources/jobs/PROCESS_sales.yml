@@ -3,128 +3,90 @@ resources:
     PROCESS_sales:
       name: PROCESS_sales (dev)
       tasks:
+      - task_key: ingest_udfs
+        timeout_seconds: 3600
+        sql_task:
+          file:
+            path: ../../sql/000_udfs.sql
+          warehouse_id: 724607f766691c81
       - task_key: ingest_file_manifest
         timeout_seconds: 3600
-        environment_key: default
-        dbt_task:
-          project_directory: ${workspace.file_path}
-          commands:
-          - dbt deps
-          - 'dbt run --select file_manifest --vars ''{"schema_bronze": "ben_sales",
-            "schema_silver": "ben_sales", "schema_gold": "ben_sales", "catalog_bronze":
-            "dev_fd_bronze", "catalog_silver": "dev_fd_silver", "catalog_meta": "dev_fd_meta",
-            "git_commit": "local", "compute_type": "serverless"}'''
-          catalog: dev_fd_bronze
+        sql_task:
+          file:
+            path: ../../sql/001_file_manifest.sql
           warehouse_id: 724607f766691c81
+        depends_on:
+        - task_key: ingest_udfs
       - task_key: ingest_raw_customers
         timeout_seconds: 3600
-        environment_key: default
-        dbt_task:
-          project_directory: ${workspace.file_path}
-          commands:
-          - dbt deps
-          - 'dbt run --select raw_customers --vars ''{"schema_bronze": "ben_sales",
-            "schema_silver": "ben_sales", "schema_gold": "ben_sales", "catalog_bronze":
-            "dev_fd_bronze", "catalog_silver": "dev_fd_silver", "catalog_meta": "dev_fd_meta",
-            "git_commit": "local", "compute_type": "serverless"}'''
-          catalog: dev_fd_bronze
+        sql_task:
+          file:
+            path: ../../sql/002_raw_customers.sql
           warehouse_id: 724607f766691c81
+        depends_on:
+        - task_key: ingest_udfs
       - task_key: ingest_raw_orders
         timeout_seconds: 3600
-        environment_key: default
-        dbt_task:
-          project_directory: ${workspace.file_path}
-          commands:
-          - dbt deps
-          - 'dbt run --select raw_orders --vars ''{"schema_bronze": "ben_sales", "schema_silver":
-            "ben_sales", "schema_gold": "ben_sales", "catalog_bronze": "dev_fd_bronze",
-            "catalog_silver": "dev_fd_silver", "catalog_meta": "dev_fd_meta", "git_commit":
-            "local", "compute_type": "serverless"}'''
-          catalog: dev_fd_bronze
+        sql_task:
+          file:
+            path: ../../sql/003_raw_orders.sql
           warehouse_id: 724607f766691c81
+        depends_on:
+        - task_key: ingest_udfs
       - task_key: stage_customer_orders
         timeout_seconds: 3600
-        environment_key: default
-        dbt_task:
-          project_directory: ${workspace.file_path}
-          commands:
-          - dbt deps
-          - 'dbt run --select customer_orders --vars ''{"schema_bronze": "ben_sales",
-            "schema_silver": "ben_sales", "schema_gold": "ben_sales", "catalog_bronze":
-            "dev_fd_bronze", "catalog_silver": "dev_fd_silver", "catalog_meta": "dev_fd_meta",
-            "git_commit": "local", "compute_type": "serverless"}'''
-          catalog: dev_fd_bronze
+        sql_task:
+          file:
+            path: ../../sql/007_customer_orders.sql
           warehouse_id: 724607f766691c81
         depends_on:
         - task_key: clean_customer_clean
         - task_key: stage_stg_orders
       - task_key: stage_customer_summary
         timeout_seconds: 3600
-        environment_key: default
-        dbt_task:
-          project_directory: ${workspace.file_path}
-          commands:
-          - dbt deps
-          - 'dbt run --select customer_summary --vars ''{"schema_bronze": "ben_sales",
-            "schema_silver": "ben_sales", "schema_gold": "ben_sales", "catalog_bronze":
-            "dev_fd_bronze", "catalog_silver": "dev_fd_silver", "catalog_meta": "dev_fd_meta",
-            "git_commit": "local", "compute_type": "serverless"}'''
-          catalog: dev_fd_bronze
+        sql_task:
+          file:
+            path: ../../sql/008_customer_summary.sql
           warehouse_id: 724607f766691c81
         depends_on:
         - task_key: stage_customer_orders
       - task_key: stage_stg_customers
         timeout_seconds: 3600
-        environment_key: default
-        dbt_task:
-          project_directory: ${workspace.file_path}
-          commands:
-          - dbt deps
-          - 'dbt run --select stg_customers --vars ''{"schema_bronze": "ben_sales",
-            "schema_silver": "ben_sales", "schema_gold": "ben_sales", "catalog_bronze":
-            "dev_fd_bronze", "catalog_silver": "dev_fd_silver", "catalog_meta": "dev_fd_meta",
-            "git_commit": "local", "compute_type": "serverless"}'''
-          catalog: dev_fd_bronze
+        sql_task:
+          file:
+            path: ../../sql/004_stg_customers.sql
           warehouse_id: 724607f766691c81
         depends_on:
         - task_key: ingest_raw_customers
       - task_key: stage_stg_orders
         timeout_seconds: 3600
-        environment_key: default
-        dbt_task:
-          project_directory: ${workspace.file_path}
-          commands:
-          - dbt deps
-          - 'dbt run --select stg_orders --vars ''{"schema_bronze": "ben_sales", "schema_silver":
-            "ben_sales", "schema_gold": "ben_sales", "catalog_bronze": "dev_fd_bronze",
-            "catalog_silver": "dev_fd_silver", "catalog_meta": "dev_fd_meta", "git_commit":
-            "local", "compute_type": "serverless"}'''
-          catalog: dev_fd_bronze
+        sql_task:
+          file:
+            path: ../../sql/006_stg_orders.sql
           warehouse_id: 724607f766691c81
         depends_on:
         - task_key: ingest_raw_orders
       - task_key: clean_customer_clean
         timeout_seconds: 3600
-        environment_key: default
-        dbt_task:
-          project_directory: ${workspace.file_path}
-          commands:
-          - dbt deps
-          - 'dbt run --select customer_clean --vars ''{"schema_bronze": "ben_sales",
-            "schema_silver": "ben_sales", "schema_gold": "ben_sales", "catalog_bronze":
-            "dev_fd_bronze", "catalog_silver": "dev_fd_silver", "catalog_meta": "dev_fd_meta",
-            "git_commit": "local", "compute_type": "serverless"}'''
-          catalog: dev_fd_bronze
+        sql_task:
+          file:
+            path: ../../sql/005_customer_clean.sql
           warehouse_id: 724607f766691c81
         depends_on:
         - task_key: stage_stg_customers
+      - task_key: clean_customer_clean_quarantine
+        timeout_seconds: 3600
+        sql_task:
+          file:
+            path: ../../sql/005_customer_clean_quarantine.sql
+          warehouse_id: 724607f766691c81
+        depends_on:
+        - task_key: clean_customer_clean
       - task_key: ingest_py_ingest_from_volume
         timeout_seconds: 3600
         environment_key: default
         spark_python_task:
           python_file: ../../python/ingest_from_volume.py
-        depends_on:
-        - task_key: ingest_raw_orders
       environments:
       - environment_key: default
         spec:

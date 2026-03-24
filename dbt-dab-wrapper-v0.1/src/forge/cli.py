@@ -212,7 +212,7 @@ def deploy(
     env: str = typer.Option("dev", "--env", help="Environment to deploy"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Forge profile (from forge.yml profiles:)"),
     local: bool = typer.Option(False, "--local", help="Run setup/dbt locally instead of uploading as DAB tasks"),
-    sql: bool = typer.Option(False, "--sql", help="Use sql_task (pure SQL) instead of dbt_task for PROCESS workflow"),
+    sql: bool = typer.Option(True, "--sql/--no-sql", help="Use sql_task (pure SQL) instead of dbt_task. Default: on. --no-sql to use dbt_task."),
 ):
     """forge deploy → reads forge.yml → auto-generates DAB → runs dbt
 
@@ -899,7 +899,7 @@ def codegen(
 def workflow(
     mermaid: bool = typer.Option(False, "--mermaid", help="Output Mermaid diagram"),
     dab: bool = typer.Option(False, "--dab", help="Output databricks.yml jobs section"),
-    sql: bool = typer.Option(False, "--sql", help="Use sql_task (pure SQL) instead of dbt_task for PROCESS workflow"),
+    sql: bool = typer.Option(True, "--sql/--no-sql", help="Use sql_task (pure SQL) instead of dbt_task. Default: on. --no-sql to use dbt_task."),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Write output to file (default: resources/jobs/<name>.yml for --dab)"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Forge profile (from forge.yml profiles:)"),
 ):
