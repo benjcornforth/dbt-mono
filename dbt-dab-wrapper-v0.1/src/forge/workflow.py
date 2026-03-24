@@ -829,8 +829,10 @@ def build_workflow(
             prev_task_name = task_name
 
     # ── Python tasks ──────────────────────────────────
-    # DDL-driven: python tasks that match managed_by values belong in SETUP, not here.
-    # Collect managed_by values from graph contracts (derived from DDL).
+    # DDL-driven: python tasks that match managed_by values run first in
+    # PROCESS (they ingest fresh data each cycle) and also in SETUP (schema
+    # creation).  Root model tasks are rewired to depend on them so the
+    # DAG flows: ingest → staging → … → serve.
     managed_by_values: set[str] = set()
     for cid, contract in contracts.items():
         mb = contract.get("_meta", {}).get("managed_by")
@@ -838,20 +840,36 @@ def build_workflow(
             managed_by_values.add(mb)
 
     domain_name = forge_config.get("_domain")  # set by build_domain_workflows
+    ingest_task_names: list[str] = []
     for pt in python_tasks:
-        # DDL-driven: skip python tasks that are placed in SETUP
-        # (they match managed_by values from DDL)
         if "python" in managed_by_values or pt["name"] in managed_by_values:
+            # DDL-driven ingest task → first task in PROCESS
+            pt_name = f"ingest_py_{pt['name']}"
+
+            pt_config: dict[str, Any] | None = None
+            if domain_name:
+                pt_config = {"parameters": [f"--domain={domain_name}"]}
+
+            tasks.insert(0, WorkflowTask(
+                name=pt_name,
+                stage="ingest",
+                task_type="python",
+                python_file=pt["file"],
+                additional_config=pt_config,
+                depends_on=[],
+                compute_type=compute_type,
+            ))
+            ingest_task_names.append(pt_name)
             continue
+
+        # Non-managed python tasks → after all model tasks (existing behaviour)
         pt_name = f"py_{pt['name']}"
         pt_deps: list[str] = []
-        # Fall back to last model task
         model_tasks = [t.name for t in tasks if t.task_type in ("dbt", "sql") and t.models]
         if model_tasks:
             pt_deps.append(model_tasks[-1])
 
-        # Inject domain parameter for per-domain workflows
-        pt_config: dict[str, Any] | None = None
+        pt_config = None
         if domain_name:
             pt_config = {"parameters": [f"--domain={domain_name}"]}
 
@@ -864,6 +882,14 @@ def build_workflow(
             depends_on=pt_deps,
             compute_type=compute_type,
         ))
+
+    # Rewire root model tasks: if they have no upstream model deps,
+    # make them depend on the ingest python task(s) so the DAG flows
+    # ingest → models.
+    if ingest_task_names:
+        for task in tasks:
+            if task.task_type in ("dbt", "sql") and task.models and not task.depends_on:
+                task.depends_on = list(ingest_task_names)
 
     # ── Custom tasks ──────────────────────────────────
     for stage in STAGES:
