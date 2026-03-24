@@ -4,8 +4,8 @@
   "metadata": {
     "forge_version": "0.2.0",
     "project": "sales_data",
-    "generated_at": "2026-03-24T12:28:03.819089+00:00",
-    "git_commit": "0f63c45",
+    "generated_at": "2026-03-24T13:14:20.801616+00:00",
+    "git_commit": "2c4e3e8",
     "compute_type": "serverless",
     "catalog": "main",
     "schema": "default"
@@ -33,8 +33,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [],
@@ -42,7 +42,7 @@
         "sql_file": "models/sales/bronze/stg_customers.sql",
         "sql_hash": "8b012f1bf5ae"
       },
-      "_content_hash": "c16abd83db34"
+      "_content_hash": "c989d9a5c6a0"
     },
     "model.sales_data.raw_customers": {
       "apiVersion": "odcs/v3.0.0",
@@ -66,19 +66,21 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [
-        "python_managed"
+        "python_managed",
+        "shared"
       ],
       "_meta": {
         "sql_file": "models/sales/bronze/raw_customers.sql",
         "sql_hash": "80b4c7870426",
-        "managed_by": "python"
+        "managed_by": "python",
+        "domain": false
       },
-      "_content_hash": "88bfa04eec2f"
+      "_content_hash": "cccf548f8cb9"
     },
     "model.sales_data.stg_orders": {
       "apiVersion": "odcs/v3.0.0",
@@ -102,8 +104,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [],
@@ -111,7 +113,7 @@
         "sql_file": "models/sales/bronze/stg_orders.sql",
         "sql_hash": "27494b6056ba"
       },
-      "_content_hash": "41474dc3e06f"
+      "_content_hash": "4e540b090061"
     },
     "model.sales_data.raw_orders": {
       "apiVersion": "odcs/v3.0.0",
@@ -135,19 +137,21 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [
-        "python_managed"
+        "python_managed",
+        "shared"
       ],
       "_meta": {
         "sql_file": "models/sales/bronze/raw_orders.sql",
         "sql_hash": "a297328e6204",
-        "managed_by": "python"
+        "managed_by": "python",
+        "domain": false
       },
-      "_content_hash": "0e1e31c78862"
+      "_content_hash": "53cb8ccf87e3"
     },
     "model.sales_data.file_manifest": {
       "apiVersion": "odcs/v3.0.0",
@@ -171,8 +175,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -181,9 +185,10 @@
       "_meta": {
         "sql_file": "models/sales/bronze/file_manifest.sql",
         "sql_hash": "f3578e0f9322",
-        "managed_by": "python"
+        "managed_by": "python",
+        "domain": true
       },
-      "_content_hash": "b0c3d4304b22"
+      "_content_hash": "3ee7975a34e2"
     },
     "model.sales_data.customer_clean": {
       "apiVersion": "odcs/v3.0.0",
@@ -207,8 +212,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [],
@@ -216,7 +221,7 @@
         "sql_file": "models/sales/silver/customer_clean.sql",
         "sql_hash": "90f139c27044"
       },
-      "_content_hash": "398b21887ada"
+      "_content_hash": "9c833154de8b"
     },
     "model.sales_data.customer_summary": {
       "apiVersion": "odcs/v3.0.0",
@@ -240,8 +245,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [],
@@ -249,7 +254,7 @@
         "sql_file": "models/sales/silver/customer_summary.sql",
         "sql_hash": "c7ac68cb9519"
       },
-      "_content_hash": "6820557a2e68"
+      "_content_hash": "6bf810905afc"
     },
     "model.sales_data.customer_orders": {
       "apiVersion": "odcs/v3.0.0",
@@ -273,8 +278,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [],
@@ -285,7 +290,7 @@
         ],
         "sql_hash": "6653993df9db"
       },
-      "_content_hash": "0e928a7a3d6d"
+      "_content_hash": "203e90067570"
     },
     "model.sales_data.stg_customers_v_previous": {
       "apiVersion": "odcs/v3.0.0",
@@ -309,8 +314,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -320,7 +325,7 @@
       "_meta": {
         "parent_model": "model.sales_data.stg_customers"
       },
-      "_content_hash": "8c7c178c1213"
+      "_content_hash": "a3d63f11b2b2"
     },
     "model.sales_data.raw_customers_v_previous": {
       "apiVersion": "odcs/v3.0.0",
@@ -344,8 +349,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -355,7 +360,7 @@
       "_meta": {
         "parent_model": "model.sales_data.raw_customers"
       },
-      "_content_hash": "2b36a14eaa32"
+      "_content_hash": "52a46af43096"
     },
     "model.sales_data.stg_orders_v_previous": {
       "apiVersion": "odcs/v3.0.0",
@@ -379,8 +384,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -390,7 +395,7 @@
       "_meta": {
         "parent_model": "model.sales_data.stg_orders"
       },
-      "_content_hash": "941521c5c9e8"
+      "_content_hash": "a9ac594dca00"
     },
     "model.sales_data.raw_orders_v_previous": {
       "apiVersion": "odcs/v3.0.0",
@@ -414,8 +419,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -425,7 +430,7 @@
       "_meta": {
         "parent_model": "model.sales_data.raw_orders"
       },
-      "_content_hash": "0d5b0c23fad4"
+      "_content_hash": "fbae5eff72e0"
     },
     "model.sales_data.file_manifest_v_previous": {
       "apiVersion": "odcs/v3.0.0",
@@ -449,8 +454,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -460,7 +465,7 @@
       "_meta": {
         "parent_model": "model.sales_data.file_manifest"
       },
-      "_content_hash": "ea6ec0a10dec"
+      "_content_hash": "f4f30f5948d0"
     },
     "model.sales_data.customer_clean_v_previous": {
       "apiVersion": "odcs/v3.0.0",
@@ -484,8 +489,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -495,7 +500,7 @@
       "_meta": {
         "parent_model": "model.sales_data.customer_clean"
       },
-      "_content_hash": "a6860f338c8c"
+      "_content_hash": "5a3b6d654a99"
     },
     "model.sales_data.customer_summary_v_previous": {
       "apiVersion": "odcs/v3.0.0",
@@ -519,8 +524,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -530,7 +535,7 @@
       "_meta": {
         "parent_model": "model.sales_data.customer_summary"
       },
-      "_content_hash": "7f571dcdde71"
+      "_content_hash": "1da0c6aed9ca"
     },
     "model.sales_data.customer_orders_v_previous": {
       "apiVersion": "odcs/v3.0.0",
@@ -554,8 +559,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -565,7 +570,7 @@
       "_meta": {
         "parent_model": "model.sales_data.customer_orders"
       },
-      "_content_hash": "37a4573b4898"
+      "_content_hash": "6f7b3c89192f"
     },
     "udf.sales_data.loyalty_tier": {
       "apiVersion": "odcs/v3.0.0",
@@ -589,8 +594,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -603,7 +608,7 @@
         "params": "revenue: decimal(18,2)",
         "vectorized": false
       },
-      "_content_hash": "6918fd70b506"
+      "_content_hash": "00cedc221637"
     },
     "udf.sales_data.clean_email": {
       "apiVersion": "odcs/v3.0.0",
@@ -627,8 +632,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -641,7 +646,7 @@
         "params": "raw_email: string",
         "vectorized": false
       },
-      "_content_hash": "3030d8aa2cf1"
+      "_content_hash": "675b195a1c8b"
     },
     "udf.sales_data.average_score": {
       "apiVersion": "odcs/v3.0.0",
@@ -665,8 +670,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -679,7 +684,7 @@
         "params": "score_a: double, score_b: double",
         "vectorized": true
       },
-      "_content_hash": "6e4bd73dae8a"
+      "_content_hash": "528d4da5f648"
     },
     "check.sales_data.customer_summary.revenue_non_negative": {
       "apiVersion": "odcs/v3.0.0",
@@ -712,8 +717,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -727,7 +732,7 @@
         "column": "total_revenue",
         "model": "customer_summary"
       },
-      "_content_hash": "dfa8464ff1aa"
+      "_content_hash": "f0b8dbf33bf8"
     },
     "check.sales_data.customer_summary.data_is_fresh": {
       "apiVersion": "odcs/v3.0.0",
@@ -760,8 +765,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -775,7 +780,7 @@
         "column": "last_order_date",
         "model": "customer_summary"
       },
-      "_content_hash": "411cef17753d"
+      "_content_hash": "d796e0b6e2a9"
     },
     "check.sales_data.customer_summary.has_customers": {
       "apiVersion": "odcs/v3.0.0",
@@ -808,8 +813,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -823,7 +828,7 @@
         "column": null,
         "model": "customer_summary"
       },
-      "_content_hash": "169dcdb9e966"
+      "_content_hash": "9120c7918afc"
     },
     "workflow.sales_data": {
       "apiVersion": "odcs/v3.0.0",
@@ -847,8 +852,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -858,7 +863,7 @@
       "_meta": {
         "yaml_path": "resources/jobs/PROCESS_sales.yml"
       },
-      "_content_hash": "0f2ae4e0aa68"
+      "_content_hash": "7b7b06100d04"
     },
     "volume.sales_data.landing": {
       "apiVersion": "odcs/v3.0.0",
@@ -882,8 +887,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "0f63c45",
-        "generated_at": "2026-03-24T12:28:03.819089+00:00",
+        "git_commit": "2c4e3e8",
+        "generated_at": "2026-03-24T13:14:20.801616+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -894,7 +899,7 @@
         "location": "",
         "volume_type": "managed"
       },
-      "_content_hash": "556fa98d3d55"
+      "_content_hash": "9bddd2f83b46"
     }
   },
   "edges": [

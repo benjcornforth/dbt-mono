@@ -18,9 +18,9 @@ Every project compiles to three Databricks Asset Bundle workflows:
 
 | Rule | Enforced by |
 |---|---|
-| Every `catalog.schema` referenced in any SQL file must have a `CREATE SCHEMA IF NOT EXISTS` in a same-or-prior file | `_validate_sql_schema_ordering()` |
-| All `CREATE SCHEMA` statements are emitted in `000_udfs.sql` (the first file) | `compile_all_pure_sql()` |
-| Schemas are collected from: model locations, UDF locations, meta catalog | `compile_all_pure_sql()` |
+| Every SQL file that does DDL (CREATE TABLE/VIEW/FUNCTION, TRUNCATE) must have its own `CREATE SCHEMA IF NOT EXISTS` for every schema it creates objects in | `_validate_sql_schema_ordering()` |
+| Each SQL file runs as an independent Databricks sql_task — no cross-file assumptions | Compile-time validator |
+| INSERT/SELECT referencing existing tables are exempt (tables guaranteed by SETUP dependency chain) | Validator only checks DDL lines |
 
 ### File Numbering
 
