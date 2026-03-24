@@ -4,10 +4,14 @@ include:
 - resources/jobs/SETUP_sales.yml
 - resources/jobs/PROCESS_sales.yml
 - resources/jobs/TEARDOWN_sales.yml
+artifacts:
+  forge_wheel:
+    type: whl
+    build: poetry build
+    path: .
 sync:
   include:
   - dbt-dab-tools/
-  - forge/
   - sql/
 targets:
   dev:

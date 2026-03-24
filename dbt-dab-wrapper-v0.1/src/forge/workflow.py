@@ -214,16 +214,22 @@ class Workflow:
             }
 
         # Serverless environment — client "2" for newer serverless runtime
+        env_deps: list[str | dict] = [
+            "dbt-databricks",
+            "pydantic>=2.0",
+            "pyyaml",
+        ]
+        # Include forge wheel if any python tasks exist
+        has_python_tasks = any(t.task_type == "python" for t in self.tasks)
+        if has_python_tasks:
+            env_deps.append({"whl": "../dist/*.whl"})
+
         job["resources"]["jobs"][self.name]["environments"] = [
             {
                 "environment_key": "default",
                 "spec": {
                     "client": "2",
-                    "dependencies": [
-                        "dbt-databricks",
-                        "pydantic>=2.0",
-                        "pyyaml",
-                    ]
+                    "dependencies": env_deps,
                 }
             }
         ]
@@ -247,10 +253,6 @@ class Workflow:
                     "python_file": python_file_path,
                     **(task.additional_config or {}),
                 }
-                # Install the forge wheel so python tasks can import forge.*
-                task_def["libraries"] = [
-                    {"whl": "../dist/*.whl"},
-                ]
             elif task.task_type == "sql" and task.sql_file:
                 # sql_task — runs a .sql file on a SQL warehouse
                 sql_file_path = task.sql_file
