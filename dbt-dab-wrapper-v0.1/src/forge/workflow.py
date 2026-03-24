@@ -247,6 +247,10 @@ class Workflow:
                     "python_file": python_file_path,
                     **(task.additional_config or {}),
                 }
+                # Install the forge wheel so python tasks can import forge.*
+                task_def["libraries"] = [
+                    {"whl": "../dist/*.whl"},
+                ]
             elif task.task_type == "sql" and task.sql_file:
                 # sql_task — runs a .sql file on a SQL warehouse
                 sql_file_path = task.sql_file
@@ -368,7 +372,7 @@ def generate_bundle_config(forge_config: dict, job_yaml_paths: list[str] | None 
     active_prof = profiles.get(profile, {})
     databricks_profile = active_prof.get("databricks_profile", "DEFAULT")
 
-    sync_include = ["dbt-dab-tools/", "forge/"]
+    sync_include = ["dbt-dab-tools/"]
     if sql_mode:
         sync_include.append("sql/")
 
@@ -377,6 +381,13 @@ def generate_bundle_config(forge_config: dict, job_yaml_paths: list[str] | None 
             "name": f"{project_name}_{project_id}",
         },
         "include": job_yaml_paths or ["resources/jobs/*.yml"],
+        "artifacts": {
+            "forge_wheel": {
+                "type": "whl",
+                "build": "poetry build",
+                "path": ".",
+            },
+        },
         "sync": {
             "include": sync_include,
         },
@@ -846,9 +857,10 @@ def build_workflow(
                 if resolved and resolved not in pt_deps:
                     pt_deps.append(resolved)
             if not pt_deps:
-                stage_dbt = [t.name for t in tasks if t.stage == stage and t.task_type == "dbt"]
-                if stage_dbt:
-                    pt_deps.append(stage_dbt[-1])
+                # Fall back to last model task in this stage (dbt or sql)
+                stage_model_tasks = [t.name for t in tasks if t.stage == stage and t.task_type in ("dbt", "sql") and t.models]
+                if stage_model_tasks:
+                    pt_deps.append(stage_model_tasks[-1])
 
             # Inject domain parameter for per-domain workflows
             pt_config: dict[str, Any] | None = None
