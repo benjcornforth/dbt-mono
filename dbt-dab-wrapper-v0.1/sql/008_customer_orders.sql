@@ -22,7 +22,7 @@ SELECT
         'model', 'customer_orders',
         'sources', 'customer_clean, stg_orders',
         'git_commit', 'unknown',
-        'deployed_at', '2026-03-24T11:41:41.828284+00:00',
+        'deployed_at', '2026-03-24T12:06:17.114415+00:00',
         'compute_type', 'serverless',
         'contract_id', 'ben_sales.customer_orders',
         'version', 'v1',
@@ -95,3 +95,18 @@ SELECT
     'table' AS materialized,
     (SELECT COUNT(*) FROM `dev_fd_silver`.`ben_sales`.`customer_orders`) AS rows_created,
     current_timestamp() AS completed_at;
+
+-- Lineage log (run_id captured at runtime)
+INSERT INTO `dev_fd_meta`.`ben_sales`.lineage_log
+    (run_id, model, materialized, rows_created, catalog, schema, sources, git_commit, completed_at)
+VALUES (
+    '{{job.run_id}}',
+    'customer_orders',
+    'table',
+    (SELECT COUNT(*) FROM `dev_fd_silver`.`ben_sales`.`customer_orders`),
+    'dev_fd_silver',
+    'ben_sales',
+    'customer_clean,stg_orders',
+    'unknown',
+    current_timestamp()
+);

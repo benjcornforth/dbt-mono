@@ -1035,6 +1035,20 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
             compute_type=compute_type,
         ))
 
+    # Lineage graph task — creates tables + seeds DAG edges
+    lineage_sql = Path("sql/001_lineage_graph.sql")
+    if lineage_sql.exists():
+        lineage_deps = ["create_udfs"] if udf_sql.exists() else ["setup"]
+        tasks.append(WorkflowTask(
+            name="seed_lineage_graph",
+            stage="ingest",
+            task_type="sql",
+            sql_file="sql/001_lineage_graph.sql",
+            models=[],
+            depends_on=lineage_deps,
+            compute_type=compute_type,
+        ))
+
     return Workflow(
         name=f"SETUP_{project_id}",
         tasks=tasks,

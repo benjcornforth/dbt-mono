@@ -1042,7 +1042,9 @@ def compile(
 
         for name, path in results.items():
             if name == "_udfs":
-                typer.echo(f"  🔧 {path.name} → UDF definitions")
+                typer.echo(f"  🔧 {path.name} → UDF definitions + lineage UDFs")
+            elif name == "_lineage_graph":
+                typer.echo(f"  🔗 {path.name} → lineage graph + log tables")
             elif name.endswith("_quarantine"):
                 typer.echo(f"  🔶 {path.name} → quarantine sidecar")
             else:
