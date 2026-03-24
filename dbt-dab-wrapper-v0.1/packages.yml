@@ -1,10 +1,8 @@
 # =============================================
 # packages.yml — dbt package dependencies
 # =============================================
-# For DAB deployment, we need actual files, not symlinks.
-# Since we're including ../dbt-dab-tools/** in databricks.yml,
-# dbt will find the package files in the deployed bundle.
+# dbt-dab-tools is vendored into ./dbt-dab-tools/ during deploy
+# so the same local reference works both locally and on Databricks.
 
 packages:
-  # DAB deployment includes the files directly - no package reference needed
-  # The ../dbt-dab-tools/** include in databricks.yml handles this
+  - local: ./dbt-dab-tools

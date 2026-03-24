@@ -125,9 +125,11 @@ class WorkflowSDK:
             tags = set(contract.get("tags", []))
             if tags & {"quarantine", "prior_version", "auto-generated"}:
                 continue
-            if contract["dataset"]["type"] in ("function", "workflow", "workflow_task"):
+            dataset_type = contract["dataset"]["type"]
+            # Only include models — skip volumes, sources, seeds, tests, checks, functions, workflows
+            if dataset_type not in ("model", "table", "view", "incremental"):
                 continue
-            if cid.startswith("workflow.") or cid.startswith("custom_task."):
+            if cid.startswith(("workflow.", "custom_task.", "check.", "volume.", "source.", "seed.")):
                 continue
 
             model_name = contract["dataset"]["name"]
@@ -187,8 +189,8 @@ class WorkflowSDK:
             # Create task based on type
             if task.task_type == "dbt":
                 dbt_task = DbtTask(
-                    project_directory="./dbt-dab-tools",
-                    commands=[f"dbt run --select {' '.join(task.models)}"],
+                    project_directory="${workspace.file_path}",
+                    commands=["dbt deps", f"dbt run --select {' '.join(task.models)}"],
                 )
                 if task.warehouse_id:
                     dbt_task.warehouse_id = task.warehouse_id
@@ -247,9 +249,8 @@ class WorkflowSDK:
             environments.append(JobEnvironment(
                 environment_key="default",
                 spec=EnvironmentSpec(
-                    dependencies=[
-                        PypiPackage(package="dbt-core")
-                    ]
+                    client="1",
+                    dependencies=["dbt-databricks"]
                 )
             ))
 

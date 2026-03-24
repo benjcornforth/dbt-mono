@@ -2,7 +2,9 @@ bundle:
   name: sales_data_sales
 include:
 - resources/jobs/PROCESS_sales.yml
-- ../dbt-dab-tools/**
+sync:
+  include:
+  - dbt-dab-tools/
 targets:
   dev:
     workspace:

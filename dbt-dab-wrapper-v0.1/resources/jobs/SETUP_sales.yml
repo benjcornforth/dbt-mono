@@ -1,0 +1,20 @@
+resources:
+  jobs:
+    SETUP_sales:
+      name: SETUP_sales (dev)
+      tasks:
+      - task_key: setup
+        timeout_seconds: 3600
+        environment_key: default
+        dbt_task:
+          project_directory: ${workspace.file_path}
+          commands:
+          - dbt deps
+          - dbt seed --full-refresh
+          warehouse_id: 724607f766691c81
+      environments:
+      - environment_key: default
+        spec:
+          client: '2'
+          dependencies:
+          - dbt-databricks

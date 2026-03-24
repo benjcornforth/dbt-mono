@@ -5,6 +5,7 @@ profiles.yml
 # dbt artifacts
 target/
 dbt_packages/
+dbt-dab-tools/
 logs/
 
 # Python

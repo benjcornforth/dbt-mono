@@ -142,6 +142,7 @@ class WorkflowTask:
     depends_on: list[str] = field(default_factory=list)
     compute_type: str = "serverless"
     timeout_minutes: int = 60
+    dbt_commands: list[str] | None = None  # override dbt commands (for setup/teardown tasks)
 
 
 @dataclass
@@ -174,6 +175,7 @@ class Workflow:
                     **({"python_file": t.python_file} if t.python_file else {}),
                     **({"sql_file": t.sql_file} if t.sql_file else {}),
                     **({"notebook_path": t.notebook_path} if t.notebook_path else {}),
+                    **({"dbt_commands": t.dbt_commands} if t.dbt_commands else {}),
                     "depends_on": [{"task_key": d} for d in t.depends_on],
                     "compute_type": t.compute_type,
                     "timeout_minutes": t.timeout_minutes,
@@ -210,44 +212,36 @@ class Workflow:
                 "timezone_id": "UTC",
             }
 
-        # Add environments for serverless compute
-        if any(task.compute_type == "serverless" for task in self.tasks):
-            job["resources"]["jobs"][self.name]["environments"] = [
-                {
-                    "environment_key": "default",
-                    "spec": {
-                        "environment_version": "2",
-                        "dependencies": [
-                            {
-                                "pypi": {
-                                    "package": "dbt-core"
-                                }
-                            }
-                        ]
-                    }
+        # Serverless environment — client "2" for newer serverless runtime
+        job["resources"]["jobs"][self.name]["environments"] = [
+            {
+                "environment_key": "default",
+                "spec": {
+                    "client": "2",
+                    "dependencies": [
+                        "dbt-databricks"
+                    ]
                 }
-            ]
+            }
+        ]
 
         for task in self.tasks:
             task_def: dict[str, Any] = {
                 "task_key": task.name,
                 "timeout_seconds": task.timeout_minutes * 60,
+                "environment_key": "default",
             }
 
             if task.task_type == "python" and task.python_file:
                 # spark_python_task — runs a .py file on the cluster
-                # Adjust path to be relative to resources/jobs/ directory
                 python_file_path = task.python_file
                 if not python_file_path.startswith("/"):
-                    # Make relative to resources/jobs/ (which is ../../../ from project root)
                     python_file_path = "../../" + python_file_path
                 task_def["spark_python_task"] = {
                     "python_file": python_file_path,
                     **(task.additional_config or {}),
                 }
-                if task.compute_type == "serverless":
-                    task_def["environment_key"] = "default"
-            if task.task_type == "sql" and task.sql_file:
+            elif task.task_type == "sql" and task.sql_file:
                 # sql_task — runs a .sql file on a SQL warehouse
                 sql_file_path = task.sql_file
                 if not sql_file_path.startswith("/"):
@@ -256,8 +250,6 @@ class Workflow:
                     "file": {"path": sql_file_path},
                     **(task.additional_config or {}),
                 }
-                if task.compute_type == "serverless":
-                    task_def["environment_key"] = "default"
             elif task.task_type == "notebook" and task.notebook_path:
                 # notebook_task — runs a Databricks notebook
                 notebook_path = task.notebook_path
@@ -267,34 +259,19 @@ class Workflow:
                     "notebook_path": notebook_path,
                     **(task.additional_config or {}),
                 }
-                if task.compute_type == "serverless":
-                    task_def["environment_key"] = "default"
             else:
-                # dbt_task — runs dbt commands
+                # dbt_task — runs dbt on serverless, SQL goes to warehouse
+                commands = task.dbt_commands or [
+                    "dbt deps",
+                    f"dbt run --select {' '.join(task.models)}"
+                ]
                 dbt_config = {
-                    "project_directory": "./dbt-dab-tools",
-                    "commands": [
-                        f"dbt run --select {' '.join(task.models)}"
-                    ],
+                    "project_directory": "${workspace.file_path}",
+                    "commands": commands,
                 }
-                # For serverless, use environment_key instead of warehouse_id
-                if task.compute_type == "serverless":
-                    task_def["environment_key"] = "default"
-                    # Add warehouse_id for dbt tasks in serverless environment
-                    if self.warehouse_id:
-                        dbt_config["warehouse_id"] = self.warehouse_id
-                else:
-                    dbt_config.update({
-                        "catalog": self.catalog,
-                        "schema": self.schema,
-                    })
+                if self.warehouse_id:
+                    dbt_config["warehouse_id"] = self.warehouse_id
                 task_def["dbt_task"] = dbt_config
-
-            if task.compute_type == "serverless":
-                # For serverless tasks, use environment_key (already set above)
-                pass
-            else:
-                task_def["job_cluster_key"] = "dedicated"
 
             if task.depends_on:
                 task_def["depends_on"] = [
@@ -379,6 +356,9 @@ def generate_bundle_config(forge_config: dict, job_yaml_paths: list[str] | None 
             "name": f"{project_name}_{project_id}",
         },
         "include": job_yaml_paths or ["resources/jobs/*.yml"],
+        "sync": {
+            "include": ["dbt-dab-tools/"],
+        },
     }
 
     # Add targets from forge.yml profiles
@@ -649,9 +629,11 @@ def build_workflow(
         tags = set(contract.get("tags", []))
         if tags & {"quarantine", "prior_version", "auto-generated"}:
             continue
-        if contract["dataset"]["type"] in ("function", "workflow", "workflow_task"):
+        dataset_type = contract["dataset"]["type"]
+        # Only include models — skip volumes, sources, seeds, tests, checks, functions, workflows
+        if dataset_type not in ("model", "table", "view", "incremental"):
             continue
-        if cid.startswith("workflow.") or cid.startswith("custom_task."):
+        if cid.startswith(("workflow.", "custom_task.", "check.", "volume.", "source.", "seed.")):
             continue
 
         model_name = contract["dataset"]["name"]
@@ -848,42 +830,169 @@ def build_domain_workflows(
     mode = forge_config.get("domain_workflows", "separate")  # "separate" | "shared"
 
     if not domains or mode == "shared":
-        return [build_workflow(forge_config, graph)]
+        process_workflows = [build_workflow(forge_config, graph)]
+    else:
+        process_workflows = []
+        contracts = graph.get("contracts", {})
+        edges = graph.get("edges", [])
 
+        for domain_name in domains:
+            suffix = f"_{domain_name}"
+
+            # Filter contracts: keep domain-specific models for this domain + shared models
+            domain_cids: set[str] = set()
+            for cid, contract in contracts.items():
+                model = contract["dataset"]["name"]
+                # Include this domain's instances
+                if model.endswith(suffix):
+                    domain_cids.add(cid)
+                # Include shared models (no domain suffix for any domain)
+                elif not any(model.endswith(f"_{d}") for d in domains):
+                    domain_cids.add(cid)
+
+            # Filter edges to only those between included contracts
+            domain_edges = [e for e in edges
+                            if e["from"] in domain_cids and e["to"] in domain_cids]
+
+            # Build a scoped graph
+            domain_graph = {
+                "contracts": {cid: contracts[cid] for cid in domain_cids if cid in contracts},
+                "edges": domain_edges,
+            }
+
+            # Build the workflow with a domain-suffixed name
+            domain_config = {**forge_config}
+            domain_config["_workflow_suffix"] = suffix
+            domain_config["_domain"] = domain_name
+            wf = build_workflow(domain_config, domain_graph)
+            wf.name = f"{wf.name}{suffix}"
+            process_workflows.append(wf)
+
+    # Build setup + process + teardown workflows
     workflows: list[Workflow] = []
-    contracts = graph.get("contracts", {})
-    edges = graph.get("edges", [])
-
-    for domain_name in domains:
-        suffix = f"_{domain_name}"
-
-        # Filter contracts: keep domain-specific models for this domain + shared models
-        domain_cids: set[str] = set()
-        for cid, contract in contracts.items():
-            model = contract["dataset"]["name"]
-            # Include this domain's instances
-            if model.endswith(suffix):
-                domain_cids.add(cid)
-            # Include shared models (no domain suffix for any domain)
-            elif not any(model.endswith(f"_{d}") for d in domains):
-                domain_cids.add(cid)
-
-        # Filter edges to only those between included contracts
-        domain_edges = [e for e in edges
-                        if e["from"] in domain_cids and e["to"] in domain_cids]
-
-        # Build a scoped graph
-        domain_graph = {
-            "contracts": {cid: contracts[cid] for cid in domain_cids if cid in contracts},
-            "edges": domain_edges,
-        }
-
-        # Build the workflow with a domain-suffixed name
-        domain_config = {**forge_config}
-        domain_config["_workflow_suffix"] = suffix
-        domain_config["_domain"] = domain_name
-        wf = build_workflow(domain_config, domain_graph)
-        wf.name = f"{wf.name}{suffix}"
-        workflows.append(wf)
+    workflows.append(build_setup_workflow(forge_config))
+    workflows.extend(process_workflows)
+    workflows.append(build_teardown_workflow(forge_config, graph))
 
     return workflows
+
+
+def build_setup_workflow(forge_config: dict) -> Workflow:
+    """Build a SETUP workflow: dbt deps + dbt seed.
+
+    This is a separate job that runs before the main PROCESS workflow.
+    """
+    project_name = forge_config.get("name", "unnamed")
+    project_id = forge_config.get("id", project_name)
+    environment = forge_config.get("environment", "dev")
+    catalog = forge_config.get("catalog", "main")
+    schema = forge_config.get("schema", "default")
+    compute_type = forge_config.get("compute", {}).get("type", "serverless")
+
+    warehouse_id = None
+    if compute_type == "serverless":
+        try:
+            active_profile = forge_config.get("active_profile", "dev")
+            profile_config = forge_config.get("profiles", {}).get(active_profile, {})
+            databricks_profile = profile_config.get("databricks_profile", "DEFAULT")
+            config = read_databrickscfg(databricks_profile)
+            http_path = config.get("http_path")
+            if http_path and "/warehouses/" in http_path:
+                warehouse_id = http_path.split("/warehouses/")[-1]
+        except Exception:
+            pass
+
+    # Build setup commands
+    commands = ["dbt deps"]
+    has_seeds = Path("dbt/seeds").is_dir() and any(Path("dbt/seeds").glob("*.csv"))
+    if has_seeds:
+        commands.append("dbt seed --full-refresh")
+
+    tasks = [
+        WorkflowTask(
+            name="setup",
+            stage="ingest",
+            task_type="dbt",
+            models=[],
+            dbt_commands=commands,
+            depends_on=[],
+            compute_type=compute_type,
+        )
+    ]
+
+    return Workflow(
+        name=f"SETUP_{project_id}",
+        tasks=tasks,
+        environment=environment,
+        catalog=catalog,
+        schema=schema,
+        compute_type=compute_type,
+        warehouse_id=warehouse_id,
+    )
+
+
+def build_teardown_workflow(forge_config: dict, graph: dict) -> Workflow:
+    """Build a TEARDOWN workflow: drops tables/schemas from the lineage graph.
+
+    This is a separate job that can be run to clean up resources.
+    """
+    project_name = forge_config.get("name", "unnamed")
+    project_id = forge_config.get("id", project_name)
+    environment = forge_config.get("environment", "dev")
+    catalog = forge_config.get("catalog", "main")
+    schema = forge_config.get("schema", "default")
+    compute_type = forge_config.get("compute", {}).get("type", "serverless")
+
+    warehouse_id = None
+    if compute_type == "serverless":
+        try:
+            active_profile = forge_config.get("active_profile", "dev")
+            profile_config = forge_config.get("profiles", {}).get(active_profile, {})
+            databricks_profile = profile_config.get("databricks_profile", "DEFAULT")
+            config = read_databrickscfg(databricks_profile)
+            http_path = config.get("http_path")
+            if http_path and "/warehouses/" in http_path:
+                warehouse_id = http_path.split("/warehouses/")[-1]
+        except Exception:
+            pass
+
+    # Collect model names from graph (reverse order for teardown)
+    contracts = graph.get("contracts", {})
+    model_names = []
+    for cid, contract in contracts.items():
+        dataset_type = contract["dataset"]["type"]
+        if dataset_type not in ("model", "table", "view", "incremental"):
+            continue
+        if cid.startswith(("workflow.", "custom_task.", "check.", "volume.", "source.", "seed.")):
+            continue
+        tags = set(contract.get("tags", []))
+        if tags & {"quarantine", "prior_version", "auto-generated"}:
+            continue
+        model_names.append(contract["dataset"]["name"])
+
+    # Single task that drops all models via dbt run-operation
+    # or just runs dbt run --select with --full-refresh to reset
+    tasks = [
+        WorkflowTask(
+            name="teardown",
+            stage="serve",
+            task_type="dbt",
+            models=[],
+            dbt_commands=[
+                "dbt deps",
+                "dbt run-operation drop_all_models",
+            ],
+            depends_on=[],
+            compute_type=compute_type,
+        )
+    ]
+
+    return Workflow(
+        name=f"TEARDOWN_{project_id}",
+        tasks=tasks,
+        environment=environment,
+        catalog=catalog,
+        schema=schema,
+        compute_type=compute_type,
+        warehouse_id=warehouse_id,
+    )

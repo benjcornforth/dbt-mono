@@ -211,8 +211,13 @@ def setup(
 def deploy(
     env: str = typer.Option("dev", "--env", help="Environment to deploy"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Forge profile (from forge.yml profiles:)"),
+    local: bool = typer.Option(False, "--local", help="Run setup/dbt locally instead of uploading as DAB tasks"),
 ):
-    """forge deploy → reads forge.yml → auto-generates DAB → runs dbt"""
+    """forge deploy → reads forge.yml → auto-generates DAB → runs dbt
+
+    Default: generates workflow with setup/run tasks and deploys via DAB.
+    --local: runs setup, dbt seed, dbt run locally from CLI, then deploys bundle.
+    """
     typer.echo(f"🚀 Deploying to {env}...")
 
     if not CONFIG_FILE.exists():
@@ -293,115 +298,128 @@ def deploy(
             except (FileNotFoundError, json.JSONDecodeError):
                 typer.echo("  ⚠️  Could not verify catalogs (databricks CLI not found). Continuing...")
 
-    # Deploy Volumes first (before UDFs or models — volumes must exist for ingestion)
-    volumes_dir = Path("dbt/volumes")
-    if volumes_dir.is_dir():
-        vol_files = sorted(volumes_dir.glob("*.sql"))
-        if vol_files:
-            typer.echo("📦 Deploying Volumes...")
-            for vol_file in vol_files:
-                vol_sql = vol_file.read_text()
-                # Replace catalog/schema placeholders with resolved values
-                for var_name, var_val in schema_vars.items():
-                    vol_sql = vol_sql.replace(f"{{{{ var(\"{var_name}\") }}}}", var_val)
-                try:
-                    subprocess.run(
-                        ["dbt", "run-operation", "deploy_udfs",
-                         "--args", yaml.dump({"udfs_sql": vol_sql}),
-                         "--project-dir", "."] + dbt_vars_flag,
-                        check=True, capture_output=True, text=True, env=dbt_env,
-                    )
-                    typer.echo(f"  ✅ Volume: {vol_file.stem}")
-                except subprocess.CalledProcessError as e:
-                    output = (e.stdout or "") + (e.stderr or "")
-                    # Check if it's just "already exists" — that's fine
-                    if "already exists" in output.lower():
-                        typer.echo(f"  ✅ Volume: {vol_file.stem} (exists)")
-                    else:
-                        typer.echo(f"  ⚠️  Volume {vol_file.stem} failed:")
-                        for line in output.strip().splitlines()[-5:]:
+    # ── LOCAL MODE: run setup/dbt locally from CLI ──
+    if local:
+        typer.echo("📍 Running in local mode...")
+
+        # Deploy Volumes first (before UDFs or models — volumes must exist for ingestion)
+        volumes_dir = Path("dbt/volumes")
+        if volumes_dir.is_dir():
+            vol_files = sorted(volumes_dir.glob("*.sql"))
+            if vol_files:
+                typer.echo("📦 Deploying Volumes...")
+                for vol_file in vol_files:
+                    vol_sql = vol_file.read_text()
+                    # Replace catalog/schema placeholders with resolved values
+                    for var_name, var_val in schema_vars.items():
+                        vol_sql = vol_sql.replace(f"{{{{ var(\"{var_name}\") }}}}", var_val)
+                    try:
+                        subprocess.run(
+                            ["dbt", "run-operation", "deploy_udfs",
+                             "--args", yaml.dump({"udfs_sql": vol_sql}),
+                             "--project-dir", "."] + dbt_vars_flag,
+                            check=True, capture_output=True, text=True, env=dbt_env,
+                        )
+                        typer.echo(f"  ✅ Volume: {vol_file.stem}")
+                    except subprocess.CalledProcessError as e:
+                        output = (e.stdout or "") + (e.stderr or "")
+                        # Check if it's just "already exists" — that's fine
+                        if "already exists" in output.lower():
+                            typer.echo(f"  ✅ Volume: {vol_file.stem} (exists)")
+                        else:
+                            typer.echo(f"  ⚠️  Volume {vol_file.stem} failed:")
+                            for line in output.strip().splitlines()[-5:]:
+                                typer.echo(f"     {line}")
+                    except FileNotFoundError:
+                        typer.echo(f"  ⚠️  Skipped {vol_file.stem} (dbt not found)")
+
+        # Deploy UDFs (functions must exist before models reference them)
+        functions_dir = Path("dbt/functions")
+        if functions_dir.is_dir():
+            udf_files = sorted(functions_dir.glob("*.sql"))
+            if udf_files:
+                typer.echo("🔧 Deploying UDFs via dbt run-operation...")
+                # Resolve Jinja placeholders — run_query receives raw SQL, not Jinja
+                expanded_prof = _expand_env_prefix(prof, config)
+                target_catalog = expanded_prof.get("catalog", "main")
+                target_schema = expanded_prof.get("schema", "default")
+
+                # Ensure the UDF target schema exists (may not if the layer is fully
+                # bifurcated into domain instances and dbt hasn't created it yet)
+                _ensure_schema_sql = (
+                    f"CREATE SCHEMA IF NOT EXISTS `{target_catalog}`.`{target_schema}`"
+                )
+
+                # Separate SQL UDFs from Python/Pandas UDFs — warehouses that don't
+                # support LANGUAGE PYTHON would otherwise block all UDF deployment
+                sql_files = [f for f in udf_files if "LANGUAGE PYTHON" not in f.read_text().upper()]
+                py_files = [f for f in udf_files if "LANGUAGE PYTHON" in f.read_text().upper()]
+
+                def _deploy_udf_batch(files: list[Path], label: str) -> bool:
+                    sql = "\n".join(f.read_text() for f in files)
+                    sql = sql.replace("{{ target.catalog }}", target_catalog)
+                    sql = sql.replace("{{ target.schema }}", target_schema)
+                    # Prepend schema creation so UDFs can be deployed even when the
+                    # target schema doesn't exist yet (e.g. fully bifurcated layers)
+                    sql = f"{_ensure_schema_sql};\n{sql}"
+                    try:
+                        subprocess.run(
+                            ["dbt", "run-operation", "deploy_udfs",
+                             "--args", yaml.dump({"udfs_sql": sql}),
+                             "--project-dir", "."] + dbt_vars_flag,
+                            check=True, capture_output=True, text=True, env=dbt_env,
+                        )
+                        typer.echo(f"  ✅ Deployed {label}: {', '.join(f.stem for f in files)}")
+                        return True
+                    except subprocess.CalledProcessError as e:
+                        output = (e.stdout or "") + (e.stderr or "")
+                        typer.echo(f"  ❌ {label} deploy failed:")
+                        for line in output.strip().splitlines()[-10:]:
                             typer.echo(f"     {line}")
-                except FileNotFoundError:
-                    typer.echo(f"  ⚠️  Skipped {vol_file.stem} (dbt not found)")
+                        return False
+                    except FileNotFoundError:
+                        typer.echo("  ⚠️  UDF deploy skipped (dbt not found).")
+                        return False
 
-    # Deploy UDFs first (functions must exist before models reference them)
-    functions_dir = Path("dbt/functions")
-    if functions_dir.is_dir():
-        udf_files = sorted(functions_dir.glob("*.sql"))
-        if udf_files:
-            typer.echo("🔧 Deploying UDFs via dbt run-operation...")
-            # Resolve Jinja placeholders — run_query receives raw SQL, not Jinja
-            expanded_prof = _expand_env_prefix(prof, config)
-            target_catalog = expanded_prof.get("catalog", "main")
-            target_schema = expanded_prof.get("schema", "default")
+                ok = True
+                if sql_files:
+                    ok = _deploy_udf_batch(sql_files, "SQL UDF(s)")
+                if not ok:
+                    raise typer.Exit(1)
+                if py_files:
+                    py_ok = _deploy_udf_batch(py_files, "Python UDF(s)")
+                    if not py_ok:
+                        typer.echo("  💡 Python UDFs require a Pro or Serverless SQL warehouse.")
+                        typer.echo("     Check your warehouse type, or deploy Python UDFs via a cluster.")
 
-            # Ensure the UDF target schema exists (may not if the layer is fully
-            # bifurcated into domain instances and dbt hasn't created it yet)
-            _ensure_schema_sql = (
-                f"CREATE SCHEMA IF NOT EXISTS `{target_catalog}`.`{target_schema}`"
-            )
+        # Run dbt seed (load CSV source data into tables)
+        seed_dir = Path("dbt/seeds")
+        if seed_dir.exists() and any(seed_dir.glob("*.csv")):
+            typer.echo("🌱 Seeding source data...")
+            try:
+                subprocess.run(["dbt", "seed", "--project-dir", "."] + dbt_vars_flag, check=True, env=dbt_env)
+            except subprocess.CalledProcessError as e:
+                typer.echo(f"  ⚠️  Seed failed (exit {e.returncode}). Check seed CSV files.")
+            except FileNotFoundError:
+                pass
 
-            # Separate SQL UDFs from Python/Pandas UDFs — warehouses that don't
-            # support LANGUAGE PYTHON would otherwise block all UDF deployment
-            sql_files = [f for f in udf_files if "LANGUAGE PYTHON" not in f.read_text().upper()]
-            py_files = [f for f in udf_files if "LANGUAGE PYTHON" in f.read_text().upper()]
-
-            def _deploy_udf_batch(files: list[Path], label: str) -> bool:
-                sql = "\n".join(f.read_text() for f in files)
-                sql = sql.replace("{{ target.catalog }}", target_catalog)
-                sql = sql.replace("{{ target.schema }}", target_schema)
-                # Prepend schema creation so UDFs can be deployed even when the
-                # target schema doesn't exist yet (e.g. fully bifurcated layers)
-                sql = f"{_ensure_schema_sql};\n{sql}"
-                try:
-                    subprocess.run(
-                        ["dbt", "run-operation", "deploy_udfs",
-                         "--args", yaml.dump({"udfs_sql": sql}),
-                         "--project-dir", "."] + dbt_vars_flag,
-                        check=True, capture_output=True, text=True, env=dbt_env,
-                    )
-                    typer.echo(f"  ✅ Deployed {label}: {', '.join(f.stem for f in files)}")
-                    return True
-                except subprocess.CalledProcessError as e:
-                    output = (e.stdout or "") + (e.stderr or "")
-                    typer.echo(f"  ❌ {label} deploy failed:")
-                    for line in output.strip().splitlines()[-10:]:
-                        typer.echo(f"     {line}")
-                    return False
-                except FileNotFoundError:
-                    typer.echo("  ⚠️  UDF deploy skipped (dbt not found).")
-                    return False
-
-            ok = True
-            if sql_files:
-                ok = _deploy_udf_batch(sql_files, "SQL UDF(s)")
-            if not ok:
-                raise typer.Exit(1)
-            if py_files:
-                py_ok = _deploy_udf_batch(py_files, "Python UDF(s)")
-                if not py_ok:
-                    typer.echo("  💡 Python UDFs require a Pro or Serverless SQL warehouse.")
-                    typer.echo("     Check your warehouse type, or deploy Python UDFs via a cluster.")
-
-    # Run dbt seed (load CSV source data into tables)
-    seed_dir = Path("dbt/seeds")
-    if seed_dir.exists() and any(seed_dir.glob("*.csv")):
-        typer.echo("🌱 Seeding source data...")
+        # Install dbt package dependencies
+        typer.echo("📦 Installing dbt packages...")
         try:
-            subprocess.run(["dbt", "seed", "--project-dir", "."] + dbt_vars_flag, check=True, env=dbt_env)
+            subprocess.run(["dbt", "deps", "--project-dir", "."], check=True, env=dbt_env)
         except subprocess.CalledProcessError as e:
-            typer.echo(f"  ⚠️  Seed failed (exit {e.returncode}). Check seed CSV files.")
+            typer.echo(f"  ⚠️  dbt deps failed (exit {e.returncode})")
         except FileNotFoundError:
             pass
 
-    # Run dbt (SQL-only models – zero cold starts on serverless)
-    typer.echo("✅ Running dbt...")
-    try:
-        subprocess.run(["dbt", "run", "--project-dir", "."] + dbt_vars_flag, check=True, env=dbt_env)
-    except FileNotFoundError:
-        typer.echo("💡 Tip: install dbt-databricks with poetry if needed")
+        # Run dbt (SQL-only models – zero cold starts on serverless)
+        typer.echo("✅ Running dbt...")
+        try:
+            subprocess.run(["dbt", "run", "--project-dir", "."] + dbt_vars_flag, check=True, env=dbt_env)
+        except FileNotFoundError:
+            typer.echo("💡 Tip: install dbt-databricks with poetry if needed")
 
-    # Auto-generate DAB workflow YAML (always up-to-date with latest graph)
+    # Vendor dbt-dab-tools into the project so DAB syncs it to the workspace
     job_yaml_paths = []
     try:
         graph = build_graph(config)
