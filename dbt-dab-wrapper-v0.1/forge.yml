@@ -68,10 +68,3 @@ lineage:
 
 portability:
   postgres_compatible: true
-
-# ── Python Tasks ──
-python_tasks:
-  ingest_from_volume:
-    stage: ingest
-    description: "Reads files from landing Volume → raw tables"
-    template: ingest

@@ -656,40 +656,23 @@ def scaffold_python_task(
 
 
 # =============================================
-# LOAD PYTHON TASKS FROM forge.yml
+# LOAD PYTHON TASKS — auto-discovered from python/
 # =============================================
 
-def load_python_tasks(forge_config: dict) -> list[dict]:
+def load_python_tasks(_forge_config: dict | None = None) -> list[dict]:
     """
-    Read python_tasks from forge.yml.
+    Auto-discover python tasks from the python/ directory.
 
-    forge.yml:
-        python_tasks:
-          ingest_from_volume:
-            stage: ingest
-            description: "Reads files from landing Volume → raw tables"
-            template: ingest
+    Each .py file in python/ becomes a task.  No forge.yml config needed.
+    Placement (SETUP vs PROCESS) is DDL-driven via managed_by headers.
 
-    Returns list of task dicts with keys: name, file, stage, depends_on.
+    Returns list of task dicts with keys: name, file.
     """
-    tasks = forge_config.get("python_tasks", {})
-    result = []
-    if isinstance(tasks, list):
-        # Old format: list of dicts
-        for task in tasks:
-            result.append({
-                "name": task["name"],
-                "file": task.get("file", f"python/{task['name']}.py"),
-                "stage": task.get("stage", "enrich"),
-                "depends_on": task.get("depends_on", []),
-            })
-    elif isinstance(tasks, dict):
-        # New format: dict of task_name -> config
-        for name, config in tasks.items():
-            result.append({
-                "name": name,
-                "file": config.get("file", f"python/{name}.py"),
-                "stage": config.get("stage", "enrich"),
-                "depends_on": config.get("depends_on", []),
-            })
-    return result
+    py_dir = Path("python")
+    if not py_dir.is_dir():
+        return []
+    return [
+        {"name": f.stem, "file": f"python/{f.name}"}
+        for f in sorted(py_dir.iterdir())
+        if f.suffix == ".py" and not f.name.startswith("_")
+    ]

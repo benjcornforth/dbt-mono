@@ -716,12 +716,9 @@ def build_workflow(
             if src_model not in model_parents[tgt_model]:
                 model_parents[tgt_model].append(src_model)
 
-    # ── Load python_tasks from forge.yml ──────────────
+    # ── Load python_tasks (auto-discovered from python/) ──
     from forge.python_task import load_python_tasks
-    python_tasks = load_python_tasks(forge_config)
-    python_by_stage: dict[str, list[dict]] = {s: [] for s in STAGES}
-    for pt in python_tasks:
-        python_by_stage.get(pt["stage"], python_by_stage["enrich"]).append(pt)
+    python_tasks = load_python_tasks()
 
     # ── Load custom_tasks from forge.yml ──────────────
     custom_tasks = load_custom_tasks(forge_config)
@@ -731,9 +728,6 @@ def build_workflow(
 
     # ── Validate all referenced asset files exist ─────
     missing: list[str] = []
-    for pt in python_tasks:
-        if pt.get("file") and not Path(pt["file"]).exists():
-            missing.append(f"python_task '{pt['name']}': {pt['file']}")
     for ct in custom_tasks:
         if ct.get("file") and not Path(ct["file"]).exists():
             missing.append(f"custom_task '{ct['task_key']}': {ct['file']}")
@@ -844,38 +838,32 @@ def build_workflow(
             managed_by_values.add(mb)
 
     domain_name = forge_config.get("_domain")  # set by build_domain_workflows
-    for stage in STAGES:
-        for pt in python_by_stage[stage]:
-            # DDL-driven: skip python tasks that are placed in SETUP
-            # (they match managed_by values from DDL)
-            if "python" in managed_by_values or pt["name"] in managed_by_values:
-                continue
-            pt_name = f"{stage}_py_{pt['name']}"
-            pt_deps: list[str] = []
-            for dep in pt.get("depends_on", []):
-                resolved = _resolve_task_dependency(dep, {t.name for t in tasks}, model_to_task)
-                if resolved and resolved not in pt_deps:
-                    pt_deps.append(resolved)
-            if not pt_deps:
-                # Fall back to last model task in this stage (dbt or sql)
-                stage_model_tasks = [t.name for t in tasks if t.stage == stage and t.task_type in ("dbt", "sql") and t.models]
-                if stage_model_tasks:
-                    pt_deps.append(stage_model_tasks[-1])
+    for pt in python_tasks:
+        # DDL-driven: skip python tasks that are placed in SETUP
+        # (they match managed_by values from DDL)
+        if "python" in managed_by_values or pt["name"] in managed_by_values:
+            continue
+        pt_name = f"py_{pt['name']}"
+        pt_deps: list[str] = []
+        # Fall back to last model task
+        model_tasks = [t.name for t in tasks if t.task_type in ("dbt", "sql") and t.models]
+        if model_tasks:
+            pt_deps.append(model_tasks[-1])
 
-            # Inject domain parameter for per-domain workflows
-            pt_config: dict[str, Any] | None = None
-            if domain_name:
-                pt_config = {"parameters": [f"--domain={domain_name}"]}
+        # Inject domain parameter for per-domain workflows
+        pt_config: dict[str, Any] | None = None
+        if domain_name:
+            pt_config = {"parameters": [f"--domain={domain_name}"]}
 
-            tasks.append(WorkflowTask(
-                name=pt_name,
-                stage=stage,
-                task_type="python",
-                python_file=pt["file"],
-                additional_config=pt_config,
-                depends_on=pt_deps,
-                compute_type=compute_type,
-            ))
+        tasks.append(WorkflowTask(
+            name=pt_name,
+            stage="enrich",
+            task_type="python",
+            python_file=pt["file"],
+            additional_config=pt_config,
+            depends_on=pt_deps,
+            compute_type=compute_type,
+        ))
 
     # ── Custom tasks ──────────────────────────────────
     for stage in STAGES:
@@ -1110,7 +1098,7 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
     #   managed_by: ingest_from_volume → matches python task by name
     if managed_by_values:
         from forge.python_task import load_python_tasks
-        python_tasks = load_python_tasks(forge_config)
+        python_tasks = load_python_tasks()
         for pt in python_tasks:
             # Match: DDL says "python" (generic) or names this specific task
             if "python" in managed_by_values or pt["name"] in managed_by_values:
@@ -1180,18 +1168,14 @@ def build_teardown_workflow(forge_config: dict, graph: dict) -> Workflow:
             continue
         model_names.append(contract["dataset"]["name"])
 
-    # Single task that drops all models via dbt run-operation
-    # or just runs dbt run --select with --full-refresh to reset
+    # Single SQL task that drops all models, UDFs, and lineage tables
     tasks = [
         WorkflowTask(
             name="teardown",
             stage="serve",
-            task_type="dbt",
+            task_type="sql",
+            sql_file="sql/teardown.sql",
             models=[],
-            dbt_commands=[
-                "dbt deps",
-                "dbt run-operation drop_all_models",
-            ],
             depends_on=[],
             compute_type=compute_type,
         )

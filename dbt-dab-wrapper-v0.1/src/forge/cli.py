@@ -1040,6 +1040,10 @@ def compile(
             profile=prof, forge_config=config,
         )
 
+        # Teardown SQL (drops all tables, views, UDFs)
+        from forge.simple_ddl import compile_teardown_sql
+        compile_teardown_sql(ddl_path, sql_dir, profile=prof, forge_config=config)
+
         for name, path in results.items():
             if name == "_udfs":
                 typer.echo(f"  🔧 {path.name} → UDF definitions + lineage UDFs")

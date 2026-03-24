@@ -1,0 +1,16 @@
+# ── Average score UDF (pandas vectorized) ────
+udfs:
+  average_score:
+    description: "Vectorized average using pandas — fast on large batches"
+    language: pandas
+    returns: double
+    runtime_version: "3.11"
+    handler: compute
+    packages: [pandas, numpy]
+    params:
+      - { name: score_a, type: double }
+      - { name: score_b, type: double }
+    body: |
+      import pandas as pd
+      def compute(score_a: pd.Series, score_b: pd.Series) -> pd.Series:
+          return (score_a + score_b) / 2.0

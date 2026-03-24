@@ -18,7 +18,7 @@ SELECT
         'model', 'stg_customers',
         'sources', 'raw_customers',
         'git_commit', 'unknown',
-        'deployed_at', '2026-03-24T16:02:01.469903+00:00',
+        'deployed_at', '2026-03-24T16:19:23.417517+00:00',
         'compute_type', 'serverless',
         'contract_id', 'ben_sales.stg_customers',
         'version', 'v1',

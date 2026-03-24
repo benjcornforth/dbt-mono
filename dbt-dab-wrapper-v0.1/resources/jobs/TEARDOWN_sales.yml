@@ -5,16 +5,9 @@ resources:
       tasks:
       - task_key: teardown
         timeout_seconds: 3600
-        environment_key: default
-        dbt_task:
-          project_directory: ${workspace.file_path}
-          commands:
-          - dbt deps
-          - 'dbt run-operation drop_all_models --vars ''{"schema_bronze": "ben_sales",
-            "schema_silver": "ben_sales", "schema_gold": "ben_sales", "catalog_bronze":
-            "dev_fd_bronze", "catalog_silver": "dev_fd_silver", "catalog_meta": "dev_fd_meta",
-            "git_commit": "local", "compute_type": "serverless"}'''
-          catalog: dev_fd_bronze
+        sql_task:
+          file:
+            path: ../../sql/teardown.sql
           warehouse_id: 724607f766691c81
       environments:
       - environment_key: default

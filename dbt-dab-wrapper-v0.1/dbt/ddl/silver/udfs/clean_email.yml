@@ -1,0 +1,15 @@
+# ── Clean email UDF ──────────────────────────
+udfs:
+  clean_email:
+    description: "Lowercase and trim email addresses"
+    language: python
+    returns: string
+    runtime_version: "3.11"
+    handler: clean
+    params:
+      - { name: raw_email, type: string }
+    body: |
+      def clean(raw_email):
+          if raw_email is None:
+              return None
+          return raw_email.strip().lower()
