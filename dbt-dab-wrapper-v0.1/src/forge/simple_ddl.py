@@ -688,16 +688,27 @@ def compile_udf_sql(udf_name: str, udf_def: dict, schema: str = "{{ target.catal
         lines.append(f"RETURN ({body});")
     elif language == "PYTHON":
         lines.append("LANGUAGE PYTHON")
-        if runtime_version and compute_type != "serverless":
-            lines.append(f"RUNTIME_VERSION = '{runtime_version}'")
-        if packages:
-            pkg_str = ", ".join(f"'{p}'" for p in packages)
-            lines.append(f"PACKAGES ({pkg_str})")
-        if handler:
-            lines.append(f"HANDLER = '{handler}'")
-        lines.append("AS $$")
-        lines.append(body)
-        lines.append("$$;")
+        if compute_type == "serverless":
+            # Serverless SQL warehouses don't support RUNTIME_VERSION,
+            # PACKAGES, or HANDLER.  The Python function name must match
+            # the UDF name.
+            adjusted_body = body
+            if handler and handler != udf_name:
+                adjusted_body = body.replace(f"def {handler}(", f"def {udf_name}(")
+            lines.append("AS $$")
+            lines.append(adjusted_body)
+            lines.append("$$;")
+        else:
+            if runtime_version:
+                lines.append(f"RUNTIME_VERSION = '{runtime_version}'")
+            if packages:
+                pkg_str = ", ".join(f"'{p}'" for p in packages)
+                lines.append(f"PACKAGES ({pkg_str})")
+            if handler:
+                lines.append(f"HANDLER = '{handler}'")
+            lines.append("AS $$")
+            lines.append(body)
+            lines.append("$$;")
     else:
         lines.append(f"LANGUAGE {language}")
         lines.append("AS $$")
