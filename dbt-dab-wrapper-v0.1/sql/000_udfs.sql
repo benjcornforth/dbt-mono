@@ -74,44 +74,16 @@ def average_score(score_a: pd.Series, score_b: pd.Series) -> pd.Series:
 $$;
 
 -- UDF: trace_lineage
--- Trace any value back through the full DAG
+-- Trace any value back through the full DAG (max depth 10)
 DROP FUNCTION IF EXISTS `dev_fd_meta`.`ben_sales`.trace_lineage;
 CREATE FUNCTION `dev_fd_meta`.`ben_sales`.trace_lineage(
     start_model STRING, key_col STRING, key_val STRING
 )
 RETURNS STRING
 RETURN (
-  WITH RECURSIVE lineage AS (
-    SELECT
-      start_model AS model,
-      key_col     AS key_column,
-      key_val     AS key_value,
-      0           AS depth,
-      start_model AS path,
-      CAST(NULL AS STRING) AS transform_type,
-      CAST(NULL AS STRING) AS expression,
-      CAST(NULL AS STRING) AS source_catalog,
-      CAST(NULL AS STRING) AS source_schema
-    UNION ALL
-    SELECT
-      g.source_model,
-      COALESCE(g.source_key, g.join_key, l.key_column),
-      l.key_value,
-      l.depth + 1,
-      concat(l.path, ' -> ', g.source_model),
-      g.transform_type,
-      g.expression,
-      g.source_catalog,
-      g.source_schema
-    FROM lineage l
-    JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g
-      ON l.model = g.target_model
-    WHERE l.depth < 10
-  )
   SELECT concat_ws('\n', collect_list(line))
   FROM (
     SELECT
-      depth,
       concat(
         '[', CAST(depth AS STRING), '] ',
         model, '.', key_column, ' = ', key_value,
@@ -121,44 +93,173 @@ RETURN (
                        THEN concat(': ', expression) ELSE '' END, ')')
              ELSE '' END
       ) AS line
-    FROM lineage
+    FROM (
+      SELECT 0 AS depth,
+             start_model AS model,
+             key_col AS key_column,
+             key_val AS key_value,
+             start_model AS path,
+             CAST(NULL AS STRING) AS transform_type,
+             CAST(NULL AS STRING) AS expression,
+             CAST(NULL AS STRING) AS source_catalog,
+             CAST(NULL AS STRING) AS source_schema
+      UNION ALL
+      SELECT 1 AS depth,
+             g0.source_model AS model,
+             COALESCE(g0.source_key, g0.join_key, key_col) AS key_column,
+             key_val AS key_value,
+             concat(start_model, ' -> ', g0.source_model) AS path,
+             g0.transform_type,
+             g0.expression,
+             g0.source_catalog,
+             g0.source_schema
+      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      WHERE g0.target_model = start_model
+      UNION ALL
+      SELECT 2 AS depth,
+             g1.source_model AS model,
+             COALESCE(g1.source_key, g1.join_key, COALESCE(g0.source_key, g0.join_key, key_col)) AS key_column,
+             key_val AS key_value,
+             concat(start_model, ' -> ', g0.source_model, ' -> ', g1.source_model) AS path,
+             g1.transform_type,
+             g1.expression,
+             g1.source_catalog,
+             g1.source_schema
+      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
+      WHERE g0.target_model = start_model
+      UNION ALL
+      SELECT 3 AS depth,
+             g2.source_model AS model,
+             COALESCE(g2.source_key, g2.join_key, COALESCE(g1.source_key, g1.join_key, COALESCE(g0.source_key, g0.join_key, key_col))) AS key_column,
+             key_val AS key_value,
+             concat(start_model, ' -> ', g0.source_model, ' -> ', g1.source_model, ' -> ', g2.source_model) AS path,
+             g2.transform_type,
+             g2.expression,
+             g2.source_catalog,
+             g2.source_schema
+      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
+      WHERE g0.target_model = start_model
+      UNION ALL
+      SELECT 4 AS depth,
+             g3.source_model AS model,
+             COALESCE(g3.source_key, g3.join_key, COALESCE(g2.source_key, g2.join_key, COALESCE(g1.source_key, g1.join_key, COALESCE(g0.source_key, g0.join_key, key_col)))) AS key_column,
+             key_val AS key_value,
+             concat(start_model, ' -> ', g0.source_model, ' -> ', g1.source_model, ' -> ', g2.source_model, ' -> ', g3.source_model) AS path,
+             g3.transform_type,
+             g3.expression,
+             g3.source_catalog,
+             g3.source_schema
+      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
+      WHERE g0.target_model = start_model
+      UNION ALL
+      SELECT 5 AS depth,
+             g4.source_model AS model,
+             COALESCE(g4.source_key, g4.join_key, COALESCE(g3.source_key, g3.join_key, COALESCE(g2.source_key, g2.join_key, COALESCE(g1.source_key, g1.join_key, COALESCE(g0.source_key, g0.join_key, key_col))))) AS key_column,
+             key_val AS key_value,
+             concat(start_model, ' -> ', g0.source_model, ' -> ', g1.source_model, ' -> ', g2.source_model, ' -> ', g3.source_model, ' -> ', g4.source_model) AS path,
+             g4.transform_type,
+             g4.expression,
+             g4.source_catalog,
+             g4.source_schema
+      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
+      WHERE g0.target_model = start_model
+      UNION ALL
+      SELECT 6 AS depth,
+             g5.source_model AS model,
+             COALESCE(g5.source_key, g5.join_key, COALESCE(g4.source_key, g4.join_key, COALESCE(g3.source_key, g3.join_key, COALESCE(g2.source_key, g2.join_key, COALESCE(g1.source_key, g1.join_key, COALESCE(g0.source_key, g0.join_key, key_col)))))) AS key_column,
+             key_val AS key_value,
+             concat(start_model, ' -> ', g0.source_model, ' -> ', g1.source_model, ' -> ', g2.source_model, ' -> ', g3.source_model, ' -> ', g4.source_model, ' -> ', g5.source_model) AS path,
+             g5.transform_type,
+             g5.expression,
+             g5.source_catalog,
+             g5.source_schema
+      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g5 ON g4.source_model = g5.target_model
+      WHERE g0.target_model = start_model
+      UNION ALL
+      SELECT 7 AS depth,
+             g6.source_model AS model,
+             COALESCE(g6.source_key, g6.join_key, COALESCE(g5.source_key, g5.join_key, COALESCE(g4.source_key, g4.join_key, COALESCE(g3.source_key, g3.join_key, COALESCE(g2.source_key, g2.join_key, COALESCE(g1.source_key, g1.join_key, COALESCE(g0.source_key, g0.join_key, key_col))))))) AS key_column,
+             key_val AS key_value,
+             concat(start_model, ' -> ', g0.source_model, ' -> ', g1.source_model, ' -> ', g2.source_model, ' -> ', g3.source_model, ' -> ', g4.source_model, ' -> ', g5.source_model, ' -> ', g6.source_model) AS path,
+             g6.transform_type,
+             g6.expression,
+             g6.source_catalog,
+             g6.source_schema
+      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g5 ON g4.source_model = g5.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g6 ON g5.source_model = g6.target_model
+      WHERE g0.target_model = start_model
+      UNION ALL
+      SELECT 8 AS depth,
+             g7.source_model AS model,
+             COALESCE(g7.source_key, g7.join_key, COALESCE(g6.source_key, g6.join_key, COALESCE(g5.source_key, g5.join_key, COALESCE(g4.source_key, g4.join_key, COALESCE(g3.source_key, g3.join_key, COALESCE(g2.source_key, g2.join_key, COALESCE(g1.source_key, g1.join_key, COALESCE(g0.source_key, g0.join_key, key_col)))))))) AS key_column,
+             key_val AS key_value,
+             concat(start_model, ' -> ', g0.source_model, ' -> ', g1.source_model, ' -> ', g2.source_model, ' -> ', g3.source_model, ' -> ', g4.source_model, ' -> ', g5.source_model, ' -> ', g6.source_model, ' -> ', g7.source_model) AS path,
+             g7.transform_type,
+             g7.expression,
+             g7.source_catalog,
+             g7.source_schema
+      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g5 ON g4.source_model = g5.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g6 ON g5.source_model = g6.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g7 ON g6.source_model = g7.target_model
+      WHERE g0.target_model = start_model
+      UNION ALL
+      SELECT 9 AS depth,
+             g8.source_model AS model,
+             COALESCE(g8.source_key, g8.join_key, COALESCE(g7.source_key, g7.join_key, COALESCE(g6.source_key, g6.join_key, COALESCE(g5.source_key, g5.join_key, COALESCE(g4.source_key, g4.join_key, COALESCE(g3.source_key, g3.join_key, COALESCE(g2.source_key, g2.join_key, COALESCE(g1.source_key, g1.join_key, COALESCE(g0.source_key, g0.join_key, key_col))))))))) AS key_column,
+             key_val AS key_value,
+             concat(start_model, ' -> ', g0.source_model, ' -> ', g1.source_model, ' -> ', g2.source_model, ' -> ', g3.source_model, ' -> ', g4.source_model, ' -> ', g5.source_model, ' -> ', g6.source_model, ' -> ', g7.source_model, ' -> ', g8.source_model) AS path,
+             g8.transform_type,
+             g8.expression,
+             g8.source_catalog,
+             g8.source_schema
+      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g5 ON g4.source_model = g5.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g6 ON g5.source_model = g6.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g7 ON g6.source_model = g7.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g8 ON g7.source_model = g8.target_model
+      WHERE g0.target_model = start_model
+    )
     ORDER BY depth
   )
 );
 
 -- UDF: trace_lineage_json
--- Same as trace_lineage but returns structured JSON
+-- Same as trace_lineage but returns structured JSON (max depth 10)
 DROP FUNCTION IF EXISTS `dev_fd_meta`.`ben_sales`.trace_lineage_json;
 CREATE FUNCTION `dev_fd_meta`.`ben_sales`.trace_lineage_json(
     start_model STRING, key_col STRING, key_val STRING
 )
 RETURNS STRING
 RETURN (
-  WITH RECURSIVE lineage AS (
-    SELECT
-      start_model AS model,
-      key_col     AS key_column,
-      key_val     AS key_value,
-      0           AS depth,
-      CAST(NULL AS STRING) AS transform_type,
-      CAST(NULL AS STRING) AS expression,
-      CAST(NULL AS STRING) AS source_catalog,
-      CAST(NULL AS STRING) AS source_schema
-    UNION ALL
-    SELECT
-      g.source_model,
-      COALESCE(g.source_key, g.join_key, l.key_column),
-      l.key_value,
-      l.depth + 1,
-      g.transform_type,
-      g.expression,
-      g.source_catalog,
-      g.source_schema
-    FROM lineage l
-    JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g
-      ON l.model = g.target_model
-    WHERE l.depth < 10
-  )
   SELECT to_json(collect_list(node))
   FROM (
     SELECT named_struct(
@@ -171,7 +272,161 @@ RETURN (
       'catalog', source_catalog,
       'schema', source_schema
     ) AS node
-    FROM lineage
+    FROM (
+      SELECT 0 AS depth,
+             start_model AS model,
+             key_col AS key_column,
+             key_val AS key_value,
+             start_model AS path,
+             CAST(NULL AS STRING) AS transform_type,
+             CAST(NULL AS STRING) AS expression,
+             CAST(NULL AS STRING) AS source_catalog,
+             CAST(NULL AS STRING) AS source_schema
+      UNION ALL
+      SELECT 1 AS depth,
+             g0.source_model AS model,
+             COALESCE(g0.source_key, g0.join_key, key_col) AS key_column,
+             key_val AS key_value,
+             concat(start_model, ' -> ', g0.source_model) AS path,
+             g0.transform_type,
+             g0.expression,
+             g0.source_catalog,
+             g0.source_schema
+      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      WHERE g0.target_model = start_model
+      UNION ALL
+      SELECT 2 AS depth,
+             g1.source_model AS model,
+             COALESCE(g1.source_key, g1.join_key, COALESCE(g0.source_key, g0.join_key, key_col)) AS key_column,
+             key_val AS key_value,
+             concat(start_model, ' -> ', g0.source_model, ' -> ', g1.source_model) AS path,
+             g1.transform_type,
+             g1.expression,
+             g1.source_catalog,
+             g1.source_schema
+      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
+      WHERE g0.target_model = start_model
+      UNION ALL
+      SELECT 3 AS depth,
+             g2.source_model AS model,
+             COALESCE(g2.source_key, g2.join_key, COALESCE(g1.source_key, g1.join_key, COALESCE(g0.source_key, g0.join_key, key_col))) AS key_column,
+             key_val AS key_value,
+             concat(start_model, ' -> ', g0.source_model, ' -> ', g1.source_model, ' -> ', g2.source_model) AS path,
+             g2.transform_type,
+             g2.expression,
+             g2.source_catalog,
+             g2.source_schema
+      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
+      WHERE g0.target_model = start_model
+      UNION ALL
+      SELECT 4 AS depth,
+             g3.source_model AS model,
+             COALESCE(g3.source_key, g3.join_key, COALESCE(g2.source_key, g2.join_key, COALESCE(g1.source_key, g1.join_key, COALESCE(g0.source_key, g0.join_key, key_col)))) AS key_column,
+             key_val AS key_value,
+             concat(start_model, ' -> ', g0.source_model, ' -> ', g1.source_model, ' -> ', g2.source_model, ' -> ', g3.source_model) AS path,
+             g3.transform_type,
+             g3.expression,
+             g3.source_catalog,
+             g3.source_schema
+      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
+      WHERE g0.target_model = start_model
+      UNION ALL
+      SELECT 5 AS depth,
+             g4.source_model AS model,
+             COALESCE(g4.source_key, g4.join_key, COALESCE(g3.source_key, g3.join_key, COALESCE(g2.source_key, g2.join_key, COALESCE(g1.source_key, g1.join_key, COALESCE(g0.source_key, g0.join_key, key_col))))) AS key_column,
+             key_val AS key_value,
+             concat(start_model, ' -> ', g0.source_model, ' -> ', g1.source_model, ' -> ', g2.source_model, ' -> ', g3.source_model, ' -> ', g4.source_model) AS path,
+             g4.transform_type,
+             g4.expression,
+             g4.source_catalog,
+             g4.source_schema
+      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
+      WHERE g0.target_model = start_model
+      UNION ALL
+      SELECT 6 AS depth,
+             g5.source_model AS model,
+             COALESCE(g5.source_key, g5.join_key, COALESCE(g4.source_key, g4.join_key, COALESCE(g3.source_key, g3.join_key, COALESCE(g2.source_key, g2.join_key, COALESCE(g1.source_key, g1.join_key, COALESCE(g0.source_key, g0.join_key, key_col)))))) AS key_column,
+             key_val AS key_value,
+             concat(start_model, ' -> ', g0.source_model, ' -> ', g1.source_model, ' -> ', g2.source_model, ' -> ', g3.source_model, ' -> ', g4.source_model, ' -> ', g5.source_model) AS path,
+             g5.transform_type,
+             g5.expression,
+             g5.source_catalog,
+             g5.source_schema
+      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g5 ON g4.source_model = g5.target_model
+      WHERE g0.target_model = start_model
+      UNION ALL
+      SELECT 7 AS depth,
+             g6.source_model AS model,
+             COALESCE(g6.source_key, g6.join_key, COALESCE(g5.source_key, g5.join_key, COALESCE(g4.source_key, g4.join_key, COALESCE(g3.source_key, g3.join_key, COALESCE(g2.source_key, g2.join_key, COALESCE(g1.source_key, g1.join_key, COALESCE(g0.source_key, g0.join_key, key_col))))))) AS key_column,
+             key_val AS key_value,
+             concat(start_model, ' -> ', g0.source_model, ' -> ', g1.source_model, ' -> ', g2.source_model, ' -> ', g3.source_model, ' -> ', g4.source_model, ' -> ', g5.source_model, ' -> ', g6.source_model) AS path,
+             g6.transform_type,
+             g6.expression,
+             g6.source_catalog,
+             g6.source_schema
+      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g5 ON g4.source_model = g5.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g6 ON g5.source_model = g6.target_model
+      WHERE g0.target_model = start_model
+      UNION ALL
+      SELECT 8 AS depth,
+             g7.source_model AS model,
+             COALESCE(g7.source_key, g7.join_key, COALESCE(g6.source_key, g6.join_key, COALESCE(g5.source_key, g5.join_key, COALESCE(g4.source_key, g4.join_key, COALESCE(g3.source_key, g3.join_key, COALESCE(g2.source_key, g2.join_key, COALESCE(g1.source_key, g1.join_key, COALESCE(g0.source_key, g0.join_key, key_col)))))))) AS key_column,
+             key_val AS key_value,
+             concat(start_model, ' -> ', g0.source_model, ' -> ', g1.source_model, ' -> ', g2.source_model, ' -> ', g3.source_model, ' -> ', g4.source_model, ' -> ', g5.source_model, ' -> ', g6.source_model, ' -> ', g7.source_model) AS path,
+             g7.transform_type,
+             g7.expression,
+             g7.source_catalog,
+             g7.source_schema
+      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g5 ON g4.source_model = g5.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g6 ON g5.source_model = g6.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g7 ON g6.source_model = g7.target_model
+      WHERE g0.target_model = start_model
+      UNION ALL
+      SELECT 9 AS depth,
+             g8.source_model AS model,
+             COALESCE(g8.source_key, g8.join_key, COALESCE(g7.source_key, g7.join_key, COALESCE(g6.source_key, g6.join_key, COALESCE(g5.source_key, g5.join_key, COALESCE(g4.source_key, g4.join_key, COALESCE(g3.source_key, g3.join_key, COALESCE(g2.source_key, g2.join_key, COALESCE(g1.source_key, g1.join_key, COALESCE(g0.source_key, g0.join_key, key_col))))))))) AS key_column,
+             key_val AS key_value,
+             concat(start_model, ' -> ', g0.source_model, ' -> ', g1.source_model, ' -> ', g2.source_model, ' -> ', g3.source_model, ' -> ', g4.source_model, ' -> ', g5.source_model, ' -> ', g6.source_model, ' -> ', g7.source_model, ' -> ', g8.source_model) AS path,
+             g8.transform_type,
+             g8.expression,
+             g8.source_catalog,
+             g8.source_schema
+      FROM `dev_fd_meta`.`ben_sales`.lineage_graph g0
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g1 ON g0.source_model = g1.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g2 ON g1.source_model = g2.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g3 ON g2.source_model = g3.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g4 ON g3.source_model = g4.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g5 ON g4.source_model = g5.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g6 ON g5.source_model = g6.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g7 ON g6.source_model = g7.target_model
+      JOIN `dev_fd_meta`.`ben_sales`.lineage_graph g8 ON g7.source_model = g8.target_model
+      WHERE g0.target_model = start_model
+    )
     ORDER BY depth
   )
 );

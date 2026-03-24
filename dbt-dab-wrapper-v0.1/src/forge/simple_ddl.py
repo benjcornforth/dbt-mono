@@ -1819,58 +1819,94 @@ def compile_lineage_log_insert(
     )
 
 
+def _compile_lineage_union_sql(fq_graph: str, max_depth: int = 10) -> str:
+    """Generate unrolled UNION ALL for lineage traversal.
+
+    Databricks serverless doesn't support recursive CTEs in SQL UDFs
+    (function params are treated as outer references which are disallowed
+    in recursive CTE anchors).  We unroll to fixed-depth self-joins.
+    """
+    branches: list[str] = []
+
+    # Depth 0: the starting model itself (no table access)
+    branches.append(
+        "      SELECT 0 AS depth,\n"
+        "             start_model AS model,\n"
+        "             key_col AS key_column,\n"
+        "             key_val AS key_value,\n"
+        "             start_model AS path,\n"
+        "             CAST(NULL AS STRING) AS transform_type,\n"
+        "             CAST(NULL AS STRING) AS expression,\n"
+        "             CAST(NULL AS STRING) AS source_catalog,\n"
+        "             CAST(NULL AS STRING) AS source_schema"
+    )
+
+    for d in range(1, max_depth):
+        # Key column: nested COALESCE tracking column renames through DAG
+        kc = "key_col"
+        for i in range(d):
+            kc = f"COALESCE(g{i}.source_key, g{i}.join_key, {kc})"
+
+        # Path: concat(start_model, ' -> ', g0.source_model, ' -> ', ...)
+        path_parts = ["start_model"]
+        for i in range(d):
+            path_parts.extend([f"' -> '", f"g{i}.source_model"])
+        path_expr = f"concat({', '.join(path_parts)})"
+
+        last = f"g{d - 1}"
+
+        # FROM / JOIN chain
+        from_lines = [f"      FROM {fq_graph} g0"]
+        for i in range(1, d):
+            from_lines.append(
+                f"      JOIN {fq_graph} g{i} ON g{i - 1}.source_model = g{i}.target_model"
+            )
+
+        branch = (
+            f"      SELECT {d} AS depth,\n"
+            f"             {last}.source_model AS model,\n"
+            f"             {kc} AS key_column,\n"
+            f"             key_val AS key_value,\n"
+            f"             {path_expr} AS path,\n"
+            f"             {last}.transform_type,\n"
+            f"             {last}.expression,\n"
+            f"             {last}.source_catalog,\n"
+            f"             {last}.source_schema\n"
+            + "\n".join(from_lines) + "\n"
+            f"      WHERE g0.target_model = start_model"
+        )
+        branches.append(branch)
+
+    return "\n      UNION ALL\n".join(branches)
+
+
 def compile_trace_lineage_udf(meta_catalog: str, meta_schema: str, compute_type: str = "serverless") -> str:
     """
-    Compile the trace_lineage SQL UDF.
+    Compile the trace_lineage, trace_lineage_json, and last_run_id SQL UDFs.
 
-    Walks the lineage_graph via recursive CTE to trace any value
-    back through the full DAG.  For aggregations, returns the SQL
-    expression so the user can query the source table directly.
+    Uses unrolled self-joins (max depth 10) instead of recursive CTEs
+    because Databricks serverless doesn't allow function parameters as
+    outer references inside recursive CTE anchors.
     """
     fq_schema = f"`{meta_catalog}`.`{meta_schema}`"
     fq_graph = f"{fq_schema}.lineage_graph"
     fq_log = f"{fq_schema}.lineage_log"
 
+    max_depth = 10
+    union_sql = _compile_lineage_union_sql(fq_graph, max_depth)
+
     return (
         f"-- UDF: trace_lineage\n"
-        f"-- Trace any value back through the full DAG\n"
+        f"-- Trace any value back through the full DAG (max depth {max_depth})\n"
         f"DROP FUNCTION IF EXISTS {fq_schema}.trace_lineage;\n"
         f"CREATE FUNCTION {fq_schema}.trace_lineage(\n"
         f"    start_model STRING, key_col STRING, key_val STRING\n"
         f")\n"
         f"RETURNS STRING\n"
         f"RETURN (\n"
-        f"  WITH RECURSIVE lineage AS (\n"
-        f"    SELECT\n"
-        f"      start_model AS model,\n"
-        f"      key_col     AS key_column,\n"
-        f"      key_val     AS key_value,\n"
-        f"      0           AS depth,\n"
-        f"      start_model AS path,\n"
-        f"      CAST(NULL AS STRING) AS transform_type,\n"
-        f"      CAST(NULL AS STRING) AS expression,\n"
-        f"      CAST(NULL AS STRING) AS source_catalog,\n"
-        f"      CAST(NULL AS STRING) AS source_schema\n"
-        f"    UNION ALL\n"
-        f"    SELECT\n"
-        f"      g.source_model,\n"
-        f"      COALESCE(g.source_key, g.join_key, l.key_column),\n"
-        f"      l.key_value,\n"
-        f"      l.depth + 1,\n"
-        f"      concat(l.path, ' -> ', g.source_model),\n"
-        f"      g.transform_type,\n"
-        f"      g.expression,\n"
-        f"      g.source_catalog,\n"
-        f"      g.source_schema\n"
-        f"    FROM lineage l\n"
-        f"    JOIN {fq_graph} g\n"
-        f"      ON l.model = g.target_model\n"
-        f"    WHERE l.depth < 10\n"
-        f"  )\n"
         f"  SELECT concat_ws('\\n', collect_list(line))\n"
         f"  FROM (\n"
         f"    SELECT\n"
-        f"      depth,\n"
         f"      concat(\n"
         f"        '[', CAST(depth AS STRING), '] ',\n"
         f"        model, '.', key_column, ' = ', key_value,\n"
@@ -1880,44 +1916,21 @@ def compile_trace_lineage_udf(meta_catalog: str, meta_schema: str, compute_type:
         f"                       THEN concat(': ', expression) ELSE '' END, ')')\n"
         f"             ELSE '' END\n"
         f"      ) AS line\n"
-        f"    FROM lineage\n"
+        f"    FROM (\n"
+        f"{union_sql}\n"
+        f"    )\n"
         f"    ORDER BY depth\n"
         f"  )\n"
         f");\n"
         f"\n"
         f"-- UDF: trace_lineage_json\n"
-        f"-- Same as trace_lineage but returns structured JSON\n"
+        f"-- Same as trace_lineage but returns structured JSON (max depth {max_depth})\n"
         f"DROP FUNCTION IF EXISTS {fq_schema}.trace_lineage_json;\n"
         f"CREATE FUNCTION {fq_schema}.trace_lineage_json(\n"
         f"    start_model STRING, key_col STRING, key_val STRING\n"
         f")\n"
         f"RETURNS STRING\n"
         f"RETURN (\n"
-        f"  WITH RECURSIVE lineage AS (\n"
-        f"    SELECT\n"
-        f"      start_model AS model,\n"
-        f"      key_col     AS key_column,\n"
-        f"      key_val     AS key_value,\n"
-        f"      0           AS depth,\n"
-        f"      CAST(NULL AS STRING) AS transform_type,\n"
-        f"      CAST(NULL AS STRING) AS expression,\n"
-        f"      CAST(NULL AS STRING) AS source_catalog,\n"
-        f"      CAST(NULL AS STRING) AS source_schema\n"
-        f"    UNION ALL\n"
-        f"    SELECT\n"
-        f"      g.source_model,\n"
-        f"      COALESCE(g.source_key, g.join_key, l.key_column),\n"
-        f"      l.key_value,\n"
-        f"      l.depth + 1,\n"
-        f"      g.transform_type,\n"
-        f"      g.expression,\n"
-        f"      g.source_catalog,\n"
-        f"      g.source_schema\n"
-        f"    FROM lineage l\n"
-        f"    JOIN {fq_graph} g\n"
-        f"      ON l.model = g.target_model\n"
-        f"    WHERE l.depth < 10\n"
-        f"  )\n"
         f"  SELECT to_json(collect_list(node))\n"
         f"  FROM (\n"
         f"    SELECT named_struct(\n"
@@ -1930,7 +1943,9 @@ def compile_trace_lineage_udf(meta_catalog: str, meta_schema: str, compute_type:
         f"      'catalog', source_catalog,\n"
         f"      'schema', source_schema\n"
         f"    ) AS node\n"
-        f"    FROM lineage\n"
+        f"    FROM (\n"
+        f"{union_sql}\n"
+        f"    )\n"
         f"    ORDER BY depth\n"
         f"  )\n"
         f");\n"
