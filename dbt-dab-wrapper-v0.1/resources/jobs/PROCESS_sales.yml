@@ -1,0 +1,136 @@
+resources:
+  jobs:
+    PROCESS_sales:
+      name: PROCESS_sales (dev)
+      tasks:
+      - task_key: ingest_file_manifest
+        timeout_seconds: 3600
+        environment_key: default
+        dbt_task:
+          project_directory: ../../dbt
+          commands:
+          - dbt run --select file_manifest
+          warehouse_id: 724607f766691c81
+      - task_key: ingest_landing
+        timeout_seconds: 3600
+        environment_key: default
+        dbt_task:
+          project_directory: ../../dbt
+          commands:
+          - dbt run --select landing
+          warehouse_id: 724607f766691c81
+      - task_key: ingest_raw_customers
+        timeout_seconds: 3600
+        environment_key: default
+        dbt_task:
+          project_directory: ../../dbt
+          commands:
+          - dbt run --select raw_customers
+          warehouse_id: 724607f766691c81
+      - task_key: ingest_raw_orders
+        timeout_seconds: 3600
+        environment_key: default
+        dbt_task:
+          project_directory: ../../dbt
+          commands:
+          - dbt run --select raw_orders
+          warehouse_id: 724607f766691c81
+      - task_key: stage_customer_orders
+        timeout_seconds: 3600
+        environment_key: default
+        dbt_task:
+          project_directory: ../../dbt
+          commands:
+          - dbt run --select customer_orders
+          warehouse_id: 724607f766691c81
+        depends_on:
+        - task_key: clean_customer_clean
+        - task_key: stage_stg_orders
+      - task_key: stage_customer_summary
+        timeout_seconds: 3600
+        environment_key: default
+        dbt_task:
+          project_directory: ../../dbt
+          commands:
+          - dbt run --select customer_summary
+          warehouse_id: 724607f766691c81
+        depends_on:
+        - task_key: stage_customer_orders
+      - task_key: stage_stg_customers
+        timeout_seconds: 3600
+        environment_key: default
+        dbt_task:
+          project_directory: ../../dbt
+          commands:
+          - dbt run --select stg_customers
+          warehouse_id: 724607f766691c81
+        depends_on:
+        - task_key: ingest_raw_customers
+      - task_key: stage_stg_orders
+        timeout_seconds: 3600
+        environment_key: default
+        dbt_task:
+          project_directory: ../../dbt
+          commands:
+          - dbt run --select stg_orders
+          warehouse_id: 724607f766691c81
+        depends_on:
+        - task_key: ingest_raw_orders
+      - task_key: clean_customer_clean
+        timeout_seconds: 3600
+        environment_key: default
+        dbt_task:
+          project_directory: ../../dbt
+          commands:
+          - dbt run --select customer_clean
+          warehouse_id: 724607f766691c81
+        depends_on:
+        - task_key: stage_stg_customers
+      - task_key: enrich_data_is_fresh
+        timeout_seconds: 3600
+        environment_key: default
+        dbt_task:
+          project_directory: ../../dbt
+          commands:
+          - dbt run --select data_is_fresh
+          warehouse_id: 724607f766691c81
+        depends_on:
+        - task_key: stage_customer_summary
+      - task_key: enrich_has_customers
+        timeout_seconds: 3600
+        environment_key: default
+        dbt_task:
+          project_directory: ../../dbt
+          commands:
+          - dbt run --select has_customers
+          warehouse_id: 724607f766691c81
+        depends_on:
+        - task_key: stage_customer_summary
+      - task_key: enrich_revenue_non_negative
+        timeout_seconds: 3600
+        environment_key: default
+        dbt_task:
+          project_directory: ../../dbt
+          commands:
+          - dbt run --select revenue_non_negative
+          warehouse_id: 724607f766691c81
+        depends_on:
+        - task_key: stage_customer_summary
+      - task_key: ingest_py_ingest_from_volume
+        timeout_seconds: 3600
+        spark_python_task:
+          python_file: ../../python/ingest_from_volume.py
+        environment_key: default
+        dbt_task:
+          project_directory: ../../dbt
+          commands:
+          - 'dbt run --select '
+          warehouse_id: 724607f766691c81
+        depends_on:
+        - task_key: ingest_raw_orders
+      environments:
+      - environment_key: default
+        spec:
+          environment_version: '2'
+          dependencies:
+          - dbt-core

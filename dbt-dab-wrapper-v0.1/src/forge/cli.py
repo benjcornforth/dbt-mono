@@ -261,19 +261,24 @@ def deploy(
         if required_catalogs:
             typer.echo("🔍 Checking catalogs...")
             try:
+                # Use Databricks CLI to list catalogs (respects databrickscfg profile)
+                db_profile = prof.get("databricks_profile", "DEFAULT")
                 result = subprocess.run(
-                    ["dbt", "run-operation", "run_query", "--args",
-                     yaml.dump({"sql": "SHOW CATALOGS"}),
-                     "--project-dir", "."] + dbt_vars_flag,
-                    check=True, capture_output=True, text=True, env=dbt_env,
+                    ["databricks", "unity-catalog", "catalogs", "list",
+                     "--profile", db_profile],
+                    check=True, capture_output=True, text=True,
                 )
-                # Parse catalog names from dbt run-operation output
+                import json
+                catalogs_data = json.loads(result.stdout)
                 existing_catalogs = set()
-                for line in result.stdout.splitlines():
-                    stripped = line.strip().strip("|").strip()
-                    if stripped and stripped.lower() not in ("catalog", "catalog_name", ""):
-                        # dbt run-operation prints table rows
-                        existing_catalogs.add(stripped.lower())
+                # Handle both list and dict-with-catalogs formats
+                items = catalogs_data if isinstance(catalogs_data, list) else catalogs_data.get("catalogs", [])
+                for cat in items:
+                    if isinstance(cat, dict) and "name" in cat:
+                        existing_catalogs.add(cat["name"].lower())
+                    elif isinstance(cat, str):
+                        existing_catalogs.add(cat.lower())
+
                 missing = sorted(c for c in required_catalogs if c.lower() not in existing_catalogs)
                 if missing:
                     typer.echo(f"  ❌ Missing catalog(s): {', '.join(missing)}")
@@ -283,10 +288,41 @@ def deploy(
                     typer.echo("     Or update forge.yml scope/catalog_pattern to match existing catalogs.")
                     raise typer.Exit(1)
                 typer.echo(f"  ✅ All catalogs verified: {', '.join(sorted(required_catalogs))}")
-            except subprocess.CalledProcessError:
-                typer.echo("  ⚠️  Could not verify catalogs (SHOW CATALOGS failed). Continuing...")
-            except FileNotFoundError:
-                pass  # dbt not installed — skip check
+            except subprocess.CalledProcessError as e:
+                typer.echo(f"  ⚠️  Could not verify catalogs (databricks CLI error). Continuing...")
+            except (FileNotFoundError, json.JSONDecodeError):
+                typer.echo("  ⚠️  Could not verify catalogs (databricks CLI not found). Continuing...")
+
+    # Deploy Volumes first (before UDFs or models — volumes must exist for ingestion)
+    volumes_dir = Path("dbt/volumes")
+    if volumes_dir.is_dir():
+        vol_files = sorted(volumes_dir.glob("*.sql"))
+        if vol_files:
+            typer.echo("📦 Deploying Volumes...")
+            for vol_file in vol_files:
+                vol_sql = vol_file.read_text()
+                # Replace catalog/schema placeholders with resolved values
+                for var_name, var_val in schema_vars.items():
+                    vol_sql = vol_sql.replace(f"{{{{ var(\"{var_name}\") }}}}", var_val)
+                try:
+                    subprocess.run(
+                        ["dbt", "run-operation", "deploy_udfs",
+                         "--args", yaml.dump({"udfs_sql": vol_sql}),
+                         "--project-dir", "."] + dbt_vars_flag,
+                        check=True, capture_output=True, text=True, env=dbt_env,
+                    )
+                    typer.echo(f"  ✅ Volume: {vol_file.stem}")
+                except subprocess.CalledProcessError as e:
+                    output = (e.stdout or "") + (e.stderr or "")
+                    # Check if it's just "already exists" — that's fine
+                    if "already exists" in output.lower():
+                        typer.echo(f"  ✅ Volume: {vol_file.stem} (exists)")
+                    else:
+                        typer.echo(f"  ⚠️  Volume {vol_file.stem} failed:")
+                        for line in output.strip().splitlines()[-5:]:
+                            typer.echo(f"     {line}")
+                except FileNotFoundError:
+                    typer.echo(f"  ⚠️  Skipped {vol_file.stem} (dbt not found)")
 
     # Deploy UDFs first (functions must exist before models reference them)
     functions_dir = Path("dbt/functions")

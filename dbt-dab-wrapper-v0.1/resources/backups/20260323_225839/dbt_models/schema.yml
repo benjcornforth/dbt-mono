@@ -1,0 +1,193 @@
+version: 2
+models:
+- name: file_manifest
+  description: Tracks files ingested from Volumes
+  columns:
+  - name: file_path
+    description: Full Volume path to the ingested file
+    data_type: string
+    data_tests:
+    - not_null
+  - name: file_name
+    description: File name only
+    data_type: string
+    data_tests:
+    - not_null
+  - name: model_name
+    description: Target model the file was loaded into
+    data_type: string
+    data_tests:
+    - not_null
+  - name: domain
+    description: Domain this file belongs to
+    data_type: string
+  - name: file_format
+    description: File format (csv, json, parquet)
+    data_type: string
+  - name: row_count
+    description: Number of rows ingested
+    data_type: int
+  - name: file_size_bytes
+    description: File size in bytes
+    data_type: int
+  - name: checksum
+    description: MD5 checksum for dedup
+    data_type: string
+  - name: ingested_at
+    description: When the file was ingested
+    data_type: timestamp
+    data_tests:
+    - not_null
+  - name: status
+    description: 'Ingestion status: SUCCESS, FAILED, SKIPPED'
+    data_type: string
+- name: raw_customers
+  description: Raw customer data ingested from Volume
+  columns:
+  - name: customer_id
+    description: Unique customer identifier
+    data_type: int
+  - name: first_name
+    data_type: string
+  - name: last_name
+    data_type: string
+  - name: email
+    data_type: string
+  - name: signup_date
+    data_type: date
+  - name: country
+    data_type: string
+  - name: revenue
+    data_type: decimal(10,2)
+- name: raw_orders
+  description: Raw order data ingested from Volume
+  columns:
+  - name: order_id
+    description: Unique order identifier
+    data_type: int
+  - name: customer_id
+    description: FK to raw_customers
+    data_type: int
+  - name: product
+    data_type: string
+  - name: quantity
+    data_type: int
+  - name: unit_price
+    data_type: decimal(10,2)
+  - name: order_date
+    data_type: date
+- name: stg_customers
+  description: Staged customers with typed columns and lineage provenance
+  columns:
+  - name: customer_id
+    description: Unique customer identifier
+    data_type: int
+    data_tests:
+    - not_null
+    - unique
+  - name: first_name
+    data_type: string
+  - name: last_name
+    data_type: string
+  - name: email
+    description: Customer email (may be null in raw data)
+    data_type: string
+  - name: signup_date
+    data_type: date
+  - name: country
+    data_type: string
+  - name: revenue
+    data_type: decimal(10,2)
+- name: stg_orders
+  description: Staged orders with computed line_total and lineage provenance
+  columns:
+  - name: order_id
+    description: Unique order identifier
+    data_type: int
+    data_tests:
+    - not_null
+    - unique
+  - name: customer_id
+    description: FK to customers
+    data_type: int
+    data_tests:
+    - not_null
+  - name: product
+    data_type: string
+  - name: quantity
+    data_type: int
+  - name: unit_price
+    data_type: decimal(10,2)
+  - name: line_total
+  - name: order_date
+    data_type: date
+- name: customer_clean
+  description: Clean customers - null emails and negative revenue quarantined
+  columns:
+  - name: customer_id
+    data_type: int
+    data_tests:
+    - not_null
+    - unique
+  - name: first_name
+    data_type: string
+  - name: last_name
+    data_type: string
+  - name: email
+    description: Validated email (nulls quarantined)
+    data_type: string
+    data_tests:
+    - not_null
+  - name: signup_date
+    data_type: date
+  - name: country
+    data_type: string
+  - name: revenue
+    description: Non-negative revenue (negatives quarantined)
+    data_type: decimal(10,2)
+- name: customer_orders
+  description: Joined clean customers with their orders
+  columns:
+  - name: customer_id
+  - name: first_name
+  - name: last_name
+  - name: email
+  - name: country
+  - name: order_id
+    data_tests:
+    - not_null
+    - unique
+  - name: product
+  - name: quantity
+  - name: unit_price
+  - name: line_total
+  - name: order_date
+- name: customer_summary
+  description: Aggregated customer metrics - gold layer
+  columns:
+  - name: customer_id
+    data_type: int
+    data_tests:
+    - not_null
+    - unique
+  - name: first_name
+    data_type: string
+  - name: last_name
+    data_type: string
+  - name: email
+    data_type: string
+  - name: country
+    data_type: string
+  - name: total_orders
+    description: Count of orders per customer
+    data_type: int
+  - name: total_revenue
+    description: Sum of all order line totals
+    data_type: decimal(10,2)
+  - name: first_order_date
+    data_type: date
+  - name: last_order_date
+    data_type: date
+  - name: tier
+    description: GOLD/SILVER/BRONZE loyalty tier
+    data_type: string

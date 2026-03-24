@@ -623,23 +623,31 @@ def load_python_tasks(forge_config: dict) -> list[dict]:
 
     forge.yml:
         python_tasks:
-          - name: enrich_customers
-            file: python/enrich_customers.py
-            stage: enrich
-          - name: export_report
-            file: python/export_report.py
-            stage: serve
-            depends_on: [customer_summary]
+          ingest_from_volume:
+            stage: ingest
+            description: "Reads files from landing Volume → raw tables"
+            template: ingest
 
     Returns list of task dicts with keys: name, file, stage, depends_on.
     """
-    tasks = forge_config.get("python_tasks", [])
+    tasks = forge_config.get("python_tasks", {})
     result = []
-    for task in tasks:
-        result.append({
-            "name": task["name"],
-            "file": task.get("file", f"python/{task['name']}.py"),
-            "stage": task.get("stage", "enrich"),
-            "depends_on": task.get("depends_on", []),
-        })
+    if isinstance(tasks, list):
+        # Old format: list of dicts
+        for task in tasks:
+            result.append({
+                "name": task["name"],
+                "file": task.get("file", f"python/{task['name']}.py"),
+                "stage": task.get("stage", "enrich"),
+                "depends_on": task.get("depends_on", []),
+            })
+    elif isinstance(tasks, dict):
+        # New format: dict of task_name -> config
+        for name, config in tasks.items():
+            result.append({
+                "name": name,
+                "file": config.get("file", f"python/{name}.py"),
+                "stage": config.get("stage", "enrich"),
+                "depends_on": config.get("depends_on", []),
+            })
     return result

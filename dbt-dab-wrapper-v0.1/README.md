@@ -6,6 +6,25 @@ You edit two files. Forge generates everything else: SQL models, schema tests, D
 
 ---
 
+## Quick Start
+
+```bash
+# 1. Clone and setup
+git clone <repo>
+cd dbt-forge
+./setup.sh
+
+# 2. Configure Databricks
+databricks auth login
+
+# 3. Define your tables in dbt/models.yml
+# 4. Deploy
+python -m src.forge.cli workflow
+databricks bundle deploy --target dev
+```
+
+---
+
 ## What This Is
 
 A CLI that sits on top of **dbt** and **Databricks Asset Bundles (DAB)**. It turns a declarative YAML definition of your tables into a fully deployed, tested, lineage-tracked data pipeline.
@@ -14,28 +33,66 @@ A CLI that sits on top of **dbt** and **Databricks Asset Bundles (DAB)**. It tur
 
 ---
 
+## Installation
+
+### Automated Setup (Recommended)
+
+```bash
+./setup.sh
+```
+
+This installs:
+- Python dependencies via Poetry
+- Databricks CLI (new version with bundle support)
+- Verifies all installations
+
+### Manual Setup
+
+```bash
+# Install Python dependencies
+poetry install
+
+# Install Databricks CLI
+curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+
+# Verify
+poetry run python --version
+databricks --version
+```
+
+---
+
 ## What You Do
 
 ```bash
-# 1. Install
-poetry install
+# 1. Authenticate with Databricks
+databricks auth login
 
-# 2. Scaffold
-forge setup
-
-# 3. Connect to Databricks (pick one)
-databricks configure --profile DEFAULT   # recommended
-# OR: export DBT_DATABRICKS_HOST=... DBT_DATABRICKS_TOKEN=...
-
-# 4. Define your tables in dbt/models.yml
+# 2. Define your tables in dbt/models.yml
 #    (columns, types, sources, checks, UDFs — all in one place)
 
-# 5. Deploy
-forge compile   # generates SQL + tests
-forge deploy    # builds graph + DAB + runs dbt
+# 3. Generate workflows
+python -m src.forge.cli workflow
+
+# 4. Deploy bundle
+databricks bundle deploy --target dev
 ```
 
-That's the core loop. Edit `dbt/models.yml` → `forge compile` → `forge deploy`.
+That's the core loop. Edit `dbt/models.yml` → `python -m src.forge.cli workflow` → `databricks bundle deploy`.
+
+### Atomic Commands
+
+```bash
+# Rebuild and redeploy everything
+cd /path/to/dbt-forge
+python -m src.forge.cli workflow && databricks bundle deploy --target dev
+
+# Validate before deploy
+databricks bundle validate
+
+# Destroy deployment
+databricks bundle destroy --target dev
+```
 
 ### Multi-environment profiles
 

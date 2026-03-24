@@ -1,6 +1,13 @@
 bundle:
-  name: dbt-forge_demo
-workspace:
-  profile: dev
+  name: sales_data_sales
 include:
-- resources/jobs/PROCESS_demo.yml
+- resources/jobs/PROCESS_sales.yml
+- ../dbt-dab-tools/**
+targets:
+  dev:
+    workspace:
+      profile: dev
+    default: true
+  prod:
+    workspace:
+      profile: PROD

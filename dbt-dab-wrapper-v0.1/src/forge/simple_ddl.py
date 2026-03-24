@@ -273,6 +273,38 @@ def _resolve_base_schema(forge_config: dict, layer: str) -> str:
     return result.strip("_")
 
 
+def _resolve_catalog(forge_config: dict, layer: str) -> str:
+    """Resolve the concrete catalog name for a layer (e.g. 'dev_fd_bronze').
+
+    Applies catalog_pattern from forge.yml to generate fully-qualified catalog names.
+    """
+    profile_name = forge_config.get("active_profile", "dev")
+    profiles = forge_config.get("profiles", {})
+    profile = profiles.get(profile_name, {})
+
+    # If profile has explicit catalogs dict, use it
+    if isinstance(profile.get("catalogs"), dict):
+        return profile["catalogs"].get(layer, layer)
+
+    # Otherwise expand via pattern
+    catalog_pattern = forge_config.get("catalog_pattern", "{env}_{scope}_{catalog}")
+    env = profile.get("env", "dev")
+    project_id = forge_config.get("id", forge_config.get("name", "project")).replace("-", "_")
+    scope = forge_config.get("scope", "").replace("-", "_")
+    raw_user = getpass.getuser()
+    user = re.sub(r"[^a-z0-9]+", "_", raw_user.lower()).strip("_")
+
+    result = catalog_pattern
+    result = result.replace("{env}", env)
+    result = result.replace("{id}", project_id)
+    result = result.replace("{scope}", scope)
+    result = result.replace("{user}", user)
+    result = result.replace("{catalog}", layer)
+    while "__" in result:
+        result = result.replace("__", "_")
+    return result.strip("_")
+
+
 def _compile_managed_table(
     model_name: str,
     model_def: dict,
@@ -874,35 +906,29 @@ def compile_volumes(
     Supports domain-aware volumes: when ``domain: true`` (or inherited
     from domain_layers), a separate CREATE VOLUME is emitted per domain.
 
-    Output goes to ``{output_dir}/_volumes/``.
+    Output goes directly to ``output_dir``.
     """
     volumes = load_volumes(ddl_path, forge_config=forge_config)
     if not volumes:
         return {}
 
-    out_dir = output_dir / "_volumes"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     domains = (forge_config or {}).get("domains", {})
     domain_layers = set((forge_config or {}).get("domain_layers", []))
 
-    # Resolve default catalog/schema from forge_config
-    profile_name = (forge_config or {}).get("active_profile", "dev")
-    profiles = (forge_config or {}).get("profiles", {})
-    prof = profiles.get(profile_name, {})
-    default_catalog = prof.get("catalog", (forge_config or {}).get("catalog", "main"))
-    default_schema = prof.get("schema", (forge_config or {}).get("schema", "default"))
-
     results: dict[str, Path] = {}
 
     for vol_name, vol_def in volumes.items():
-        vol_catalog = vol_def.get("catalog", default_catalog)
         vol_layer = vol_def.get("layer", "bronze")
         vol_domain_enabled = vol_def.get("domain", True) is not False
         is_bifurcated = domains and vol_layer in domain_layers and vol_domain_enabled
 
+        # Resolve catalog and schema using patterns from forge_config
+        resolved_catalog = _resolve_catalog(forge_config, vol_layer) if forge_config else vol_layer
+        base_schema = _resolve_base_schema(forge_config, vol_layer) if forge_config else "default"
+
         if is_bifurcated:
-            base_schema = _resolve_base_schema(forge_config, vol_layer) if forge_config else default_schema
             for domain_name, domain_cfg in domains.items():
                 suffix = domain_cfg.get("schema_suffix", f"_{domain_name}")
                 instance_name = f"{vol_name}_{domain_name}"
@@ -916,13 +942,13 @@ def compile_volumes(
                 elif vol_def.get("location"):
                     d_def["location"] = vol_def["location"].rstrip("/") + f"/{domain_name}/"
 
-                sql = compile_volume_sql(instance_name, d_def, vol_catalog, d_schema)
-                out_path = out_dir / f"{instance_name}.sql"
+                sql = compile_volume_sql(instance_name, d_def, resolved_catalog, d_schema)
+                out_path = output_dir / f"{instance_name}.sql"
                 out_path.write_text(sql)
                 results[instance_name] = out_path
         else:
-            sql = compile_volume_sql(vol_name, vol_def, vol_catalog, default_schema)
-            out_path = out_dir / f"{vol_name}.sql"
+            sql = compile_volume_sql(vol_name, vol_def, resolved_catalog, base_schema)
+            out_path = output_dir / f"{vol_name}.sql"
             out_path.write_text(sql)
             results[vol_name] = out_path
 
@@ -1077,8 +1103,10 @@ def compile_all(
         sources_path.write_text(sources_yml)
         results["_sources"] = sources_path
 
-    # Generate Volume DDL → _volumes/ (CREATE VOLUME SQL)
-    volume_results = compile_volumes(ddl_path, output_dir, forge_config=forge_config)
+    # Generate Volume DDL → dbt/volumes/ (CREATE VOLUME SQL, deployed separately)
+    # Volumes go to a separate directory, NOT inside models/, to avoid dbt treating them as models
+    volumes_output_dir = output_dir.parent / "volumes"
+    volume_results = compile_volumes(ddl_path, volumes_output_dir, forge_config=forge_config)
     for vol_name, vol_path in volume_results.items():
         results[f"_volume_{vol_name}"] = vol_path
 

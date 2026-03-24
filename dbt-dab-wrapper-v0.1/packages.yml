@@ -1,10 +1,10 @@
 # =============================================
 # packages.yml — dbt package dependencies
 # =============================================
-# Local path for development. Switch to git for production:
-#
-#   - git: https://github.com/yourorg/dbt-dab-tools
-#     version: [">=0.2.0", "<1.0.0"]
+# For DAB deployment, we need actual files, not symlinks.
+# Since we're including ../dbt-dab-tools/** in databricks.yml,
+# dbt will find the package files in the deployed bundle.
 
 packages:
-  - local: ../dbt-dab-tools
+  # DAB deployment includes the files directly - no package reference needed
+  # The ../dbt-dab-tools/** include in databricks.yml handles this

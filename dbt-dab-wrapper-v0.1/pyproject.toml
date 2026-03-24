@@ -36,8 +36,14 @@ python = "^3.10"          # works on Databricks 13.3+ and local
 typer = ">=0.15.0"        # clean CLI (setup/deploy/teardown/diff)
 click = ">=8.1.7"          # kept for compatibility (Typer uses it underneath)
 pyyaml = "^6.0.2"         # reads the single forge.yml file
-databricks-sdk = "^0.30"  # auto-generates perfect databricks.yml bundles
+databricks-sdk = "^0.40"  # upgraded SDK for programmatic job management
 pydantic = ">=2.0"        # type-safe models for forge codegen + ingestion validation
+
+# =============================================
+# CLI Tools (installed separately)
+# =============================================
+# databricks-cli: Install via official installer
+# curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
 
 # =============================================
 # Dev dependencies – for testing & graph diffs

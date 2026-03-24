@@ -45,6 +45,9 @@ from typing import Any
 import yaml
 
 
+from forge.compute_resolver import read_databrickscfg
+
+
 # =============================================
 # STAGE DEFINITIONS
 # =============================================
@@ -154,6 +157,7 @@ class Workflow:
     catalog: str = "main"
     schema: str = "default"
     compute_type: str = "serverless"
+    warehouse_id: str | None = None
 
     def to_dict(self) -> dict:
         """Serialise to a plain dict."""
@@ -206,6 +210,24 @@ class Workflow:
                 "timezone_id": "UTC",
             }
 
+        # Add environments for serverless compute
+        if any(task.compute_type == "serverless" for task in self.tasks):
+            job["resources"]["jobs"][self.name]["environments"] = [
+                {
+                    "environment_key": "default",
+                    "spec": {
+                        "environment_version": "2",
+                        "dependencies": [
+                            {
+                                "pypi": {
+                                    "package": "dbt-core"
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+
         for task in self.tasks:
             task_def: dict[str, Any] = {
                 "task_key": task.name,
@@ -214,35 +236,63 @@ class Workflow:
 
             if task.task_type == "python" and task.python_file:
                 # spark_python_task — runs a .py file on the cluster
+                # Adjust path to be relative to resources/jobs/ directory
+                python_file_path = task.python_file
+                if not python_file_path.startswith("/"):
+                    # Make relative to resources/jobs/ (which is ../../../ from project root)
+                    python_file_path = "../../" + python_file_path
                 task_def["spark_python_task"] = {
-                    "python_file": task.python_file,
+                    "python_file": python_file_path,
                     **(task.additional_config or {}),
                 }
-            elif task.task_type == "sql" and task.sql_file:
+                if task.compute_type == "serverless":
+                    task_def["environment_key"] = "default"
+            if task.task_type == "sql" and task.sql_file:
                 # sql_task — runs a .sql file on a SQL warehouse
+                sql_file_path = task.sql_file
+                if not sql_file_path.startswith("/"):
+                    sql_file_path = "../../" + sql_file_path
                 task_def["sql_task"] = {
-                    "file": {"path": task.sql_file},
+                    "file": {"path": sql_file_path},
                     **(task.additional_config or {}),
                 }
+                if task.compute_type == "serverless":
+                    task_def["environment_key"] = "default"
             elif task.task_type == "notebook" and task.notebook_path:
                 # notebook_task — runs a Databricks notebook
+                notebook_path = task.notebook_path
+                if not notebook_path.startswith("/"):
+                    notebook_path = "../../" + notebook_path
                 task_def["notebook_task"] = {
-                    "notebook_path": task.notebook_path,
+                    "notebook_path": notebook_path,
                     **(task.additional_config or {}),
                 }
+                if task.compute_type == "serverless":
+                    task_def["environment_key"] = "default"
             else:
                 # dbt_task — runs dbt commands
-                task_def["dbt_task"] = {
-                    "project_directory": "dbt",
+                dbt_config = {
+                    "project_directory": "./dbt-dab-tools",
                     "commands": [
                         f"dbt run --select {' '.join(task.models)}"
                     ],
-                    "catalog": self.catalog,
-                    "schema": self.schema,
                 }
+                # For serverless, use environment_key instead of warehouse_id
+                if task.compute_type == "serverless":
+                    task_def["environment_key"] = "default"
+                    # Add warehouse_id for dbt tasks in serverless environment
+                    if self.warehouse_id:
+                        dbt_config["warehouse_id"] = self.warehouse_id
+                else:
+                    dbt_config.update({
+                        "catalog": self.catalog,
+                        "schema": self.schema,
+                    })
+                task_def["dbt_task"] = dbt_config
 
             if task.compute_type == "serverless":
-                task_def["environment_key"] = "default"
+                # For serverless tasks, use environment_key (already set above)
+                pass
             else:
                 task_def["job_cluster_key"] = "dedicated"
 
@@ -328,11 +378,27 @@ def generate_bundle_config(forge_config: dict, job_yaml_paths: list[str] | None 
         "bundle": {
             "name": f"{project_name}_{project_id}",
         },
-        "workspace": {
-            "profile": databricks_profile,
-        },
         "include": job_yaml_paths or ["resources/jobs/*.yml"],
     }
+
+    # Add targets from forge.yml profiles
+    targets = {}
+    for prof_name, prof_config in profiles.items():
+        if prof_config.get("platform") == "databricks":
+            databricks_prof = prof_config.get("databricks_profile", prof_name)
+            
+            # Add target
+            target_config = {
+                "workspace": {
+                    "profile": databricks_prof,
+                }
+            }
+            if prof_name == profile:  # active profile
+                target_config["default"] = True
+            targets[prof_name] = target_config
+    
+    if targets:
+        bundle["targets"] = targets
 
     return yaml.dump(bundle, sort_keys=False, default_flow_style=False)
 
@@ -341,11 +407,50 @@ def run_bundle_command(command: str, target: str | None = None) -> dict:
     """
     Run `databricks bundle <command>` (deploy, destroy, validate).
 
+    Automatically detects and uses the correct Databricks CLI version.
     Returns {"success": bool, "output": str, "error": str | None}.
     """
     import subprocess
+    import os
 
-    cmd = ["databricks", "bundle", command]
+    # Detect which CLI to use
+    cli_candidates = [
+        os.path.expanduser("~/.local/bin/databricks"),  # New CLI installed by setup script
+        os.path.expanduser("~/.local/bin/databricks-new"),  # Alternative location
+        "/usr/local/bin/databricks",  # System installation
+        "databricks",  # In PATH
+    ]
+
+    cli_path = None
+    for candidate in cli_candidates:
+        if os.path.exists(candidate) or (candidate == "databricks" and _check_command_exists("databricks")):
+            # Test if this CLI supports bundle commands
+            try:
+                result = subprocess.run(
+                    [candidate, "bundle", "--help"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if result.returncode == 0:
+                    cli_path = candidate
+                    break
+            except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.CalledProcessError):
+                continue
+
+    if not cli_path:
+        return {
+            "success": False,
+            "output": "",
+            "error": (
+                "Databricks CLI with bundle support not found. Install with:\n"
+                "./setup.sh\n"
+                "or manually:\n"
+                "curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh"
+            ),
+        }
+
+    cmd = [cli_path, "bundle", command]
     if target:
         cmd += ["--target", target]
 
@@ -355,25 +460,21 @@ def run_bundle_command(command: str, target: str | None = None) -> dict:
             check=True,
             capture_output=True,
             text=True,
+            cwd=os.getcwd(),  # Run from project root
         )
         return {"success": True, "output": result.stdout, "error": None}
-    except FileNotFoundError:
-        return {
-            "success": False,
-            "output": "",
-            "error": (
-                "Databricks CLI not found or too old. Install v0.200+:\n"
-                "  brew install databricks/tap/databricks\n"
-                "Or: curl -fsSL https://raw.githubusercontent.com/"
-                "databricks/setup-cli/main/install.sh | sh"
-            ),
-        }
     except subprocess.CalledProcessError as e:
         return {
             "success": False,
             "output": e.stdout or "",
             "error": (e.stderr or "").strip(),
         }
+
+
+def _check_command_exists(command: str) -> bool:
+    """Check if a command exists in PATH."""
+    import shutil
+    return shutil.which(command) is not None
 
 
 # =============================================
@@ -517,6 +618,22 @@ def build_workflow(
     catalog = forge_config.get("catalog", "main")
     schema = forge_config.get("schema", "default")
     compute_type = forge_config.get("compute", {}).get("type", "serverless")
+    
+    # Get warehouse_id for serverless compute
+    warehouse_id = None
+    if compute_type == "serverless":
+        try:
+            # Get the active profile or default
+            active_profile = forge_config.get("active_profile", "dev")
+            profile_config = forge_config.get("profiles", {}).get(active_profile, {})
+            databricks_profile = profile_config.get("databricks_profile", "DEFAULT")
+            config = read_databrickscfg(databricks_profile)
+            http_path = config.get("http_path")
+            if http_path and "/warehouses/" in http_path:
+                warehouse_id = http_path.split("/warehouses/")[-1]
+        except Exception:
+            # If we can't read config, continue without warehouse_id
+            pass
     schedule = forge_config.get("schedule", None)
     per_model = forge_config.get("per_model_tasks", True)
 
@@ -708,6 +825,7 @@ def build_workflow(
         catalog=catalog,
         schema=schema,
         compute_type=compute_type,
+        warehouse_id=warehouse_id,
     )
 
 
