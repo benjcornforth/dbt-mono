@@ -54,9 +54,9 @@ def _inject_asset_metadata(defn: dict, **metadata: str) -> dict:
 
 def _load_raw_ddl_legacy(ddl_path: Path, forge_config: dict | None = None) -> dict:
     """Load DDL from the legacy canonical dbt/ddl tree."""
-    merged: dict[str, Any] = {"models": {}, "udfs": {}, "seeds": {}, "volumes": {}}
+    merged: dict[str, Any] = {"models": {}, "udfs": {}, "seeds": {}, "volumes": {}, "sources": {}}
     allowed_layers = set(forge_config.get("schemas", [])) | set(forge_config.get("catalogs", [])) if forge_config else set()
-    allowed_sections = {"models", "udfs", "seeds", "volumes"}
+    allowed_sections = {"models", "udfs", "seeds", "volumes", "sources"}
 
     root_ymls = sorted(ddl_path.glob("*.yml"))
     if root_ymls:
@@ -120,8 +120,8 @@ def _load_raw_ddl_legacy(ddl_path: Path, forge_config: dict | None = None) -> di
 
 def _load_raw_ddl_v1(ddl_path: Path) -> dict:
     """Load DDL from the v1 domain/shared canonical tree."""
-    merged: dict[str, Any] = {"models": {}, "udfs": {}, "seeds": {}, "volumes": {}}
-    allowed_sections = {"models", "udfs", "seeds", "volumes"}
+    merged: dict[str, Any] = {"models": {}, "udfs": {}, "seeds": {}, "volumes": {}, "sources": {}}
+    allowed_sections = {"models", "udfs", "seeds", "volumes", "sources"}
     allowed_classes = {"domain", "shared"}
     allowed_domain_layers = {"bronze", "silver", "gold"}
     allowed_shared_layers = {"meta", "operations"}
@@ -342,6 +342,11 @@ def _seed_inline_rows(seed_name: str, seed_def: dict) -> list[dict[str, Any]] | 
 def load_volumes(ddl_path: Path, forge_config: dict | None = None) -> dict[str, dict]:
     """Load volume definitions from a file or directory."""
     return load_raw_ddl(ddl_path, forge_config=forge_config).get("volumes", {})
+
+
+def load_sources(ddl_path: Path, forge_config: dict | None = None) -> dict[str, dict]:
+    """Load external source definitions from a file or directory."""
+    return load_raw_ddl(ddl_path, forge_config=forge_config).get("sources", {})
 
 
 def _resolve_authored_location(
@@ -1196,68 +1201,122 @@ def compile_udfs_to_dir(ddl_path: Path, output_dir: Path, forge_config: dict | N
 
 
 def compile_sources_yml(ddl_path: Path, source_name: str = "seed", forge_config: dict | None = None) -> str | None:
-    """Generate dbt sources YAML from seed definitions in DDL.
+    """Generate dbt sources YAML from seed and external source definitions.
 
     Seeds are declared as a dbt source so models can reference them
-    via ``{{ source('seed', 'raw_customers') }}``.  The source
-    schema defaults to ``{{ target.schema }}`` so it matches wherever
-    ``dbt seed`` loads the CSV data.
+    via ``{{ source('seed', 'ingestion_config') }}``.
 
-    Seeds with ``catalog:`` or ``schema:`` overrides are placed in a
-    separate source group so dbt routes them to the correct location.
+    External sources defined in ``dbt/ddl/.../sources/`` are emitted
+    using their authored ``source_name`` so models can reference them
+    via ``{{ source('<source_name>', '<table>') }}``.  Forge never
+    creates or manages these tables — they exist outside the pipeline.
     """
     from forge.compute_resolver import resolve_profile
 
-    seeds = load_seeds(ddl_path, forge_config=forge_config)
-    if not seeds:
-        return None
     prof = resolve_profile(forge_config or {}) if forge_config else {"catalog": "main", "schema": "silver"}
-
-    override_groups: dict[tuple[str, str], list[dict]] = {}
-
-    for seed_name, seed_def in seeds.items():
-        seed_def = seed_def or {}
-        table: dict[str, Any] = {"name": seed_name}
-        desc = seed_def.get("description")
-        if desc:
-            table["description"] = desc
-        cols = seed_def.get("columns", {})
-        if cols:
-            col_list = []
-            for col_name, col_def in cols.items():
-                if isinstance(col_def, str):
-                    col_def = {"type": col_def}
-                elif col_def is None:
-                    col_def = {}
-                col_entry: dict[str, str] = {"name": col_name}
-                col_desc = col_def.get("description")
-                if col_desc:
-                    col_entry["description"] = col_desc
-                col_list.append(col_entry)
-            table["columns"] = col_list
-
-        seed_catalog, seed_schema = _resolve_authored_location(
-            seed_name,
-            seed_def,
-            prof,
-            forge_config=forge_config,
-            asset_kind="seed",
-        )
-        override_groups.setdefault((seed_catalog, seed_schema), []).append(table)
 
     sources_list: list[dict] = []
 
-    # Each override group gets its own source entry
-    for index, ((cat, sch), tables) in enumerate(override_groups.items()):
-        group_name = source_name if len(override_groups) == 1 and index == 0 else f"{source_name}_{cat}_{sch}".replace("-", "_")
-        entry: dict[str, Any] = {
-            "name": group_name,
-            "description": f"Seed data in {cat}.{sch}",
-            "database": cat,
-            "schema": sch,
-            "tables": tables,
+    # ---- seed-backed sources ----
+    seeds = load_seeds(ddl_path, forge_config=forge_config)
+    if seeds:
+        override_groups: dict[tuple[str, str], list[dict]] = {}
+
+        for seed_name, seed_def in seeds.items():
+            seed_def = seed_def or {}
+            table: dict[str, Any] = {"name": seed_name}
+            desc = seed_def.get("description")
+            if desc:
+                table["description"] = desc
+            cols = seed_def.get("columns", {})
+            if cols:
+                col_list = []
+                for col_name, col_def in cols.items():
+                    if isinstance(col_def, str):
+                        col_def = {"type": col_def}
+                    elif col_def is None:
+                        col_def = {}
+                    col_entry: dict[str, str] = {"name": col_name}
+                    col_desc = col_def.get("description")
+                    if col_desc:
+                        col_entry["description"] = col_desc
+                    col_list.append(col_entry)
+                table["columns"] = col_list
+
+            seed_catalog, seed_schema = _resolve_authored_location(
+                seed_name,
+                seed_def,
+                prof,
+                forge_config=forge_config,
+                asset_kind="seed",
+            )
+            override_groups.setdefault((seed_catalog, seed_schema), []).append(table)
+
+        for index, ((cat, sch), tables) in enumerate(override_groups.items()):
+            group_name = source_name if len(override_groups) == 1 and index == 0 else f"{source_name}_{cat}_{sch}".replace("-", "_")
+            entry: dict[str, Any] = {
+                "name": group_name,
+                "description": f"Seed data in {cat}.{sch}",
+                "database": cat,
+                "schema": sch,
+                "tables": tables,
+            }
+            sources_list.append(entry)
+
+    # ---- DDL-authored external sources ----
+    ddl_sources = load_sources(ddl_path, forge_config=forge_config)
+    for src_name, src_def in ddl_sources.items():
+        src_def = src_def or {}
+        src_catalog, src_schema = _resolve_authored_location(
+            src_name,
+            src_def,
+            prof,
+            forge_config=forge_config,
+            asset_kind="source",
+        )
+
+        tables_list: list[dict] = []
+        for tbl_name, tbl_def in (src_def.get("tables") or {}).items():
+            tbl_def = tbl_def or {}
+            tbl_entry: dict[str, Any] = {"name": tbl_name}
+            tbl_desc = tbl_def.get("description")
+            if tbl_desc:
+                tbl_entry["description"] = tbl_desc
+            tbl_cols = tbl_def.get("columns", {})
+            if tbl_cols:
+                col_list = []
+                for col_name, col_def in tbl_cols.items():
+                    if isinstance(col_def, str):
+                        col_def = {"type": col_def}
+                    elif col_def is None:
+                        col_def = {}
+                    col_entry: dict[str, str] = {"name": col_name}
+                    col_desc = col_def.get("description")
+                    if col_desc:
+                        col_entry["description"] = col_desc
+                    col_list.append(col_entry)
+                tbl_entry["columns"] = col_list
+            tables_list.append(tbl_entry)
+
+        if not tables_list:
+            continue
+
+        src_entry: dict[str, Any] = {
+            "name": src_def.get("source_name", src_name),
+            "database": src_def.get("database") or src_catalog,
+            "schema": src_def.get("schema") or src_schema,
+            "tables": tables_list,
         }
-        sources_list.append(entry)
+        src_desc = src_def.get("description")
+        if src_desc:
+            src_entry["description"] = src_desc
+        freshness = src_def.get("freshness")
+        if freshness:
+            src_entry["freshness"] = freshness
+        loaded_at = src_def.get("loaded_at_field")
+        if loaded_at:
+            src_entry["loaded_at_field"] = loaded_at
+        sources_list.append(src_entry)
 
     if not sources_list:
         return None
