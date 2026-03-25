@@ -3464,19 +3464,25 @@ def compile_backup_sql(
             f"FROM {src_fq};"
         )
 
-        # Quarantine sibling
-        quarantine = model_def.get("quarantine")
-        if quarantine:
-            q_fq = f"`{m_cat}`.`{m_sch}`.`{model_name}_quarantine`"
-            lines.append(
-                f"INSERT INTO {archive_table} "
-                f"SELECT '{model_name}_quarantine' AS asset_name, "
-                f"'table' AS asset_type, "
-                f"{meta_cols}, "
-                f"COUNT(*) AS row_count, "
-                f"to_json(collect_list(to_json(struct(*)))) AS snapshot_data "
-                f"FROM {q_fq};"
-            )
+    lines.append("")
+
+    # Archive central quarantine tables
+    tq_fq = f"`{meta_cat}`.`{meta_sch}`.`transform_quarantine`"
+    iq_fq = f"`{meta_cat}`.`{meta_sch}`.`ingest_quarantine`"
+    lines.append(
+        f"INSERT INTO {archive_table} "
+        f"SELECT 'transform_quarantine' AS asset_name, 'table' AS asset_type, "
+        f"{meta_cols}, COUNT(*) AS row_count, "
+        f"to_json(collect_list(to_json(struct(*)))) AS snapshot_data "
+        f"FROM {tq_fq};"
+    )
+    lines.append(
+        f"INSERT INTO {archive_table} "
+        f"SELECT 'ingest_quarantine' AS asset_name, 'table' AS asset_type, "
+        f"{meta_cols}, COUNT(*) AS row_count, "
+        f"to_json(collect_list(to_json(struct(*)))) AS snapshot_data "
+        f"FROM {iq_fq};"
+    )
 
     lines.append("")
 

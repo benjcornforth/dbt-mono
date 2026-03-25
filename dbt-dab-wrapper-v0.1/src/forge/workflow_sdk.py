@@ -189,7 +189,7 @@ class WorkflowSDK:
             if task.task_type == "dbt":
                 dbt_task = DbtTask(
                     project_directory="${workspace.file_path}",
-                    commands=["dbt deps", f"dbt run --select {' '.join(task.models)}"],
+                    commands=[f"dbt run --select {' '.join(task.models)}"],
                 )
                 if task.warehouse_id:
                     dbt_task.warehouse_id = task.warehouse_id

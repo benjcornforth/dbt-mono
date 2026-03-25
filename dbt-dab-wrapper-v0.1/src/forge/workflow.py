@@ -62,6 +62,43 @@ SQL_TEARDOWN_DIR = Path("sql") / "teardown"
 def _sql_task_path(file_path: Path) -> str:
     return file_path.as_posix()
 
+
+def _sanitize_task_token(value: str) -> str:
+    token = re.sub(r"[^a-zA-Z0-9]+", "_", value.strip().lower()).strip("_")
+    return token or "unknown"
+
+
+def _extract_sql_target(file_path: Path) -> tuple[str | None, str | None, str | None]:
+    """Return the first catalog/schema/object referenced by setup SQL, if any."""
+    try:
+        content = file_path.read_text()
+    except Exception:
+        return None, None, None
+
+    object_match = re.search(r"`([^`]+)`\.`([^`]+)`\.`([^`]+)`", content)
+    if object_match:
+        return object_match.group(1), object_match.group(2), object_match.group(3)
+
+    schema_match = re.search(r"CREATE\s+SCHEMA\s+IF\s+NOT\s+EXISTS\s+`([^`]+)`\.`([^`]+)`", content, re.IGNORECASE)
+    if schema_match:
+        return schema_match.group(1), schema_match.group(2), None
+
+    return None, None, None
+
+
+def _setup_sql_task_name(kind: str, file_path: Path, asset_name: str | None = None) -> str:
+    catalog, schema, obj = _extract_sql_target(file_path)
+    parts = ["setup", _sanitize_task_token(kind)]
+    if catalog:
+        parts.append(_sanitize_task_token(catalog))
+    if schema:
+        parts.append(_sanitize_task_token(schema))
+    if asset_name:
+        parts.append(_sanitize_task_token(asset_name))
+    elif obj:
+        parts.append(_sanitize_task_token(obj))
+    return "_".join(parts)
+
 # Name-prefix conventions for auto-assignment
 _STAGE_PREFIXES: dict[str, str] = {
     "raw_": "ingest",
@@ -279,14 +316,13 @@ class Workflow:
             else:
                 # dbt_task — runs dbt on serverless, SQL goes to warehouse
                 commands = task.dbt_commands or [
-                    "dbt deps",
                     f"dbt run --select {' '.join(task.models)}"
                 ]
                 # Inject --vars for catalog/schema resolution
                 if self.dbt_vars:
                     vars_yaml = json.dumps(self.dbt_vars)
                     commands = [
-                        f"{cmd} --vars '{vars_yaml}'" if cmd.startswith("dbt ") and not cmd.startswith("dbt deps") else cmd
+                        f"{cmd} --vars '{vars_yaml}'" if cmd.startswith("dbt ") else cmd
                         for cmd in commands
                     ]
                 dbt_config = {
@@ -1102,7 +1138,7 @@ def build_domain_workflows(
 
 
 def build_setup_workflow(forge_config: dict) -> Workflow:
-    """Build a SETUP workflow: dbt deps plus setup SQL tasks.
+    """Build a SETUP workflow from setup SQL tasks.
 
     This is a separate job that runs before the main PROCESS workflow.
     """
@@ -1129,40 +1165,27 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
         except Exception:
             pass
 
-    # Setup only prepares dbt dependencies. Seed-like data is compiled into setup SQL.
-    commands = ["dbt deps"]
-
-    tasks = [
-        WorkflowTask(
-            name="setup",
-            stage="ingest",
-            task_type="dbt",
-            models=[],
-            dbt_commands=commands,
-            depends_on=[],
-            compute_type=compute_type,
-        )
-    ]
+    tasks: list[WorkflowTask] = []
 
     # UDFs task — runs after setup so catalog/schema exist
     udf_sql = SQL_SETUP_DIR / "000_udfs.sql"
     if udf_sql.exists():
         tasks.append(WorkflowTask(
-            name="create_udfs",
+            name=_setup_sql_task_name("udfs", udf_sql, "shared"),
             stage="ingest",
             task_type="sql",
             sql_file=_sql_task_path(udf_sql),
             models=[],
-            depends_on=["setup"],
+            depends_on=[],
             compute_type=compute_type,
         ))
 
     # Lineage graph task — creates tables + seeds DAG edges
     lineage_sql = SQL_SETUP_DIR / "001_lineage_graph.sql"
     if lineage_sql.exists():
-        lineage_deps = ["create_udfs"] if udf_sql.exists() else ["setup"]
+        lineage_deps = [tasks[-1].name] if tasks else []
         tasks.append(WorkflowTask(
-            name="seed_lineage_graph",
+            name=_setup_sql_task_name("lineage", lineage_sql, "graph"),
             stage="ingest",
             task_type="sql",
             sql_file=_sql_task_path(lineage_sql),
@@ -1176,9 +1199,9 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
     if sql_dir_setup.is_dir():
         for f in sorted(sql_dir_setup.iterdir()):
             if f.name.endswith("_quarantine_tables.sql"):
-                q_deps = [tasks[-1].name] if tasks else ["setup"]
+                q_deps = [tasks[-1].name] if tasks else []
                 tasks.append(WorkflowTask(
-                    name="create_quarantine_tables",
+                    name=_setup_sql_task_name("quarantine", f, "tables"),
                     stage="ingest",
                     task_type="sql",
                     sql_file=_sql_task_path(f),
@@ -1198,9 +1221,9 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
                 except Exception:
                     continue
                 if any("-- Volumes" in line for line in header):
-                    vol_deps = [tasks[-1].name] if tasks else ["setup"]
+                    vol_deps = [tasks[-1].name] if tasks else []
                     tasks.append(WorkflowTask(
-                        name="create_volumes",
+                        name=_setup_sql_task_name("volume", f, "definitions"),
                         stage="ingest",
                         task_type="sql",
                         sql_file=_sql_task_path(f),
@@ -1213,7 +1236,7 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
     # Model definition SQL files — physical tables are defined in SETUP.
     sql_dir = SQL_SETUP_DIR
     if sql_dir.is_dir():
-        last_setup_task = tasks[-1].name if tasks else "setup"
+        last_setup_task = tasks[-1].name if tasks else None
         for f in sorted(sql_dir.iterdir()):
             if f.suffix != ".sql":
                 continue
@@ -1230,20 +1253,20 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
             if not (parts[0].isdigit() and len(parts) > 1):
                 continue
             model_name = parts[1]
-            task_name = f"create_{model_name}"
+            task_name = _setup_sql_task_name("table", f, model_name)
             tasks.append(WorkflowTask(
                 name=task_name,
                 stage="ingest",
                 task_type="sql",
                 sql_file=_sql_task_path(f),
                 models=[],
-                depends_on=[last_setup_task],
+                depends_on=[last_setup_task] if last_setup_task else [],
                 compute_type=compute_type,
             ))
 
     # Seed SQL files — seeds compiled to pure SQL (catalog-overridden seeds)
     if sql_dir.is_dir():
-        last_setup_task = tasks[-1].name if tasks else "setup"
+        last_setup_task = tasks[-1].name if tasks else None
         for f in sorted(sql_dir.iterdir()):
             if f.suffix != ".sql":
                 continue
@@ -1258,14 +1281,14 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
             if not (parts[0].isdigit() and len(parts) > 1):
                 continue
             seed_name = parts[1]
-            task_name = f"seed_{seed_name}"
+            task_name = _setup_sql_task_name("seed", f, seed_name)
             tasks.append(WorkflowTask(
                 name=task_name,
                 stage="ingest",
                 task_type="sql",
                 sql_file=_sql_task_path(f),
                 models=[],
-                depends_on=[last_setup_task],
+                depends_on=[last_setup_task] if last_setup_task else [],
                 compute_type=compute_type,
             ))
 
