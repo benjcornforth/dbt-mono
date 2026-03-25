@@ -175,3 +175,7 @@ lineage:
 
 portability:
   postgres_compatible: true       # also generate Postgres-compatible SQL
+
+
+teardown:
+  mode: schema_cascade
