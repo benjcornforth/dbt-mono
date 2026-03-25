@@ -1144,7 +1144,7 @@ def teardown(
     plan = build_teardown_plan(config, graph, wipe_all=wipe_all)
 
     # Always write the plan YAML for audit
-    plan_path = Path(output or f"resources/teardown/{plan.name}.yml")
+    plan_path = Path(output or f"local/teardown/{plan.name}.yml")
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     plan_path.write_text(plan.to_yaml())
     typer.echo(f"📋 Teardown plan → {plan_path}")

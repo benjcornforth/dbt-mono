@@ -184,7 +184,7 @@ forge explain customer_summary.tier --mermaid # as a diagram
 
 forge validate        # data quality check report
 forge workflow        # pipeline DAG (INGEST → STAGE → CLEAN → ENRICH → SERVE)
-forge workflow --dab  # writes Databricks jobs YAML → resources/jobs/
+forge workflow --dab  # writes staged Databricks jobs YAML → artifacts/targets/<profile>/resources/jobs/
 ```
 
 ### SQL-only mode (no dbt at runtime)
@@ -244,9 +244,10 @@ dbt/generated/          ← generated Python SDK and other generated code
 dbt/migrations/*.yml     ← schema changes (you create)
 macros/                 ← local runtime macros staged into each target bundle
 src/forge/               ← CLI + engines (you don't touch)
-resources/jobs/          ← generated Databricks workflow YAML
 artifacts/targets/*/dbt/ ← generated dbt project per target
 artifacts/targets/*/sql/ ← generated phased SQL per target
+artifacts/targets/*/resources/jobs/ ← generated Databricks workflow YAML per target
+local/                   ← gitignored local operational state (backups, teardown plans)
 artifacts/               ← graph snapshots, compiled output
 docs/                    ← guides, roadmap, planning specs
 docs/examples/           ← example projects

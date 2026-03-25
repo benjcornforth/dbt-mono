@@ -9,7 +9,7 @@
 #
 # Asset handling:
 #   📦 ARCHIVE — Each asset = one row in _backup_archive (data + definitions)
-#   📦 SNAPSHOT — UDF source, workflow YAML, forge.yml, graph JSON (local)
+#   📦 SNAPSHOT — authored DDL/project files, forge.yml, graph JSON (local)
 #   ✅ REMOVE  — DAB job definitions (orchestration only)
 #   ✅ REMOVE  — UDFs (functions are code, always redeployable)
 #   🔒 PRESERVE — Tables, views, schemas, data (NEVER touched)
@@ -20,16 +20,13 @@
 #   forge backup --list show backups      forge restore --snapshot {ts}
 #
 # Snapshot directory structure:
-#   resources/backups/{timestamp}/
+#   local/backups/{timestamp}/
 #     ├── forge.yml                   # full config snapshot
 #     ├── graph.json                  # full graph snapshot
-#     ├── PROCESS_{id}.yml            # workflow YAML
-#     ├── functions/                  # UDF source files
-#     │   ├── clean_email.sql
-#     │   └── ...
-#     ├── dbt_models/                 # dbt model source files
-#     │   ├── customer_clean.sql
-#     │   └── ...
+#     ├── dbt/ddl/                    # authored DDL source of truth
+#     ├── dbt/project/                # authored project-specific Python
+#     ├── macros/                     # local macro source
+#     ├── dbt_project.yml             # dbt project config
 #     └── BACKUP_manifest.yml         # backup metadata
 #
 # Restore:
@@ -127,7 +124,7 @@ class TeardownPlan:
     removes: list[TeardownAsset] = field(default_factory=list)
     preserves: list[TeardownAsset] = field(default_factory=list)
     steps: list[TeardownStep] = field(default_factory=list)
-    backup_dir: str = "resources/teardown/_backup"
+    backup_dir: str = "local/teardown/_backup"
     reinstate_command: str = "forge deploy"
 
     # ── Serialisation ─────────────────────────────────
@@ -150,7 +147,7 @@ class TeardownPlan:
                 } if self.archive_table else None,
                 "snapshot": {
                     "directory": self.snapshot_dir,
-                    "contents": "forge.yml, graph.json, workflow YAML, UDF source files, teardown plan",
+                    "contents": "forge.yml, graph.json, dbt/ddl, dbt/project, macros, dbt_project.yml",
                     "note": "Complete project state captured for forge restore",
                 } if self.snapshot_dir else None,
                 "removes": [
@@ -170,7 +167,7 @@ class TeardownPlan:
                 },
                 "backup": {
                     "directory": self.backup_dir,
-                    "note": "Workflow YAML + table data archived before removal",
+                    "note": "Authored project files + table data archived before removal",
                 },
                 "steps": [
                     {k: v for k, v in {
@@ -233,7 +230,7 @@ class TeardownPlan:
 
         if self.snapshot_dir:
             lines.append(f"  📸 SNAPSHOTS all assets to: {self.snapshot_dir}")
-            lines.append(f"     (forge.yml, graph, workflow YAML, UDF source files)")
+            lines.append(f"     (forge.yml, graph, dbt/ddl, dbt/project, macros, dbt_project.yml)")
 
         lines.append("")
         tables = [a.name for a in self.preserves if a.asset_type == "table"]
@@ -354,7 +351,7 @@ def build_teardown_plan(
     wf_name = f"PROCESS_{project_id}"
     workflow_files = _workflow_files(forge_config)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    backup_dir = "resources/teardown/_backup"
+    backup_dir = "local/teardown/_backup"
 
     contracts = graph.get("contracts", {})
 
@@ -737,7 +734,7 @@ def _workflow_files(forge_config: dict) -> list[Path]:
 # SNAPSHOT HELPERS
 # =============================================
 
-BACKUP_DIR = "resources/backups"
+BACKUP_DIR = "local/backups"
 """Default backup directory. Used by both forge backup and forge teardown."""
 
 
@@ -750,33 +747,23 @@ def collect_snapshot_files(forge_config: dict) -> list[dict[str, str]]:
     """
     snapshot_files: list[dict[str, str]] = []
 
+    def _append_tree(root: Path) -> None:
+        if not root.exists():
+            return
+        for file_path in sorted(path for path in root.rglob("*") if path.is_file()):
+            snapshot_files.append({"src": file_path.as_posix(), "dst": _project_relative(file_path)})
+
     # forge.yml
     if Path("forge.yml").exists():
         snapshot_files.append({"src": "forge.yml", "dst": "forge.yml"})
 
-    # Workflow YAML
-    for wf_file in _workflow_files(forge_config):
-        snapshot_files.append({"src": str(wf_file), "dst": _project_relative(wf_file)})
+    # Authored project inputs only — never snapshot compiled target outputs.
+    _append_tree(Path("dbt") / "ddl")
+    _append_tree(Path("dbt") / "project")
+    _append_tree(Path("macros"))
 
-    # UDF source files
-    udf_dir = _compiled_dbt_root(forge_config) / "functions"
-    if not udf_dir.exists():
-        udf_dir = Path("dbt/functions")
-    if udf_dir.exists():
-        for udf_file in sorted(udf_dir.glob("*.sql")):
-            snapshot_files.append({"src": str(udf_file), "dst": _project_relative(udf_file)})
-        for udf_file in sorted(udf_dir.glob("*.py")):
-            snapshot_files.append({"src": str(udf_file), "dst": _project_relative(udf_file)})
-
-    # dbt model source files
-    models_dir = _compiled_dbt_root(forge_config) / "models"
-    if not models_dir.exists():
-        models_dir = Path("dbt/models")
-    if models_dir.exists():
-        for model_file in sorted(models_dir.rglob("*.sql")):
-            snapshot_files.append({"src": str(model_file), "dst": _project_relative(model_file)})
-        for model_file in sorted(models_dir.rglob("*.yml")):
-            snapshot_files.append({"src": str(model_file), "dst": _project_relative(model_file)})
+    if Path("dbt_project.yml").exists():
+        snapshot_files.append({"src": "dbt_project.yml", "dst": "dbt_project.yml"})
 
     return snapshot_files
 
@@ -801,8 +788,8 @@ def build_backup(
     """
     Create a standalone backup snapshot.
 
-    Copies all project files (forge.yml, workflow YAML, UDF source,
-    dbt models, graph JSON) into a timestamped backup directory.
+    Copies authored project files (forge.yml, dbt/ddl, dbt/project,
+    local macros, graph JSON) into a timestamped backup directory.
 
     If include_data=True, also generates SQL statements to archive
     table data into the _teardown_archive table on Databricks.
@@ -970,11 +957,11 @@ def list_backups(backup_dir: str = BACKUP_DIR) -> list[dict]:
     List available backup snapshots.
 
     Returns list of dicts with timestamp, path, files, and metadata.
-    Scans both resources/backups/ and legacy resources/teardown/_backup/.
+    Scans local/backups/ and legacy resources/backups/ / resources/teardown/_backup/.
     """
     all_snapshots: list[dict] = []
 
-    for search_dir in [backup_dir, "resources/teardown/_backup"]:
+    for search_dir in [backup_dir, "resources/backups", "resources/teardown/_backup"]:
         base = Path(search_dir)
         if not base.exists():
             continue
@@ -1017,15 +1004,14 @@ def restore_snapshot(
     """
     Restore project files from a backup or teardown snapshot.
 
-    Searches both resources/backups/ and legacy resources/teardown/_backup/.
-    Copies forge.yml, workflow YAML, UDF source files, and dbt models
-    back to their original locations.
+    Searches local/backups/ and legacy resources/backups/ / resources/teardown/_backup/.
+    Copies authored project files back to their original locations.
 
     Returns list of log messages.
     """
     # Search both backup locations
     snap_dir = None
-    for search_dir in [backup_dir, "resources/teardown/_backup"]:
+    for search_dir in [backup_dir, "resources/backups", "resources/teardown/_backup"]:
         candidate = Path(search_dir) / snapshot_id
         if candidate.exists():
             snap_dir = candidate
@@ -1054,11 +1040,16 @@ def restore_snapshot(
             continue
         if rel.as_posix() in reserved_files or rel.name in reserved_files:
             continue
-        if rel.parts and rel.parts[0] in {"artifacts", "resources", "dbt"}:
+        if rel.parts and rel.parts[0] in {"artifacts", "resources", "dbt", "macros"}:
             dst = Path(*rel.parts)
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(f, dst)
             log.append(f"Restored {dst}")
+            restored_new_style = True
+            continue
+        if rel.as_posix() == "dbt_project.yml":
+            shutil.copy2(f, rel.as_posix())
+            log.append("Restored dbt_project.yml")
             restored_new_style = True
 
     if restored_new_style:

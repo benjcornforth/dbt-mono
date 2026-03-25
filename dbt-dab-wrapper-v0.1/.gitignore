@@ -19,6 +19,9 @@ forge/
 # Build outputs
 dist/
 
+# Local operational state
+local/
+
 # Python
 __pycache__/
 *.pyc
