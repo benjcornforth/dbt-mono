@@ -5,7 +5,10 @@ models:
     sources:
       c: customer_clean
       o: stg_orders
-    join: "c.customer_id = o.customer_id"
+    joins:
+      - alias: o
+        type: inner join
+        on: "c.customer_id = o.customer_id"
     broadcast: c          # small table → BROADCAST hint for Databricks join optimisation
     materialized: table
     version: v1

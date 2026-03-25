@@ -424,53 +424,211 @@ def _compile_column_select(
     arguments that reference aliases with underlying expressions (avoids
     lateral column alias errors in Databricks).
     """
-    # UDF call: { udf: "loyalty_tier(total_revenue)" }
+    expr = _compile_column_expression(
+        col_name,
+        col_def,
+        alias=alias,
+        udf_qualifiers=udf_qualifiers,
+        all_columns=all_columns,
+    )
+    if expr == col_name:
+        return f"    {expr}"
+    return f"    {expr} as {col_name}"
+
+
+def _normalize_column_def(col_def: Any) -> dict[str, Any]:
+    if isinstance(col_def, str):
+        return {"type": col_def}
+    if col_def is None:
+        return {}
+    return dict(col_def)
+
+
+def _replace_identifier_refs(expr: str, identifier: str, replacement: str) -> str:
+    pattern = re.compile(rf"(?<![\w.]){re.escape(identifier)}(?![\w])")
+    return pattern.sub(f"({replacement})", expr)
+
+
+def _inline_sibling_column_refs(
+    expr: str,
+    *,
+    current_col: str,
+    alias: str | None = None,
+    udf_qualifiers: dict[str, str] | None = None,
+    all_columns: dict | None = None,
+    seen: set[str] | None = None,
+) -> str:
+    if not all_columns:
+        return expr
+
+    result = expr
+    for sibling_name in sorted(all_columns.keys(), key=len, reverse=True):
+        if sibling_name == current_col:
+            continue
+        pattern = re.compile(rf"(?<![\w.]){re.escape(sibling_name)}(?![\w])")
+        if not pattern.search(result):
+            continue
+        sibling_expr = _compile_column_expression(
+            sibling_name,
+            all_columns[sibling_name],
+            alias=alias,
+            udf_qualifiers=udf_qualifiers,
+            all_columns=all_columns,
+            seen=seen,
+        )
+        result = _replace_identifier_refs(result, sibling_name, sibling_expr)
+    return result
+
+
+def _compile_column_expression(
+    col_name: str,
+    col_def: Any,
+    alias: str | None = None,
+    udf_qualifiers: dict[str, str] | None = None,
+    all_columns: dict | None = None,
+    seen: set[str] | None = None,
+) -> str:
+    col_def = _normalize_column_def(col_def)
+    current_seen = set(seen or ())
+    if col_name in current_seen:
+        cycle = " -> ".join([*current_seen, col_name])
+        raise ValueError(f"Circular column dependency detected: {cycle}")
+    current_seen.add(col_name)
+
     if "udf" in col_def:
-        udf_call = col_def["udf"]
-        # Resolve arguments that are aliases for expressions
-        if all_columns:
-            fn_name = udf_call.split("(")[0].strip()
-            args_start = udf_call.index("(")
-            args_str = udf_call[args_start + 1 : udf_call.rindex(")")]
-            args = [a.strip() for a in args_str.split(",")]
-            resolved_args = []
-            for arg in args:
-                sibling = all_columns.get(arg)
-                if isinstance(sibling, dict) and "expr" in sibling:
-                    resolved_args.append(sibling["expr"])
-                else:
-                    resolved_args.append(arg)
+        udf_call = str(col_def["udf"])
+        fn_name = udf_call.split("(")[0].strip()
+        args_start = udf_call.find("(")
+        args_end = udf_call.rfind(")")
+        if args_start != -1 and args_end != -1 and args_end > args_start:
+            args_str = udf_call[args_start + 1 : args_end]
+            raw_args = [a.strip() for a in args_str.split(",")] if args_str.strip() else []
+            resolved_args = [
+                _inline_sibling_column_refs(
+                    arg,
+                    current_col=col_name,
+                    alias=alias,
+                    udf_qualifiers=udf_qualifiers,
+                    all_columns=all_columns,
+                    seen=current_seen,
+                )
+                for arg in raw_args
+            ]
             udf_call = f"{fn_name}({', '.join(resolved_args)})"
-        if udf_qualifiers:
-            fn_name = udf_call.split("(")[0].strip()
-            if fn_name in udf_qualifiers:
-                udf_call = udf_qualifiers[fn_name] + udf_call[len(fn_name):]
-        return f"    {udf_call} as {col_name}"
+        if udf_qualifiers and fn_name in udf_qualifiers:
+            udf_call = udf_qualifiers[fn_name] + udf_call[len(fn_name):]
+        return udf_call
 
-    # Explicit expression (aggregation, calculation)
     if "expr" in col_def:
-        expr = col_def["expr"]
-        return f"    {expr} as {col_name}"
+        return _inline_sibling_column_refs(
+            str(col_def["expr"]),
+            current_col=col_name,
+            alias=alias,
+            udf_qualifiers=udf_qualifiers,
+            all_columns=all_columns,
+            seen=current_seen,
+        )
 
-    # Column from a specific join alias
     source_alias = col_def.get("from", alias)
     raw_col = col_def.get("source_column", col_name)
 
-    if source_alias:
-        ref = f"{source_alias}.{raw_col}"
+    if not source_alias and all_columns and raw_col != col_name and raw_col in all_columns:
+        ref = _compile_column_expression(
+            raw_col,
+            all_columns[raw_col],
+            alias=alias,
+            udf_qualifiers=udf_qualifiers,
+            all_columns=all_columns,
+            seen=current_seen,
+        )
     else:
-        ref = raw_col
+        ref = f"{source_alias}.{raw_col}" if source_alias else raw_col
 
-    # Type casting
     if col_def.get("cast") and "type" in col_def:
-        sql_type = col_def["type"]
-        return f"    cast({ref} as {sql_type}) as {col_name}"
+        return f"cast({ref} as {col_def['type']})"
 
-    # Rename (source column differs from output name)
-    if raw_col != col_name:
-        return f"    {ref} as {col_name}"
+    return ref
 
-    return f"    {ref}"
+
+def _resolve_join_plan(model_def: dict[str, Any]) -> tuple[tuple[str, str], list[dict[str, str]]]:
+    sources = model_def.get("sources", {}) or {}
+    if not isinstance(sources, dict) or not sources:
+        raise ValueError("Join models must define a non-empty 'sources:' mapping.")
+
+    source_items = list(sources.items())
+    base_alias, base_source = source_items[0]
+    joins_cfg = model_def.get("joins") or []
+
+    if not joins_cfg:
+        join_type = model_def.get("join_type", "inner join")
+        join_condition = model_def.get("join", "")
+        join_steps = [
+            {
+                "alias": alias,
+                "source": source,
+                "type": join_type,
+                "on": join_condition,
+            }
+            for alias, source in source_items[1:]
+        ]
+        return (base_alias, base_source), join_steps
+
+    join_steps: list[dict[str, str]] = []
+    seen_aliases: set[str] = set()
+    legacy_join_type = model_def.get("join_type", "inner join")
+    legacy_join = model_def.get("join", "")
+
+    for index, join_def in enumerate(joins_cfg, start=1):
+        if not isinstance(join_def, dict):
+            raise ValueError(f"joins[{index}] must be a mapping.")
+        alias = join_def.get("alias")
+        if not alias:
+            raise ValueError(f"joins[{index}] must define 'alias'.")
+        if alias == base_alias:
+            raise ValueError(f"joins[{index}] cannot reuse the base alias '{base_alias}'.")
+        if alias in seen_aliases:
+            raise ValueError(f"joins[{index}] repeats alias '{alias}'.")
+
+        source = join_def.get("source") or sources.get(alias)
+        if not source:
+            raise ValueError(f"joins[{index}] alias '{alias}' is missing a source.")
+        if alias in sources and join_def.get("source") and sources[alias] != join_def["source"]:
+            raise ValueError(
+                f"joins[{index}] alias '{alias}' conflicts with sources['{alias}'] = '{sources[alias]}'."
+            )
+
+        join_type = join_def.get("type") or join_def.get("join_type") or legacy_join_type
+        join_condition = join_def.get("on") or join_def.get(True) or join_def.get("join") or legacy_join
+        if not join_condition:
+            raise ValueError(f"joins[{index}] alias '{alias}' is missing an ON condition.")
+
+        join_steps.append(
+            {
+                "alias": alias,
+                "source": source,
+                "type": join_type,
+                "on": join_condition,
+            }
+        )
+        seen_aliases.add(alias)
+
+    for alias, source in source_items[1:]:
+        if alias in seen_aliases:
+            continue
+        if not legacy_join:
+            raise ValueError(
+                f"Alias '{alias}' is present in sources but not in joins, and no legacy join condition is available."
+            )
+        join_steps.append(
+            {
+                "alias": alias,
+                "source": source,
+                "type": legacy_join_type,
+                "on": legacy_join,
+            }
+        )
+
+    return (base_alias, base_source), join_steps
 
 
 def _resolve_base_schema(forge_config: dict, layer: str) -> str:
@@ -659,7 +817,7 @@ def compile_model(model_name: str, model_def: dict, forge_config: dict | None = 
 
     # SELECT columns
     columns = model_def.get("columns", {})
-    is_join = "sources" in model_def or "join" in model_def
+    is_join = "sources" in model_def or "join" in model_def or "joins" in model_def
     is_agg = "group_by" in model_def
 
     # Determine default alias for single-source
@@ -773,17 +931,12 @@ def compile_model(model_name: str, model_def: dict, forge_config: dict | None = 
         return f"{{{{ ref('{name}') }}}}"
 
     if is_join:
-        sources = model_def.get("sources", {})
-        join_condition = model_def.get("join", "")
-        join_type = model_def.get("join_type", "inner join")
+        (base_alias, base_source), join_steps = _resolve_join_plan(model_def)
+        lines.append(f"from {_ref_or_source(base_source)} {base_alias}")
 
-        source_items = list(sources.items())
-        first_alias, first_source = source_items[0]
-        lines.append(f"from {_ref_or_source(first_source)} {first_alias}")
-
-        for alias, source in source_items[1:]:
-            lines.append(f"{join_type} {_ref_or_source(source)} {alias}")
-            lines.append(f"    on {join_condition}")
+        for step in join_steps:
+            lines.append(f"{step['type']} {_ref_or_source(step['source'])} {step['alias']}")
+            lines.append(f"    on {step['on']}")
     else:
         source = model_def.get("source", "")
         if source:
@@ -1946,7 +2099,7 @@ def compile_pure_sql_model(
 
     materialized = model_def.get("materialized", "view")
     columns = model_def.get("columns", {})
-    is_join = "sources" in model_def or "join" in model_def
+    is_join = "sources" in model_def or "join" in model_def or "joins" in model_def
     is_agg = "group_by" in model_def
 
     lines: list[str] = []
@@ -2055,15 +2208,11 @@ def compile_pure_sql_model(
 
         from_lines: list[str] = []
         if is_join:
-            sources = model_def.get("sources", {})
-            join_condition = model_def.get("join", "")
-            join_type = model_def.get("join_type", "INNER JOIN")
-            source_items = list(sources.items())
-            first_alias, first_source = source_items[0]
-            from_lines.append(f"    FROM {_fq(first_source)} {first_alias}")
-            for alias, source in source_items[1:]:
-                from_lines.append(f"    {join_type} {_fq(source)} {alias}")
-                from_lines.append(f"        ON {join_condition}")
+            (base_alias, base_source), join_steps = _resolve_join_plan(model_def)
+            from_lines.append(f"    FROM {_fq(base_source)} {base_alias}")
+            for step in join_steps:
+                from_lines.append(f"    {step['type']} {_fq(step['source'])} {step['alias']}")
+                from_lines.append(f"        ON {step['on']}")
         else:
             source = model_def.get("source", "")
             if source:
@@ -2144,17 +2293,12 @@ def compile_pure_sql_model(
             return f"`{catalog}`.`{schema}`.`{source_name}`"
 
         if is_join:
-            sources = model_def.get("sources", {})
-            join_condition = model_def.get("join", "")
-            join_type = model_def.get("join_type", "INNER JOIN")
+            (base_alias, base_source), join_steps = _resolve_join_plan(model_def)
+            lines.append(f"FROM {_fq(base_source)} {base_alias}")
 
-            source_items = list(sources.items())
-            first_alias, first_source = source_items[0]
-            lines.append(f"FROM {_fq(first_source)} {first_alias}")
-
-            for alias, source in source_items[1:]:
-                lines.append(f"{join_type} {_fq(source)} {alias}")
-                lines.append(f"    ON {join_condition}")
+            for step in join_steps:
+                lines.append(f"{step['type']} {_fq(step['source'])} {step['alias']}")
+                lines.append(f"    ON {step['on']}")
         else:
             source = model_def.get("source", "")
             if source:

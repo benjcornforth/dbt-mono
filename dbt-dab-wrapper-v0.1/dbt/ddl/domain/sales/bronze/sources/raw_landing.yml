@@ -1,0 +1,14 @@
+sources:
+  raw_landing:
+    description: "External landing tables registered outside Forge"
+    source_name: external_landing
+    tables:
+      raw_customer_files:
+        description: "Externally managed raw customer landing table"
+        columns:
+          customer_id:
+            description: "Customer identifier from source system"
+          email:
+            description: "Raw customer email"
+          updated_at:
+            description: "Source-system update timestamp"

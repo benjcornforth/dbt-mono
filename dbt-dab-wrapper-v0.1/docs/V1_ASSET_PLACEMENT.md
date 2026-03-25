@@ -77,6 +77,32 @@ python/
   - namespace must be declared in the file
 - `system` assets are not authored in the DDL tree by default
 
+### Supported Kinds
+
+The canonical tree currently supports these authored asset kinds:
+
+- `models`
+- `udfs`
+- `seeds`
+- `volumes`
+- `sources`
+
+### What Forge Creates vs References
+
+Forge-managed authored assets:
+
+- `models`
+- `seeds`
+- `volumes`
+- `udfs`
+- system assets configured in `forge.yml`
+
+Referenced-only authored assets:
+
+- `sources`
+
+If you define a table in `sources`, Forge/dbt will expose it for lineage, docs, and `source(...)` references, but will not create it.
+
 ## forge.yml Shape
 
 The current global `catalog_pattern` and `schema_pattern` are replaced by named placement families.
@@ -250,6 +276,258 @@ models:
       last_name: { type: string }
       email: { type: string }
 ```
+
+## Practical Authoring Rules
+
+This section is the day-to-day DDL authoring contract.
+
+### Single-Source Models
+
+Use `source:` for a model with one upstream relation.
+
+```yaml
+models:
+  stg_customers:
+    source: raw_customers
+    materialized: table
+    columns:
+      customer_id: { type: int, required: true }
+      email: { expr: "lower(email)" }
+```
+
+### Join Models
+
+Use `sources:` plus ordered `joins:` for non-trivial joins.
+
+```yaml
+models:
+  customer_orders:
+    sources:
+      c: customer_clean
+      o: stg_orders
+      p: products
+    joins:
+      - alias: o
+        type: left join
+        on: "c.customer_id = o.customer_id"
+      - alias: p
+        type: inner join
+        on: "o.product_id = p.product_id"
+    columns:
+      customer_id: { from: c }
+      order_id: { from: o }
+      product_name: { from: p, source_column: name }
+```
+
+Rules:
+
+- the first item in `sources:` is the base `FROM`
+- `joins:` is applied in order
+- each join can have its own `type`
+- each join can have its own `on`
+- each `alias` in `joins:` should match a key from `sources:` unless `source:` is explicitly provided in that join step
+
+Legacy fallback still works:
+
+```yaml
+sources:
+  c: customer_clean
+  o: stg_orders
+join_type: inner join
+join: "c.customer_id = o.customer_id"
+```
+
+Prefer `joins:` for any model that needs more than one join condition or more than one join type.
+
+### Column Rules
+
+Columns can be authored with these patterns:
+
+Passthrough:
+
+```yaml
+customer_id: { from: c }
+```
+
+Rename:
+
+```yaml
+product_name: { from: p, source_column: name }
+```
+
+Cast:
+
+```yaml
+unit_price: { from: o, cast: true, type: decimal(10,2) }
+```
+
+Expression:
+
+```yaml
+line_total: { expr: "quantity * unit_price" }
+```
+
+UDF call:
+
+```yaml
+tier: { udf: "loyalty_tier(total_revenue)" }
+```
+
+### Column Dependency Rules
+
+Forge resolves sibling calculated-column dependencies recursively.
+
+Example:
+
+```yaml
+columns:
+  revenue: { expr: "quantity * unit_price" }
+  revenue_with_tax: { expr: "revenue * 1.2" }
+```
+
+This is compiled safely by inlining the dependency expression.
+
+Allowed:
+
+- `expr` depending on upstream physical columns
+- `expr` depending on sibling calculated columns
+- `udf(...)` depending on sibling calculated columns
+- chained calculations such as `a -> b -> c`
+
+Rejected:
+
+- circular dependencies
+
+Example invalid cycle:
+
+```yaml
+columns:
+  a: { expr: "b + 1" }
+  b: { expr: "a + 1" }
+```
+
+### Aggregate Model Rules
+
+Use `group_by:` for aggregates.
+
+```yaml
+models:
+  customer_summary:
+    source: customer_orders
+    group_by: [customer_id, country]
+    columns:
+      customer_id: { type: int }
+      country: { type: string }
+      total_orders: { expr: "count(order_id)", type: int }
+      total_revenue: { expr: "sum(line_total)", type: decimal(10,2) }
+```
+
+Rules:
+
+- non-aggregated selected fields must appear in `group_by`
+- aggregate expressions should be written explicitly in `expr`
+- UDFs over aggregate outputs are supported
+- the compiler may emit an internal CTE when needed for aggregate-dependent UDFs
+
+### Source Rules
+
+Author external dbt sources under `sources/`.
+
+```yaml
+sources:
+  raw_landing:
+    description: "External landing tables registered outside Forge"
+    source_name: external_landing
+    tables:
+      raw_customer_files:
+        description: "Externally managed raw customer landing table"
+        columns:
+          customer_id:
+            description: "Customer identifier from source system"
+```
+
+Rules:
+
+- top-level block must be `sources:`
+- the authored object name is the internal asset name
+- `source_name:` controls the dbt source group name
+- `tables:` lists the exposed tables under that dbt source
+- Forge resolves placement for metadata/docs, but does not create these tables
+
+Models reference them with:
+
+```sql
+{{ source('external_landing', 'raw_customer_files') }}
+```
+
+### Seed Rules
+
+Seeds live under `seeds/` and can be fully authored in YAML.
+
+```yaml
+seeds:
+  ingestion_config:
+    namespace: config
+    columns:
+      config_id: { type: int }
+      source_name: { type: string }
+    rows:
+      - config_id: 1
+        source_name: customer_feed
+```
+
+Rules:
+
+- inline `rows:` is supported
+- these compile to SQL inserts in pure-SQL mode
+- seeds also generate dbt source entries so models can reference them with `source('seed', ...)`
+
+### YAML Authoring Rules
+
+- quote join predicates and SQL expressions when they contain special characters
+- prefer quoted `on:` values even though the compiler tolerates YAML parsing quirks
+- keep aliases short and stable in join models
+- keep derived column names descriptive; they become lineage and contract names
+
+Recommended:
+
+```yaml
+on: "c.customer_id = o.customer_id"
+expr: "quantity * unit_price"
+```
+
+### Review Checklist
+
+When reviewing a DDL file, check these in order:
+
+1. Is the file in the correct canonical path?
+2. Does the top-level block match the folder kind?
+3. Does the path imply the intended class/layer/domain?
+4. For shared assets, is `namespace:` declared where needed?
+5. For join models, is `joins:` ordered correctly?
+6. For calculated columns, are dependencies one-directional and acyclic?
+7. For sources, are you declaring external tables rather than expecting Forge to create them?
+
+### Recommended Defaults
+
+- use `joins:` instead of `join:` for new join models
+- use `expr:` for calculations before reaching for raw SQL
+- use a raw SQL model only when the logic is too complex for the DDL DSL
+- use `sources/` for externally managed tables
+- use `seeds/` for small controlled configuration datasets
+
+### Mental Model
+
+Use the DDL DSL as the structured path for:
+
+- projections
+- joins
+- aggregates
+- UDF calls
+- source declarations
+- seed/config tables
+
+If the logic becomes multi-stage, highly bespoke, or hard to express clearly in YAML, a hand-written SQL model is still the right tool.
 
 ## Compiler Contract
 
