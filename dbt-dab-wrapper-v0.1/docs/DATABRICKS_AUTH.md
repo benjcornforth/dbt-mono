@@ -63,6 +63,85 @@ profiles:
     databricks_profile: PROD
 ```
 
+## Profile Name Matching
+
+Forge resolves the Databricks profile name like this:
+
+1. If `forge.yml` sets `databricks_profile`, Forge uses that value.
+2. If `databricks_profile` is omitted, Forge falls back to the Forge profile name.
+
+Recommended pattern: keep them the same.
+
+### Recommended: matching names
+
+```yaml
+# forge.yml
+profiles:
+  dev:
+    platform: databricks
+    databricks_profile: dev
+    env: dev
+    catalog: main
+    schema: silver
+```
+
+```ini
+# ~/.databrickscfg
+[dev]
+host = https://dbc-12345678-abcd.cloud.databricks.com
+token = dapiXXXXXXXXXXXXXXXX
+http_path = /sql/1.0/warehouses/abcdef1234567890
+```
+
+That makes these commands line up cleanly:
+
+```bash
+poetry run forge auth --cli --profile dev
+poetry run forge auth --dbt --profile dev
+databricks auth env --profile dev
+```
+
+### Also valid: explicit mapping to a different profile name
+
+```yaml
+# forge.yml
+profiles:
+  dev:
+    platform: databricks
+    databricks_profile: DEFAULT
+    env: dev
+    catalog: main
+    schema: silver
+```
+
+```ini
+# ~/.databrickscfg
+[DEFAULT]
+host = https://dbc-12345678-abcd.cloud.databricks.com
+token = dapiXXXXXXXXXXXXXXXX
+http_path = /sql/1.0/warehouses/abcdef1234567890
+```
+
+### Fallback: omit `databricks_profile`
+
+```yaml
+# forge.yml
+profiles:
+  dev:
+    platform: databricks
+    env: dev
+```
+```
+
+In that case Forge looks for:
+
+```ini
+[dev]
+host = https://dbc-12345678-abcd.cloud.databricks.com
+token = dapiXXXXXXXXXXXXXXXX
+http_path = /sql/1.0/warehouses/abcdef1234567890
+```
+
 ## Bootstrap
 
 ### Interactive user auth

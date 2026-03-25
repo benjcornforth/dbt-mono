@@ -40,6 +40,8 @@ A CLI that sits on top of **dbt** and **Databricks Asset Bundles (DAB)**. It tur
 
 **The source-of-truth contract:** you edit `forge.yml` and the canonical DDL tree under `dbt/ddl/<layer>/<section>/`. Everything else — SQL, schema.yml, DAB bundles, UDF scripts — is generated.
 
+For a clean-machine install path, see [QUICKSTART.md](QUICKSTART.md).
+
 ---
 
 ## Installation
