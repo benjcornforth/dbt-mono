@@ -97,28 +97,6 @@ profiles:
       type: serverless
     schedule: "0 0 6 * * ?"
 
-  local:
-    platform: postgres
-    connection:
-      host: localhost
-      port: 5432
-      database: sales_db
-    catalog: public
-    schema: sales
-    overrides:
-      placement_families:
-        domain:
-          catalog: public
-        shared_meta:
-          catalog: public
-        shared_ops:
-          catalog: public
-        system_meta:
-          catalog: public
-        system_ops:
-          catalog: public
-    compute:
-      type: local
 
 features:
   graph: true
