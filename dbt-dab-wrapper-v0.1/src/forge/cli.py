@@ -328,16 +328,6 @@ def _deploy_staged_udfs(prof: dict, config: dict, *, dbt_args: list[str], dbt_en
 
 
 def _run_staged_dbt_commands(*, dbt_args: list[str], dbt_env: dict[str, str]) -> None:
-    seed_dir = Path("dbt/seeds")
-    if seed_dir.exists() and any(seed_dir.glob("*.csv")):
-        typer.echo("🌱 Seeding source data...")
-        try:
-            subprocess.run(["dbt", "seed"] + dbt_args, check=True, env=dbt_env)
-        except subprocess.CalledProcessError as exc:
-            typer.echo(f"  ⚠️  Seed failed (exit {exc.returncode}). Check seed CSV files.")
-        except FileNotFoundError:
-            return
-
     typer.echo("✅ Running dbt...")
     try:
         subprocess.run(["dbt", "run"] + dbt_args, check=True, env=dbt_env)
@@ -792,7 +782,7 @@ def deploy(
     """forge deploy → reads forge.yml → auto-generates DAB → runs dbt
 
     Default: generates workflow with setup/run tasks and deploys via DAB.
-    --local: runs setup, dbt seed, dbt run locally from CLI, then deploys bundle.
+    --local: runs setup and dbt locally from CLI, then deploys bundle.
     """
     if not CONFIG_FILE.exists():
         typer.echo("❌ No forge.yml found. Run 'forge setup' first!")
@@ -1575,6 +1565,8 @@ def compile(
                 typer.echo(f"  🔧 {path.relative_to(sql_dir.parent)} → UDF definitions + lineage UDFs")
             elif name == "_lineage_graph":
                 typer.echo(f"  🔗 {path.relative_to(sql_dir.parent)} → lineage graph + log tables")
+            elif name.startswith("_setup_"):
+                typer.echo(f"  🏗️  {path.relative_to(sql_dir.parent)} → setup table definition")
             elif name.endswith("_quarantine"):
                 typer.echo(f"  🔶 {path.relative_to(sql_dir.parent)} → quarantine sidecar")
             else:

@@ -1102,7 +1102,7 @@ def build_domain_workflows(
 
 
 def build_setup_workflow(forge_config: dict) -> Workflow:
-    """Build a SETUP workflow: dbt deps + dbt seed.
+    """Build a SETUP workflow: dbt deps plus setup SQL tasks.
 
     This is a separate job that runs before the main PROCESS workflow.
     """
@@ -1129,11 +1129,8 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
         except Exception:
             pass
 
-    # Build setup commands
-    commands: list[str] = []
-    has_seeds = Path("dbt/seeds").is_dir() and any(Path("dbt/seeds").glob("*.csv"))
-    if has_seeds:
-        commands.append("dbt seed --full-refresh")
+    # Setup only prepares dbt dependencies. Seed-like data is compiled into setup SQL.
+    commands = ["dbt deps"]
 
     tasks = [
         WorkflowTask(
@@ -1213,29 +1210,21 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
                     ))
                     break
 
-    # Managed-by models — CREATE TABLE IF NOT EXISTS (schema only)
-    # DDL managed_by values drive which python tasks belong in SETUP.
-    managed_by_tasks: list[str] = []
-    managed_by_values: set[str] = set()  # e.g. {"python"} or {"ingest_from_volume"}
+    # Model definition SQL files — physical tables are defined in SETUP.
     sql_dir = SQL_SETUP_DIR
     if sql_dir.is_dir():
         last_setup_task = tasks[-1].name if tasks else "setup"
         for f in sorted(sql_dir.iterdir()):
             if f.suffix != ".sql":
                 continue
-            # Check for managed_by marker in file header (derived from DDL)
             try:
                 header = f.read_text().split("\n", 5)[:5]
             except Exception:
                 continue
-            managed_by_val = None
-            for line in header:
-                if "-- Managed by:" in line:
-                    managed_by_val = line.split("-- Managed by:", 1)[1].strip()
-                    break
-            if not managed_by_val:
+            is_model_setup = any(line.startswith("-- Model:") for line in header)
+            is_seed = any("-- Seed:" in line for line in header)
+            if not is_model_setup or is_seed:
                 continue
-            managed_by_values.add(managed_by_val)
             # Extract model name from "NNN_model_name.sql"
             parts = f.stem.split("_", 1)
             if not (parts[0].isdigit() and len(parts) > 1):
@@ -1251,7 +1240,6 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
                 depends_on=[last_setup_task],
                 compute_type=compute_type,
             ))
-            managed_by_tasks.append(task_name)
 
     # Seed SQL files — seeds compiled to pure SQL (catalog-overridden seeds)
     if sql_dir.is_dir():
