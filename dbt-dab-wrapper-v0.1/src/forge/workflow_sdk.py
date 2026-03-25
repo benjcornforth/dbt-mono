@@ -29,7 +29,6 @@ from databricks.sdk.service.jobs import (
     DbtTask,
     SqlTask,
     SparkPythonTask,
-    NotebookTask,
     TaskDependency,
     JobEnvironment,
     EnvironmentSpec,
@@ -42,11 +41,10 @@ class WorkflowTaskSDK:
     """One task in the Databricks workflow DAG using SDK objects."""
     name: str
     stage: str
-    task_type: str = "dbt"  # "dbt", "python", "sql", "notebook"
+    task_type: str = "dbt"  # "dbt", "python", "sql"
     models: list[str] = field(default_factory=list)
     python_file: Optional[str] = None
     sql_file: Optional[str] = None
-    notebook_path: Optional[str] = None
     additional_config: Optional[dict] = None
     depends_on: list[str] = field(default_factory=list)
     compute_type: str = "serverless"
@@ -219,16 +217,6 @@ class WorkflowSDK:
                 task_obj = Task(
                     task_key=task.name,
                     sql_task=sql_task,
-                    timeout_seconds=task.timeout_seconds,
-                )
-
-            elif task.task_type == "notebook":
-                notebook_task = NotebookTask(
-                    notebook_path=task.notebook_path,
-                )
-                task_obj = Task(
-                    task_key=task.name,
-                    notebook_task=notebook_task,
                     timeout_seconds=task.timeout_seconds,
                 )
 

@@ -22,7 +22,7 @@
 [tool.poetry]
 name = "dbt-forge"
 version = "0.1.2"
-description = "Databricks Asset Bundles + dbt, so simple a child could use it. One forge.yml. External dbt-dab-tools package. Graph diffs. Quarantine + provenance built-in."
+description = "Databricks Asset Bundles + dbt, so simple a child could use it. One forge.yml. Staged target bundles. Graph diffs. Quarantine + provenance built-in."
 authors = ["Your Team <data@yourcompany.com>"]
 license = "MIT"
 readme = "README.md"
@@ -74,8 +74,8 @@ build-backend = "poetry.core.masonry.api"
 # =============================================
 # • Install = poetry install → forge command appears instantly
 # • Typer gives beautiful help text and zero-config commands
-# • All macros stay EXTERNAL in dbt-dab-tools (pulled via packages.yml)
-# • Compute resolver, graph, quarantine, provenance macros live in dbt-dab-tools
+# • Core macros ship locally in macros/ and are staged into each target bundle
+# • Compute resolver, graph, quarantine, and provenance stay inside this repo
 # • Zero Databricks lock-in (portability flags in forge.yml still work)
 # • Every line above has a comment so the code IS the documentation
 

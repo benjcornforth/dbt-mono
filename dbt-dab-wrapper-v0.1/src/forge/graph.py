@@ -765,7 +765,7 @@ def _add_custom_task_nodes(
     """
     Read custom_tasks from forge.yml and inject into the graph.
 
-    Each custom task becomes a node (sql_task, notebook_task, python_task)
+    Each custom task becomes a node (sql_task, python_task)
     with edges from its depends_on targets.
     """
     custom_tasks = forge_config.get("custom_tasks", [])
@@ -786,8 +786,10 @@ def _add_custom_task_nodes(
             task_type = "sql"
             file_ref = ct["sql_task"]
         elif "notebook_task" in ct:
-            task_type = "notebook"
-            file_ref = ct["notebook_task"]
+            raise ValueError(
+                f"custom_task '{task_key}' uses notebook_task, but notebook task support has been removed. "
+                "Replace it with a python_task or sql_task."
+            )
         else:
             task_type = "unknown"
             file_ref = ""
@@ -1369,7 +1371,7 @@ def _render_provenance_mermaid(tree: dict) -> str:
                 if chk_id not in node_ids:
                     node_ids.add(chk_id)
                     sev_icon = "🔴" if chk["severity"] == "error" else "🟡"
-                    lines.append(f'    {chk_id}{{{{{{{sev_icon} {chk["name"]}}}}}}}')
+                    lines.append(f'    {chk_id}{{"{sev_icon} {chk["name"]}"}}')
                     lines.append(f"    {node_id} -.->|check| {chk_id}")
 
             # UDF nodes
@@ -1388,18 +1390,6 @@ def _render_provenance_mermaid(tree: dict) -> str:
                 _add_nodes(child, node_id)
 
     _add_nodes(tree)
-
-    # Styles
-    lines.append("")
-    lines.append("    classDef udf fill:#e8d5f5,stroke:#7b2d8e,stroke-width:2px")
-    lines.append("    classDef check fill:#ffecd2,stroke:#e67e22,stroke-width:2px")
-
-    udf_nodes = [nid for nid in node_ids if nid.startswith("udf_")]
-    chk_nodes = [nid for nid in node_ids if nid.startswith("chk_")]
-    if udf_nodes:
-        lines.append(f"    class {','.join(udf_nodes)} udf")
-    if chk_nodes:
-        lines.append(f"    class {','.join(chk_nodes)} check")
 
     return "\n".join(lines)
 
@@ -1588,7 +1578,7 @@ def render_mermaid(
         elif dtype == "function":
             return f"    {safe_id}{{{{{name}}}}}"      # rhombus
         elif dtype == "quality":
-            return f"    {safe_id}{{{{{{{name}}}}}}}"  # hexagon
+            return f'    {safe_id}{{"{name}"}}'       # diamond
         elif dtype == "workflow":
             return f'    {safe_id}(["{name} DAB"])'    # stadium / pill
         elif dtype == "workflow_task":
@@ -1638,79 +1628,6 @@ def render_mermaid(
             lines.append(f"    {src} ==>|depends_on| {tgt}")
         else:
             lines.append(f"    {src} --> {tgt}")
-
-    # Style classes for diff colouring
-    if diff:
-        added_ids = [cid.replace(".", "_").replace("-", "_") for cid in diff.get("added", {})]
-        removed_ids = [cid.replace(".", "_").replace("-", "_") for cid in diff.get("removed", {})]
-        modified_ids = [cid.replace(".", "_").replace("-", "_") for cid in diff.get("modified", {})]
-
-        lines.append("")
-        lines.append("    classDef added fill:#d4edda,stroke:#28a745,stroke-width:2px,stroke-dasharray: 5 5")
-        lines.append("    classDef removed fill:#f8d7da,stroke:#dc3545,stroke-width:2px,stroke-dasharray: 5 5")
-        lines.append("    classDef modified fill:#fff3cd,stroke:#ffc107,stroke-width:2px")
-
-        if added_ids:
-            lines.append(f"    class {','.join(added_ids)} added")
-        if removed_ids:
-            lines.append(f"    class {','.join(removed_ids)} removed")
-        if modified_ids:
-            lines.append(f"    class {','.join(modified_ids)} modified")
-
-    # UDF nodes always get purple styling
-    udf_ids = [
-        cid.replace(".", "_").replace("-", "_")
-        for cid, c in contracts.items()
-        if c["dataset"]["type"] == "function"
-        and "external_udf" not in c.get("tags", [])
-    ]
-    ext_udf_ids = [
-        cid.replace(".", "_").replace("-", "_")
-        for cid, c in contracts.items()
-        if c["dataset"]["type"] == "function"
-        and "external_udf" in c.get("tags", [])
-    ]
-    if udf_ids:
-        lines.append("")
-        lines.append("    classDef udf fill:#e8d5f5,stroke:#7b2d8e,stroke-width:2px")
-        lines.append(f"    class {','.join(udf_ids)} udf")
-    if ext_udf_ids:
-        lines.append("")
-        lines.append("    classDef extudf fill:#e8d5f5,stroke:#7b2d8e,stroke-width:2px,stroke-dasharray: 5 5")
-        lines.append(f"    class {','.join(ext_udf_ids)} extudf")
-
-    # Check nodes always get orange styling
-    check_ids = [
-        cid.replace(".", "_").replace("-", "_")
-        for cid, c in contracts.items()
-        if c["dataset"]["type"] == "quality"
-    ]
-    if check_ids:
-        lines.append("")
-        lines.append("    classDef check fill:#ffecd2,stroke:#e67e22,stroke-width:2px")
-        lines.append(f"    class {','.join(check_ids)} check")
-
-    # Volume nodes get blue/teal styling
-    volume_ids = [
-        cid.replace(".", "_").replace("-", "_")
-        for cid, c in contracts.items()
-        if c["dataset"]["type"] == "volume"
-    ]
-    if volume_ids:
-        lines.append("")
-        lines.append("    classDef volume fill:#e0f2f1,stroke:#00897b,stroke-width:2px")
-        lines.append(f"    class {','.join(volume_ids)} volume")
-
-    # Python-managed nodes get a distinct green styling
-    pymanaged_ids = [
-        cid.replace(".", "_").replace("-", "_")
-        for cid, c in contracts.items()
-        if "python_managed" in c.get("tags", [])
-    ]
-    if pymanaged_ids:
-        lines.append("")
-        lines.append("    classDef pymanaged fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,stroke-dasharray: 5 5")
-        lines.append(f"    class {','.join(pymanaged_ids)} pymanaged")
 
     return "\n".join(lines)
 

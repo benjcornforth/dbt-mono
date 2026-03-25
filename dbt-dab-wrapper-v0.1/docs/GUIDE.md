@@ -45,6 +45,8 @@ forge diff
 | `forge setup` | Creates project structure + forge.yml |
 | `forge compile` | Turns dbt/ddl into SQL (no coding needed) |
 | `forge deploy` | Builds + deploys to Databricks |
+| `forge visual-docs --profile dev` | Regenerates all visual Markdown docs |
+| `forge graph --profile dev` | Visual diagram of the current asset graph |
 | `forge diff` | Shows what changed since last deploy |
 | `forge diff --mermaid` | Visual diagram of changes (color-coded) |
 | `forge explain model.col` | Full provenance tree for any column |
@@ -188,8 +190,11 @@ Trace any value back to its source with one command:
 # See full provenance tree in terminal
 forge explain customer_summary.total_revenue
 
+# Regenerate all visual docs in one command
+forge visual-docs --profile dev
+
 # As Mermaid diagram
-forge explain customer_summary.total_revenue --mermaid --output docs/explain.mmd
+forge explain customer_summary.total_revenue --mermaid --output docs/explain.md
 
 # As JSON (for scripting)
 forge explain customer_summary.total_revenue --json
@@ -490,6 +495,8 @@ stg_orders
 - Open this file to see the full pipeline: stages, tasks, compute, and schedule.
 - To regenerate manually: `forge workflow --dab`
 - To see the pipeline as a diagram: `forge workflow --mermaid`
+- To see the current asset graph as a diagram: `forge graph --profile <name>`
+- To generate GitHub-renderable Markdown: `forge graph --profile <name> --output docs/table-lineage.md`
 
 The graph (`forge diff`) includes a **DAB Workflow** node linked to every model,
 so you can see orchestration alongside data lineage.
@@ -503,4 +510,5 @@ so you can see orchestration alongside data lineage.
 | Bad data in table | Add a `quarantine` rule to the model |
 | Need to rename a column | Create a migration YAML file |
 | Want to see the pipeline | Run `forge workflow --mermaid` |
+| Want to see table lineage | Run `forge graph --profile <name>` |
 | Python type errors | Run `forge codegen` to regenerate SDK |

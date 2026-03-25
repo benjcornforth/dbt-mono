@@ -40,7 +40,7 @@ from forge.graph import (
     render_provenance_tree,
 )
 from forge.type_safe import build_models, generate_sdk_file
-from forge.workflow import build_workflow, build_domain_workflows, generate_bundle_config, run_bundle_command
+from forge.workflow import build_workflow, build_domain_workflows, generate_bundle_config, render_workflows_mermaid, run_bundle_command
 from forge.teardown import (
     build_teardown_plan,
     build_backup,
@@ -168,6 +168,208 @@ def _default_pure_sql_output(profile_name: str) -> Path:
     return _target_artifact_root(profile_name) / "sql"
 
 
+def _prepare_target_project(target: str, config: dict) -> tuple[Path, dict, dict]:
+    target_root = _target_artifact_root(target)
+    _reset_dir(target_root)
+    target_config, profile = _resolve_target_config(config, target)
+    _stage_target_support_files(target_root, target_config)
+    return target_root, target_config, profile
+
+
+def _compile_target_dbt_project(target: str, config: dict) -> tuple[Path, dict, dict, dict[str, Path]]:
+    target_root, target_config, profile = _prepare_target_project(target, config)
+    with _pushd(target_root):
+        results = compile_all(Path("dbt") / "ddl", Path("dbt") / "models", forge_config=target_config)
+    return target_root, target_config, profile, results
+
+
+def _build_dbt_env(conn) -> dict[str, str]:
+    dbt_env = os.environ.copy()
+    if conn.host:
+        dbt_env["DBT_DATABRICKS_HOST"] = conn.host
+    if conn.token:
+        dbt_env["DBT_DATABRICKS_TOKEN"] = conn.token
+    if conn.http_path:
+        dbt_env["DBT_DATABRICKS_HTTP_PATH"] = conn.http_path
+    return dbt_env
+
+
+def _build_dbt_runtime_vars(config: dict, prof: dict, conn) -> tuple[dict[str, str], list[str]]:
+    schema_vars = get_schema_variables(prof, config)
+    dbt_vars = {
+        **schema_vars,
+        "git_commit": config.get("git_commit", "local"),
+        "compute_type": conn.compute_type or "serverless",
+    }
+    return schema_vars, ["--vars", yaml.dump(dbt_vars)]
+
+
+def _verify_required_catalogs(conn, prof: dict, schema_vars: dict[str, str]) -> None:
+    if conn.platform != "databricks":
+        return
+
+    required_catalogs = set(schema_vars.get(key, "") for key in schema_vars if key.startswith("catalog_"))
+    if not required_catalogs:
+        return
+
+    typer.echo("🔍 Checking catalogs...")
+    try:
+        db_profile = prof.get("databricks_profile", "DEFAULT")
+        result = subprocess.run(
+            ["databricks", "unity-catalog", "catalogs", "list", "--profile", db_profile],
+            check=True, capture_output=True, text=True,
+        )
+        catalogs_data = json.loads(result.stdout)
+        existing_catalogs = set()
+        items = catalogs_data if isinstance(catalogs_data, list) else catalogs_data.get("catalogs", [])
+        for cat in items:
+            if isinstance(cat, dict) and "name" in cat:
+                existing_catalogs.add(cat["name"].lower())
+            elif isinstance(cat, str):
+                existing_catalogs.add(cat.lower())
+
+        missing = sorted(c for c in required_catalogs if c.lower() not in existing_catalogs)
+        if missing:
+            typer.echo(f"  ❌ Missing catalog(s): {', '.join(missing)}")
+            typer.echo("     Create them first:")
+            for cat in missing:
+                typer.echo(f"       CREATE CATALOG IF NOT EXISTS `{cat}`;")
+            typer.echo("     Or update forge.yml scope/catalog_pattern to match existing catalogs.")
+            raise typer.Exit(1)
+        typer.echo(f"  ✅ All catalogs verified: {', '.join(sorted(required_catalogs))}")
+    except subprocess.CalledProcessError:
+        typer.echo("  ⚠️  Could not verify catalogs (databricks CLI error). Continuing...")
+    except (FileNotFoundError, json.JSONDecodeError):
+        typer.echo("  ⚠️  Could not verify catalogs (databricks CLI not found). Continuing...")
+
+
+def _run_dbt_operation_sql(sql_text: str, *, dbt_args: list[str], dbt_env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["dbt", "run-operation", "deploy_udfs", "--args", yaml.dump({"udfs_sql": sql_text})] + dbt_args,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=dbt_env,
+    )
+
+
+def _deploy_staged_volumes(schema_vars: dict[str, str], *, dbt_args: list[str], dbt_env: dict[str, str]) -> None:
+    volumes_dir = Path("dbt/volumes")
+    if not volumes_dir.is_dir():
+        return
+
+    vol_files = sorted(volumes_dir.glob("*.sql"))
+    if not vol_files:
+        return
+
+    typer.echo("📦 Deploying Volumes...")
+    for vol_file in vol_files:
+        vol_sql = vol_file.read_text()
+        for var_name, var_val in schema_vars.items():
+            vol_sql = vol_sql.replace(f"{{{{ var(\"{var_name}\") }}}}", var_val)
+        try:
+            _run_dbt_operation_sql(vol_sql, dbt_args=dbt_args, dbt_env=dbt_env)
+            typer.echo(f"  ✅ Volume: {vol_file.stem}")
+        except subprocess.CalledProcessError as exc:
+            output = (exc.stdout or "") + (exc.stderr or "")
+            if "already exists" in output.lower():
+                typer.echo(f"  ✅ Volume: {vol_file.stem} (exists)")
+            else:
+                typer.echo(f"  ⚠️  Volume {vol_file.stem} failed:")
+                for line in output.strip().splitlines()[-5:]:
+                    typer.echo(f"     {line}")
+        except FileNotFoundError:
+            typer.echo(f"  ⚠️  Skipped {vol_file.stem} (dbt not found)")
+
+
+def _deploy_staged_udfs(prof: dict, config: dict, *, dbt_args: list[str], dbt_env: dict[str, str]) -> None:
+    functions_dir = Path("dbt/functions")
+    if not functions_dir.is_dir():
+        return
+
+    udf_files = sorted(functions_dir.glob("*.sql"))
+    if not udf_files:
+        return
+
+    typer.echo("🔧 Deploying UDFs via dbt run-operation...")
+    expanded_prof = _expand_env_prefix(prof, config)
+    target_catalog = expanded_prof.get("catalog", "main")
+    target_schema = expanded_prof.get("schema", "default")
+    ensure_schema_sql = f"CREATE SCHEMA IF NOT EXISTS `{target_catalog}`.`{target_schema}`"
+
+    sql_files = [path for path in udf_files if "LANGUAGE PYTHON" not in path.read_text().upper()]
+    py_files = [path for path in udf_files if "LANGUAGE PYTHON" in path.read_text().upper()]
+
+    def _deploy_udf_batch(files: list[Path], label: str) -> bool:
+        sql_text = "\n".join(path.read_text() for path in files)
+        sql_text = sql_text.replace("{{ target.catalog }}", target_catalog)
+        sql_text = sql_text.replace("{{ target.schema }}", target_schema)
+        sql_text = f"{ensure_schema_sql};\n{sql_text}"
+        try:
+            _run_dbt_operation_sql(sql_text, dbt_args=dbt_args, dbt_env=dbt_env)
+            typer.echo(f"  ✅ Deployed {label}: {', '.join(path.stem for path in files)}")
+            return True
+        except subprocess.CalledProcessError as exc:
+            output = (exc.stdout or "") + (exc.stderr or "")
+            typer.echo(f"  ❌ {label} deploy failed:")
+            for line in output.strip().splitlines()[-10:]:
+                typer.echo(f"     {line}")
+            return False
+        except FileNotFoundError:
+            typer.echo("  ⚠️  UDF deploy skipped (dbt not found).")
+            return False
+
+    if sql_files and not _deploy_udf_batch(sql_files, "SQL UDF(s)"):
+        raise typer.Exit(1)
+    if py_files and not _deploy_udf_batch(py_files, "Python UDF(s)"):
+        typer.echo("  💡 Python UDFs require a Pro or Serverless SQL warehouse.")
+        typer.echo("     Check your warehouse type, or deploy Python UDFs via a cluster.")
+
+
+def _run_staged_dbt_commands(*, dbt_args: list[str], dbt_env: dict[str, str]) -> None:
+    seed_dir = Path("dbt/seeds")
+    if seed_dir.exists() and any(seed_dir.glob("*.csv")):
+        typer.echo("🌱 Seeding source data...")
+        try:
+            subprocess.run(["dbt", "seed"] + dbt_args, check=True, env=dbt_env)
+        except subprocess.CalledProcessError as exc:
+            typer.echo(f"  ⚠️  Seed failed (exit {exc.returncode}). Check seed CSV files.")
+        except FileNotFoundError:
+            return
+
+    typer.echo("✅ Running dbt...")
+    try:
+        subprocess.run(["dbt", "run"] + dbt_args, check=True, env=dbt_env)
+    except FileNotFoundError:
+        typer.echo("💡 Tip: install dbt-databricks with poetry if needed")
+
+
+def _run_local_staged_deploy(build_result: dict[str, Path | list[str] | str], *, schema_vars: dict[str, str], prof: dict, config: dict, dbt_vars_flag: list[str], dbt_env: dict[str, str]) -> None:
+    typer.echo("📍 Running in local mode from the staged target bundle...")
+    local_dbt_args = ["--project-dir", ".", "--profiles-dir", "."] + dbt_vars_flag
+
+    with _pushd(build_result["target_root"]):
+        _deploy_staged_volumes(schema_vars, dbt_args=local_dbt_args, dbt_env=dbt_env)
+        _deploy_staged_udfs(prof, config, dbt_args=local_dbt_args, dbt_env=dbt_env)
+        _run_staged_dbt_commands(dbt_args=local_dbt_args, dbt_env=dbt_env)
+
+
+def _deploy_staged_bundle(target_root: Path, target_name: str) -> None:
+    with _pushd(target_root):
+        typer.echo("🚀 Running databricks bundle deploy from staged target root...")
+        result = run_bundle_command("deploy", target=target_name)
+
+    if result["success"]:
+        typer.echo("✅ Bundle deployed to Databricks.")
+        if result["output"]:
+            for line in result["output"].strip().splitlines():
+                typer.echo(f"  {line}")
+        return
+
+    typer.echo(f"  ⚠️  Bundle deploy failed: {result['error']}")
+    typer.echo(f"  Run manually from {target_root}: databricks bundle deploy --target {target_name}")
+
+
 @contextmanager
 def _pushd(path: Path):
     previous = Path.cwd()
@@ -193,6 +395,42 @@ def _copy_file_if_exists(source: Path, destination: Path) -> None:
     if source.is_file():
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
+
+
+def _is_markdown_output(output: str | None) -> bool:
+    return bool(output) and Path(output).suffix.lower() == ".md"
+
+
+def _render_mermaid_markdown(diagrams: list[tuple[str, str]]) -> str:
+    sections: list[str] = []
+    for _, diagram in diagrams:
+        sections.append(f"```mermaid\n{diagram}\n```")
+    return "\n\n".join(sections) + "\n"
+
+
+def _build_visual_documentation_markdown(
+    pipeline_markdown: str,
+    table_lineage_markdown: str,
+    column_lineage_markdown: str,
+    *,
+    model_dot_column: str,
+) -> str:
+    return "\n".join([
+        "# Visual Documentation",
+        "",
+        "## Pipeline Workflow",
+        "",
+        pipeline_markdown.rstrip(),
+        "",
+        "## Table Lineage",
+        "",
+        table_lineage_markdown.rstrip(),
+        "",
+        f"## Column Lineage: {model_dot_column}",
+        "",
+        column_lineage_markdown.rstrip(),
+        "",
+    ])
 
 
 def _materialize_profile_config(config: dict, profile_name: str) -> tuple[dict, dict]:
@@ -224,8 +462,6 @@ def _stage_target_support_files(target_root: Path, target_config: dict) -> None:
     _copy_tree_if_exists(_PROJECT_ROOT / "python", target_root / "python")
     _copy_tree_if_exists(_PROJECT_ROOT / "macros", target_root / "macros")
     _copy_file_if_exists(_PROJECT_ROOT / "dbt_project.yml", target_root / "dbt_project.yml")
-    _copy_file_if_exists(_PROJECT_ROOT / "packages.yml", target_root / "packages.yml")
-    _copy_file_if_exists(_PROJECT_ROOT / "package-lock.yml", target_root / "package-lock.yml")
     generate_profiles_yml(target_config, output_path=target_root / "profiles.yml")
     (target_root / "forge.yml").write_text(
         yaml.dump(target_config, sort_keys=False, default_flow_style=False)
@@ -285,11 +521,7 @@ def _write_deploy_manifest(
 
 
 def _build_target_bundle(target: str, config: dict, sql_mode: bool) -> dict[str, Path | list[str] | str]:
-    target_root = _target_artifact_root(target)
-    _reset_dir(target_root)
-
-    target_config, profile = _resolve_target_config(config, target)
-    _stage_target_support_files(target_root, target_config)
+    target_root, target_config, profile = _prepare_target_project(target, config)
     wheel_paths = _build_and_stage_wheel(target_root)
 
     with _pushd(target_root):
@@ -576,260 +808,41 @@ def deploy(
     if conn.host:
         typer.echo(f"  🔗 Host: {conn.host}")
 
-    # Build env with resolved connection so dbt's {{ env_var(...) }} finds them
-    dbt_env = os.environ.copy()
-    if conn.host:
-        dbt_env["DBT_DATABRICKS_HOST"] = conn.host
-    if conn.token:
-        dbt_env["DBT_DATABRICKS_TOKEN"] = conn.token
-    if conn.http_path:
-        dbt_env["DBT_DATABRICKS_HTTP_PATH"] = conn.http_path
+    dbt_env = _build_dbt_env(conn)
 
     # Auto-regenerate profiles.yml so dbt uses current forge.yml settings
     generate_profiles_yml(config, output_path=Path("profiles.yml"))
 
-    # Build dbt vars: catalog/schema variables + lineage provenance
-    schema_vars = get_schema_variables(prof, config)
-    dbt_vars = {
-        **schema_vars,
-        "git_commit": config.get("git_commit", "local"),
-        "compute_type": conn.compute_type or "serverless",
-    }
-    dbt_vars_flag = ["--vars", yaml.dump(dbt_vars)]
+    schema_vars, dbt_vars_flag = _build_dbt_runtime_vars(config, prof, conn)
 
-    # Pre-flight: verify required catalogs exist on the target platform
-    if conn.platform == "databricks":
-        required_catalogs = set(schema_vars.get(k, "") for k in schema_vars if k.startswith("catalog_"))
-        if required_catalogs:
-            typer.echo("🔍 Checking catalogs...")
-            try:
-                # Use Databricks CLI to list catalogs (respects databrickscfg profile)
-                db_profile = prof.get("databricks_profile", "DEFAULT")
-                result = subprocess.run(
-                    ["databricks", "unity-catalog", "catalogs", "list",
-                     "--profile", db_profile],
-                    check=True, capture_output=True, text=True,
-                )
-                import json
-                catalogs_data = json.loads(result.stdout)
-                existing_catalogs = set()
-                # Handle both list and dict-with-catalogs formats
-                items = catalogs_data if isinstance(catalogs_data, list) else catalogs_data.get("catalogs", [])
-                for cat in items:
-                    if isinstance(cat, dict) and "name" in cat:
-                        existing_catalogs.add(cat["name"].lower())
-                    elif isinstance(cat, str):
-                        existing_catalogs.add(cat.lower())
+    _verify_required_catalogs(conn, prof, schema_vars)
 
-                missing = sorted(c for c in required_catalogs if c.lower() not in existing_catalogs)
-                if missing:
-                    typer.echo(f"  ❌ Missing catalog(s): {', '.join(missing)}")
-                    typer.echo("     Create them first:")
-                    for cat in missing:
-                        typer.echo(f"       CREATE CATALOG IF NOT EXISTS `{cat}`;")
-                    typer.echo("     Or update forge.yml scope/catalog_pattern to match existing catalogs.")
-                    raise typer.Exit(1)
-                typer.echo(f"  ✅ All catalogs verified: {', '.join(sorted(required_catalogs))}")
-            except subprocess.CalledProcessError as e:
-                typer.echo(f"  ⚠️  Could not verify catalogs (databricks CLI error). Continuing...")
-            except (FileNotFoundError, json.JSONDecodeError):
-                typer.echo("  ⚠️  Could not verify catalogs (databricks CLI not found). Continuing...")
-
-    if not local:
-        target_name = prof["_name"]
-        typer.echo(f"📦 Building staged target bundle for {target_name}...")
-        try:
-            build_result = _build_target_bundle(target_name, config, sql_mode=sql)
-            typer.echo(f"  ✅ Built target bundle → {build_result['target_root']}")
-        except subprocess.CalledProcessError as exc:
-            typer.echo(f"❌ Target bundle build failed while running: {' '.join(exc.cmd) if exc.cmd else 'subprocess'}")
-            raise typer.Exit(1)
-        except Exception as exc:
-            typer.echo(f"❌ Target bundle build failed: {exc}")
-            raise typer.Exit(1)
-
-        try:
-            with _pushd(build_result["target_root"]):
-                typer.echo("🚀 Running databricks bundle deploy from staged target root...")
-                result = run_bundle_command("deploy", target=target_name)
-            if result["success"]:
-                typer.echo("✅ Bundle deployed to Databricks.")
-                if result["output"]:
-                    for line in result["output"].strip().splitlines():
-                        typer.echo(f"  {line}")
-            else:
-                typer.echo(f"  ⚠️  Bundle deploy failed: {result['error']}")
-                typer.echo(f"  Run manually from {build_result['target_root']}: databricks bundle deploy --target {target_name}")
-        except Exception as exc:
-            typer.echo(f"  ⚠️  Bundle deploy skipped: {exc}")
-
-        typer.echo("🎉 Deploy complete! Run 'forge diff' to see graph changes.")
-        return
-
-    # Compile DDL → models + functions + sources
-    ddl_path = _resolve_ddl(DDL_DEFAULT)
-    if ddl_path.exists():
-        compile_all(ddl_path, Path("dbt/models"), forge_config=config)
-        typer.echo("  ✅ Compiled models, functions, sources")
-
-    # ── LOCAL MODE: run setup/dbt locally from CLI ──
-    if local:
-        typer.echo("📍 Running in local mode...")
-
-        # Deploy Volumes first (before UDFs or models — volumes must exist for ingestion)
-        volumes_dir = Path("dbt/volumes")
-        if volumes_dir.is_dir():
-            vol_files = sorted(volumes_dir.glob("*.sql"))
-            if vol_files:
-                typer.echo("📦 Deploying Volumes...")
-                for vol_file in vol_files:
-                    vol_sql = vol_file.read_text()
-                    # Replace catalog/schema placeholders with resolved values
-                    for var_name, var_val in schema_vars.items():
-                        vol_sql = vol_sql.replace(f"{{{{ var(\"{var_name}\") }}}}", var_val)
-                    try:
-                        subprocess.run(
-                            ["dbt", "run-operation", "deploy_udfs",
-                             "--args", yaml.dump({"udfs_sql": vol_sql}),
-                             "--project-dir", "."] + dbt_vars_flag,
-                            check=True, capture_output=True, text=True, env=dbt_env,
-                        )
-                        typer.echo(f"  ✅ Volume: {vol_file.stem}")
-                    except subprocess.CalledProcessError as e:
-                        output = (e.stdout or "") + (e.stderr or "")
-                        # Check if it's just "already exists" — that's fine
-                        if "already exists" in output.lower():
-                            typer.echo(f"  ✅ Volume: {vol_file.stem} (exists)")
-                        else:
-                            typer.echo(f"  ⚠️  Volume {vol_file.stem} failed:")
-                            for line in output.strip().splitlines()[-5:]:
-                                typer.echo(f"     {line}")
-                    except FileNotFoundError:
-                        typer.echo(f"  ⚠️  Skipped {vol_file.stem} (dbt not found)")
-
-        # Deploy UDFs (functions must exist before models reference them)
-        functions_dir = Path("dbt/functions")
-        if functions_dir.is_dir():
-            udf_files = sorted(functions_dir.glob("*.sql"))
-            if udf_files:
-                typer.echo("🔧 Deploying UDFs via dbt run-operation...")
-                # Resolve Jinja placeholders — run_query receives raw SQL, not Jinja
-                expanded_prof = _expand_env_prefix(prof, config)
-                target_catalog = expanded_prof.get("catalog", "main")
-                target_schema = expanded_prof.get("schema", "default")
-
-                # Ensure the UDF target schema exists (may not if the layer is fully
-                # bifurcated into domain instances and dbt hasn't created it yet)
-                _ensure_schema_sql = (
-                    f"CREATE SCHEMA IF NOT EXISTS `{target_catalog}`.`{target_schema}`"
-                )
-
-                # Separate SQL UDFs from Python/Pandas UDFs — warehouses that don't
-                # support LANGUAGE PYTHON would otherwise block all UDF deployment
-                sql_files = [f for f in udf_files if "LANGUAGE PYTHON" not in f.read_text().upper()]
-                py_files = [f for f in udf_files if "LANGUAGE PYTHON" in f.read_text().upper()]
-
-                def _deploy_udf_batch(files: list[Path], label: str) -> bool:
-                    sql = "\n".join(f.read_text() for f in files)
-                    sql = sql.replace("{{ target.catalog }}", target_catalog)
-                    sql = sql.replace("{{ target.schema }}", target_schema)
-                    # Prepend schema creation so UDFs can be deployed even when the
-                    # target schema doesn't exist yet (e.g. fully bifurcated layers)
-                    sql = f"{_ensure_schema_sql};\n{sql}"
-                    try:
-                        subprocess.run(
-                            ["dbt", "run-operation", "deploy_udfs",
-                             "--args", yaml.dump({"udfs_sql": sql}),
-                             "--project-dir", "."] + dbt_vars_flag,
-                            check=True, capture_output=True, text=True, env=dbt_env,
-                        )
-                        typer.echo(f"  ✅ Deployed {label}: {', '.join(f.stem for f in files)}")
-                        return True
-                    except subprocess.CalledProcessError as e:
-                        output = (e.stdout or "") + (e.stderr or "")
-                        typer.echo(f"  ❌ {label} deploy failed:")
-                        for line in output.strip().splitlines()[-10:]:
-                            typer.echo(f"     {line}")
-                        return False
-                    except FileNotFoundError:
-                        typer.echo("  ⚠️  UDF deploy skipped (dbt not found).")
-                        return False
-
-                ok = True
-                if sql_files:
-                    ok = _deploy_udf_batch(sql_files, "SQL UDF(s)")
-                if not ok:
-                    raise typer.Exit(1)
-                if py_files:
-                    py_ok = _deploy_udf_batch(py_files, "Python UDF(s)")
-                    if not py_ok:
-                        typer.echo("  💡 Python UDFs require a Pro or Serverless SQL warehouse.")
-                        typer.echo("     Check your warehouse type, or deploy Python UDFs via a cluster.")
-
-        # Run dbt seed (load CSV source data into tables)
-        seed_dir = Path("dbt/seeds")
-        if seed_dir.exists() and any(seed_dir.glob("*.csv")):
-            typer.echo("🌱 Seeding source data...")
-            try:
-                subprocess.run(["dbt", "seed", "--project-dir", "."] + dbt_vars_flag, check=True, env=dbt_env)
-            except subprocess.CalledProcessError as e:
-                typer.echo(f"  ⚠️  Seed failed (exit {e.returncode}). Check seed CSV files.")
-            except FileNotFoundError:
-                pass
-
-        # Install dbt package dependencies only when the project declares them.
-        if Path("packages.yml").exists():
-            typer.echo("📦 Installing dbt packages...")
-            try:
-                subprocess.run(["dbt", "deps", "--project-dir", "."], check=True, env=dbt_env)
-            except subprocess.CalledProcessError as e:
-                typer.echo(f"  ⚠️  dbt deps failed (exit {e.returncode})")
-            except FileNotFoundError:
-                pass
-
-        # Run dbt (SQL-only models – zero cold starts on serverless)
-        typer.echo("✅ Running dbt...")
-        try:
-            subprocess.run(["dbt", "run", "--project-dir", "."] + dbt_vars_flag, check=True, env=dbt_env)
-        except FileNotFoundError:
-            typer.echo("💡 Tip: install dbt-databricks with poetry if needed")
-
-    job_yaml_paths = []
+    target_name = prof["_name"]
+    typer.echo(f"📦 Building staged target bundle for {target_name}...")
     try:
-        graph = build_graph(config)
-        workflows = build_domain_workflows(config, graph, sql_mode=sql)
-        for wf in workflows:
-            wf_path = Path(f"resources/jobs/{wf.name}.yml")
-            wf_path.parent.mkdir(parents=True, exist_ok=True)
-            wf_path.write_text(wf.to_databricks_yml())
-            job_yaml_paths.append(str(wf_path))
-            typer.echo(f"📋 DAB workflow → {wf_path}")
-    except FileNotFoundError as exc:
-        typer.echo(f"❌ {exc}")
-        raise typer.Exit(code=1)
+        build_result = _build_target_bundle(target_name, config, sql_mode=sql)
+        typer.echo(f"  ✅ Built target bundle → {build_result['target_root']}")
+    except subprocess.CalledProcessError as exc:
+        typer.echo(f"❌ Target bundle build failed while running: {' '.join(exc.cmd) if exc.cmd else 'subprocess'}")
+        raise typer.Exit(1)
     except Exception as exc:
-        typer.echo(f"  ⚠️  Workflow YAML skipped: {exc}")
+        typer.echo(f"❌ Target bundle build failed: {exc}")
+        raise typer.Exit(1)
 
-    # Generate root databricks.yml and run bundle deploy
-    if job_yaml_paths:
-        try:
-            bundle_yml = generate_bundle_config(config, job_yaml_paths, sql_mode=sql)
-            bundle_path = Path("databricks.yml")
-            bundle_path.write_text(bundle_yml)
-            typer.echo(f"📦 DAB bundle config → {bundle_path}")
+    if local:
+        _run_local_staged_deploy(
+            build_result,
+            schema_vars=schema_vars,
+            prof=prof,
+            config=config,
+            dbt_vars_flag=dbt_vars_flag,
+            dbt_env=dbt_env,
+        )
 
-            typer.echo("🚀 Running databricks bundle deploy...")
-            result = run_bundle_command("deploy")
-            if result["success"]:
-                typer.echo("✅ Bundle deployed to Databricks.")
-                if result["output"]:
-                    for line in result["output"].strip().splitlines():
-                        typer.echo(f"  {line}")
-            else:
-                typer.echo(f"  ⚠️  Bundle deploy failed: {result['error']}")
-                typer.echo("  You can run manually: databricks bundle deploy")
-        except Exception as exc:
-            typer.echo(f"  ⚠️  Bundle deploy skipped: {exc}")
+    try:
+        _deploy_staged_bundle(build_result["target_root"], target_name)
+    except Exception as exc:
+        typer.echo(f"  ⚠️  Bundle deploy skipped: {exc}")
 
     typer.echo("🎉 Deploy complete! Run 'forge diff' to see graph changes.")
 
@@ -1144,6 +1157,38 @@ def restore(
 # DIFF – graph magic
 # =============================================
 @app.command()
+def graph(
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Forge profile (from forge.yml profiles:)"),
+    direction: str = typer.Option("LR", "--direction", help="Mermaid direction: LR, RL, TB, or BT"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Write Mermaid graph to file"),
+):
+    """forge graph → renders the current asset graph as Mermaid from source code"""
+    if not CONFIG_FILE.exists():
+        typer.echo("❌ No forge.yml found. Run 'forge setup' first!")
+        raise typer.Exit(1)
+
+    config = yaml.safe_load(CONFIG_FILE.read_text())
+    if profile:
+        selected_profile = _require_profile_name(config, command_name="forge graph", profile=profile)
+        config, _ = _materialize_profile_config(config, selected_profile)
+
+    direction_value = direction.upper()
+    if direction_value not in {"LR", "RL", "TB", "BT"}:
+        typer.echo("❌ --direction must be one of: LR, RL, TB, BT")
+        raise typer.Exit(1)
+
+    diagram = render_mermaid(build_graph(config), direction=direction_value)
+    result = _render_mermaid_markdown([("Asset Graph", diagram)]) if _is_markdown_output(output) else diagram
+
+    if output:
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
+        Path(output).write_text(result)
+        typer.echo(f"✅ Mermaid graph → {output}")
+    else:
+        typer.echo(diagram)
+
+
+@app.command()
 def diff(
     mermaid: bool = typer.Option(False, "--mermaid", help="Output Mermaid diff diagram"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Write diff output to file"),
@@ -1172,7 +1217,8 @@ def diff(
         diagram = render_mermaid(new_graph, diff=result)
         if output:
             Path(output).parent.mkdir(parents=True, exist_ok=True)
-            Path(output).write_text(diagram)
+            content = _render_mermaid_markdown([("Graph Diff", diagram)]) if _is_markdown_output(output) else diagram
+            Path(output).write_text(content)
             typer.echo(f"✅ Mermaid diff diagram → {output}")
         else:
             typer.echo(diagram)
@@ -1241,7 +1287,8 @@ def explain(
         import json
         result = json.dumps(tree, indent=2, default=str)
     elif mermaid_flag:
-        result = render_provenance_tree(tree, mermaid=True)
+        diagram = render_provenance_tree(tree, mermaid=True)
+        result = _render_mermaid_markdown([(f"Column Lineage: {model_dot_column}", diagram)]) if _is_markdown_output(output) else diagram
     else:
         result = render_provenance_tree(tree, full=full, light=light, show_origin=origin_flag)
 
@@ -1327,7 +1374,8 @@ def workflow(
     workflows = build_domain_workflows(config, graph, sql_mode=sql)
 
     if mermaid:
-        result = "\n\n".join(wf.to_mermaid() for wf in workflows)
+        diagram = render_workflows_mermaid(workflows)
+        result = _render_mermaid_markdown([("Pipeline Workflow", diagram)]) if _is_markdown_output(output) else diagram
     elif dab:
         result = "\n---\n".join(wf.to_databricks_yml() for wf in workflows)
     else:
@@ -1357,6 +1405,71 @@ def workflow(
         for task in wf.tasks:
             deps = f" ← {', '.join(task.depends_on)}" if task.depends_on else ""
             typer.echo(f"  [{task.stage}] {task.name}{deps}")
+
+
+@app.command("visual-docs")
+def visual_docs(
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Forge profile (from forge.yml profiles:)"),
+    column: str = typer.Option("customer_summary.total_revenue", "--column", help="Model.column to render for the column lineage doc"),
+    output_dir: str = typer.Option("docs", "--output-dir", help="Directory where visual documentation markdown files are written"),
+):
+    """forge visual-docs → regenerates all Mermaid markdown docs in one command"""
+    if not CONFIG_FILE.exists():
+        typer.echo("❌ No forge.yml found. Run 'forge setup' first!")
+        raise typer.Exit(1)
+
+    config = yaml.safe_load(CONFIG_FILE.read_text())
+    selected_profile = _require_profile_name(config, command_name="forge visual-docs", profile=profile)
+    config, _ = _materialize_profile_config(config, selected_profile)
+
+    parts = column.split(".", 1)
+    if len(parts) != 2:
+        typer.echo("❌ --column must be in the form <model_name>.<column_name>")
+        raise typer.Exit(1)
+    model_name, column_name = parts
+
+    docs_dir = Path(output_dir)
+    docs_dir.mkdir(parents=True, exist_ok=True)
+
+    pipeline_path = docs_dir / "pipeline.md"
+    table_lineage_path = docs_dir / "table-lineage.md"
+    safe_column_name = column.replace(".", "-")
+    default_column = "customer_summary.total_revenue"
+    column_lineage_filename = "customer-summary-lineage.md" if column == default_column else f"{safe_column_name}-lineage.md"
+    column_lineage_path = docs_dir / column_lineage_filename
+    visual_doc_path = docs_dir / "VISUAL_DOCUMENTATION.md"
+
+    graph = build_graph(config)
+    workflows = build_domain_workflows(config, graph, sql_mode=True)
+    pipeline_markdown = _render_mermaid_markdown([("Pipeline Workflow", render_workflows_mermaid(workflows))])
+    table_lineage_markdown = _render_mermaid_markdown([("Asset Graph", render_mermaid(graph))])
+
+    ddl_path = _resolve_ddl(DDL_DEFAULT)
+    dbt_dir = ddl_path.parent if ddl_path.is_file() else ddl_path.parent
+    tree = walk_column_lineage(graph, model_name, column_name, dbt_dir, forge_config=config)
+    if "error" in tree:
+        typer.echo(f"❌ {tree['error']}")
+        raise typer.Exit(1)
+    column_lineage_markdown = _render_mermaid_markdown([
+        (f"Column Lineage: {column}", render_provenance_tree(tree, mermaid=True))
+    ])
+
+    pipeline_path.write_text(pipeline_markdown)
+    table_lineage_path.write_text(table_lineage_markdown)
+    column_lineage_path.write_text(column_lineage_markdown)
+    visual_doc_path.write_text(
+        _build_visual_documentation_markdown(
+            pipeline_markdown,
+            table_lineage_markdown,
+            column_lineage_markdown,
+            model_dot_column=column,
+        )
+    )
+
+    typer.echo(f"✅ Pipeline workflow → {pipeline_path}")
+    typer.echo(f"✅ Table lineage → {table_lineage_path}")
+    typer.echo(f"✅ Column lineage → {column_lineage_path}")
+    typer.echo(f"✅ Visual documentation → {visual_doc_path}")
 
 
 # =============================================
@@ -1705,30 +1818,36 @@ def dev_up(
     typer.echo(f"🚀 Setting up dev environment...")
     typer.echo(f"  📦 Dev schema: {dev_schema}")
 
-    # Compile models first
-    ddl_path = _resolve_ddl(DDL_DEFAULT)
-    if ddl_path.exists():
-        compile_all(ddl_path, Path("dbt/models"), forge_config=config)
-        typer.echo("  ✅ Compiled models")
+    target_root, _, _, _ = _compile_target_dbt_project("dev", config)
+    typer.echo(f"  ✅ Compiled staged dev project → {target_root / 'dbt' / 'models'}")
 
     # Run dbt with schema override
     dbt_cmd = [
         "dbt", "run",
         "--project-dir", ".",
+        "--profiles-dir", ".",
         "--target", "dev",
         "--vars", yaml.dump({"dev_schema": dev_schema}),
     ]
 
-    if seed:
-        typer.echo("  🌱 Seeding sample data...")
+    with _pushd(target_root):
+        if seed:
+            typer.echo("  🌱 Seeding sample data...")
+            try:
+                subprocess.run(
+                    ["dbt", "seed", "--project-dir", ".", "--profiles-dir", ".", "--target", "dev"],
+                    check=True, capture_output=True,
+                )
+                typer.echo("  ✅ Seeds loaded")
+            except (FileNotFoundError, subprocess.CalledProcessError) as e:
+                typer.echo(f"  ⚠️  Seed failed (non-fatal): {e}")
+
+        typer.echo("  ▶ Running dbt in the staged dev project...")
         try:
-            subprocess.run(
-                ["dbt", "seed", "--project-dir", ".", "--target", "dev"],
-                check=True, capture_output=True,
-            )
-            typer.echo("  ✅ Seeds loaded")
+            subprocess.run(dbt_cmd, check=True)
+            typer.echo("  ✅ Dev models materialized")
         except (FileNotFoundError, subprocess.CalledProcessError) as e:
-            typer.echo(f"  ⚠️  Seed failed (non-fatal): {e}")
+            typer.echo(f"  ⚠️  dbt run failed (non-fatal): {e}")
 
     typer.echo(f"🎉 Dev environment ready! Schema: {dev_schema}")
     typer.echo(f"   Run 'forge dev' to start watch mode.")
@@ -1738,7 +1857,7 @@ def dev_up(
 @app.command(name="dev")
 def dev(
     ddl: str = typer.Option(DDL_DEFAULT, "--ddl", help="Path to DDL file or directory"),
-    output: str = typer.Option("dbt/models", "--output", "-o", help="Output directory for SQL files"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output directory for generated SQL files"),
     poll_interval: float = typer.Option(1.0, "--poll", help="Seconds between file change polls"),
 ):
     """forge dev → watches DDL files, auto-compiles on save"""
@@ -1747,7 +1866,7 @@ def dev(
         typer.echo(f"❌ {ddl} not found. Create the canonical dbt/ddl/ tree first.")
         raise typer.Exit(1)
 
-    output_dir = Path(output)
+    output_dir = Path(output) if output else (_default_compile_output("dev") if CONFIG_FILE.exists() else Path("dbt/models"))
     typer.echo(f"👀 Watching {ddl_path} for changes (Ctrl+C to stop)...")
     typer.echo(f"   Auto-compiles → {output_dir}/")
     typer.echo("")
@@ -1766,7 +1885,10 @@ def dev(
     # Initial compile
     try:
         config = yaml.safe_load(CONFIG_FILE.read_text()) if CONFIG_FILE.exists() else None
-        results = compile_all(ddl_path, output_dir, forge_config=config)
+        if not output and config and "dev" in config.get("profiles", {}):
+            _, _, _, results = _compile_target_dbt_project("dev", config)
+        else:
+            results = compile_all(ddl_path, output_dir, forge_config=config)
         model_count = len([k for k in results if k != "_schema"])
         typer.echo(f"  ✅ Initial compile: {model_count} models")
     except Exception as e:
@@ -1780,7 +1902,10 @@ def dev(
                 last_mtime = current_mtime
                 typer.echo(f"  🔄 Change detected — recompiling...")
                 try:
-                    results = compile_all(ddl_path, output_dir, forge_config=config)
+                    if not output and config and "dev" in config.get("profiles", {}):
+                        _, _, _, results = _compile_target_dbt_project("dev", config)
+                    else:
+                        results = compile_all(ddl_path, output_dir, forge_config=config)
                     model_count = len([k for k in results if k != "_schema"])
                     typer.echo(f"  ✅ Compiled {model_count} models")
                 except Exception as e:

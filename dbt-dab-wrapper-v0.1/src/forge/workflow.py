@@ -141,11 +141,10 @@ class WorkflowTask:
     """One task in the Databricks workflow DAG."""
     name: str
     stage: str
-    task_type: str = "dbt"             # "dbt", "python", "sql", "notebook"
+    task_type: str = "dbt"             # "dbt", "python", "sql"
     models: list[str] = field(default_factory=list)
     python_file: str | None = None      # path for spark_python_task
     sql_file: str | None = None         # path for sql_task
-    notebook_path: str | None = None    # path for notebook_task
     additional_config: dict | None = None  # extra DAB keys (warehouse_id, base_parameters, etc.)
     depends_on: list[str] = field(default_factory=list)
     compute_type: str = "serverless"
@@ -183,7 +182,6 @@ class Workflow:
                     "models": t.models,
                     **({"python_file": t.python_file} if t.python_file else {}),
                     **({"sql_file": t.sql_file} if t.sql_file else {}),
-                    **({"notebook_path": t.notebook_path} if t.notebook_path else {}),
                     **({"dbt_commands": t.dbt_commands} if t.dbt_commands else {}),
                     "depends_on": [{"task_key": d} for d in t.depends_on],
                     "compute_type": t.compute_type,
@@ -248,7 +246,7 @@ class Workflow:
                 "timeout_seconds": task.timeout_minutes * 60,
             }
 
-            # environment_key only for dbt and python tasks (not sql/notebook)
+            # environment_key only for dbt and python tasks (not sql)
             if task.task_type in ("dbt", "python"):
                 task_def["environment_key"] = "default"
 
@@ -278,15 +276,6 @@ class Workflow:
                     "run_id": "{{job.run_id}}",
                 }
                 task_def["sql_task"] = sql_config
-            elif task.task_type == "notebook" and task.notebook_path:
-                # notebook_task — runs a Databricks notebook
-                notebook_path = task.notebook_path
-                if not notebook_path.startswith("/"):
-                    notebook_path = "../../" + notebook_path
-                task_def["notebook_task"] = {
-                    "notebook_path": notebook_path,
-                    **(task.additional_config or {}),
-                }
             else:
                 # dbt_task — runs dbt on serverless, SQL goes to warehouse
                 commands = task.dbt_commands or [
@@ -320,28 +309,18 @@ class Workflow:
 
     def to_mermaid(self) -> str:
         """Render the workflow DAG as a Mermaid diagram."""
-        lines = ["graph LR"]
+        lines = ["flowchart LR"]
 
         # Stage subgraphs
         stage_tasks: dict[str, list[WorkflowTask]] = {s: [] for s in STAGES}
         for task in self.tasks:
             stage_tasks.get(task.stage, stage_tasks["enrich"]).append(task)
 
-        stage_colours = {
-            "ingest": "#e3f2fd",
-            "stage": "#f3e5f5",
-            "clean": "#fff3e0",
-            "enrich": "#e8f5e9",
-            "serve": "#fce4ec",
-        }
-
         for stage in STAGES:
             tasks = stage_tasks[stage]
             if not tasks:
                 continue
-            colour = stage_colours.get(stage, "#ffffff")
             lines.append(f"    subgraph {stage.upper()}")
-            lines.append(f"        style {stage.upper()} fill:{colour}")
             for task in tasks:
                 safe = task.name.replace("-", "_")
                 model_list = ", ".join(task.models[:3])
@@ -351,8 +330,6 @@ class Workflow:
                     lines.append(f'        {safe}["{task.name}<br/>🐍 {task.python_file or model_list}"]')
                 elif task.task_type == "sql":
                     lines.append(f'        {safe}["{task.name}<br/>📄 {task.sql_file}"]')
-                elif task.task_type == "notebook":
-                    lines.append(f'        {safe}["{task.name}<br/>📓 {task.notebook_path}"]')
                 else:
                     lines.append(f'        {safe}["{task.name}<br/>{model_list}"]')
             lines.append("    end")
@@ -365,6 +342,64 @@ class Workflow:
                 lines.append(f"    {src} --> {tgt}")
 
         return "\n".join(lines)
+
+
+def render_workflows_mermaid(workflows: list[Workflow], direction: str = "LR") -> str:
+    """Render multiple workflows as one Mermaid flowchart."""
+    direction_value = direction.upper()
+    lines = [f"flowchart {direction_value}"]
+
+    stage_tasks: dict[str, list[WorkflowTask]] = {s: [] for s in STAGES}
+    for workflow in workflows:
+        for task in workflow.tasks:
+            stage_tasks.get(task.stage, stage_tasks["enrich"]).append(task)
+
+    for stage in STAGES:
+        tasks = stage_tasks[stage]
+        if not tasks:
+            continue
+        lines.append(f"    subgraph {stage.upper()}")
+        for task in tasks:
+            safe = task.name.replace("-", "_")
+            model_list = ", ".join(task.models[:3])
+            if len(task.models) > 3:
+                model_list += f" +{len(task.models)-3}"
+            if task.task_type == "python":
+                lines.append(f'        {safe}["{task.name}<br/>🐍 {task.python_file or model_list}"]')
+            elif task.task_type == "sql":
+                lines.append(f'        {safe}["{task.name}<br/>📄 {task.sql_file}"]')
+            else:
+                lines.append(f'        {safe}["{task.name}<br/>{model_list}"]')
+        lines.append("    end")
+
+    lines.append("")
+    lines.append("    %% === Data flow (all connections at the bottom) ===")
+
+    for workflow in workflows:
+        for task in workflow.tasks:
+            for dep in task.depends_on:
+                src = dep.replace("-", "_")
+                tgt = task.name.replace("-", "_")
+                lines.append(f"    {src} --> {tgt}")
+
+    for index, workflow in enumerate(workflows[:-1]):
+        next_workflow = workflows[index + 1]
+        if not workflow.name.startswith("PROCESS_") or not next_workflow.name.startswith("TEARDOWN_"):
+            continue
+
+        leaf_tasks = [
+            task for task in workflow.tasks
+            if not any(task.name in other.depends_on for other in workflow.tasks)
+        ]
+        root_tasks = [task for task in next_workflow.tasks if not task.depends_on]
+
+        for leaf in leaf_tasks:
+            src = leaf.name.replace("-", "_")
+            for root in root_tasks:
+                tgt = root.name.replace("-", "_")
+                lines.append(f"    {src} --> {tgt}")
+
+    return "\n".join(lines)
 
 
 # =============================================
@@ -408,10 +443,6 @@ def generate_bundle_config(
         sync_include.append("macros/")
     if Path("dbt_project.yml").exists():
         sync_include.append("dbt_project.yml")
-    if Path("packages.yml").exists():
-        sync_include.append("packages.yml")
-    if Path("package-lock.yml").exists():
-        sync_include.append("package-lock.yml")
     if Path("profiles.yml").exists():
         sync_include.append("profiles.yml")
     # forge.yml needed by ForgeTask at runtime
@@ -534,31 +565,27 @@ def _check_command_exists(command: str) -> bool:
 
 
 # =============================================
-# CUSTOM TASKS – user-defined sql/notebook/python tasks
+# CUSTOM TASKS – user-defined sql/python tasks
 # =============================================
 
 def load_custom_tasks(forge_config: dict) -> list[dict]:
     """
     Read custom_tasks from forge.yml (or wrapper.yml).
 
-    forge.yml:
-        custom_tasks:
-          - task_key: run_reconciliation
-            sql_task: sql/reconcile.sql
-            stage: enrich
-            depends_on: [customer_clean]
-          - task_key: notify_slack
-            notebook_task: notebooks/slack_alert.ipynb
-            stage: serve
-            depends_on: [customer_summary]
-          - task_key: my_api_pull
-            python_task: python/my_api_pull.py
-            stage: ingest
-            config:
-              timeout_seconds: 7200
+        forge.yml:
+                custom_tasks:
+                    - task_key: run_reconciliation
+                        sql_task: sql/reconcile.sql
+                        stage: enrich
+                        depends_on: [customer_clean]
+                    - task_key: my_api_pull
+                        python_task: python/my_api_pull.py
+                        stage: ingest
+                        config:
+                            timeout_seconds: 7200
 
     Returns list of task dicts with keys:
-      task_key, task_type, file, stage, depends_on, config.
+            task_key, task_type, file, stage, depends_on, config.
     """
     custom = forge_config.get("custom_tasks", [])
     result = []
@@ -572,8 +599,10 @@ def load_custom_tasks(forge_config: dict) -> list[dict]:
             task_type = "sql"
             file_path = task["sql_task"]
         elif "notebook_task" in task:
-            task_type = "notebook"
-            file_path = task["notebook_task"]
+            raise ValueError(
+                f"custom_task '{task_key}' uses notebook_task, but notebook task support has been removed. "
+                "Replace it with a python_task or sql_task."
+            )
         else:
             task_type = "dbt"
             file_path = None
@@ -988,7 +1017,6 @@ def build_workflow(
                 task_type=ct["task_type"],
                 python_file=ct["file"] if ct["task_type"] == "python" else None,
                 sql_file=ct["file"] if ct["task_type"] == "sql" else None,
-                notebook_path=ct["file"] if ct["task_type"] == "notebook" else None,
                 additional_config=ct_config or None,
                 depends_on=ct_deps,
                 compute_type=compute_type,
@@ -1103,8 +1131,6 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
 
     # Build setup commands
     commands: list[str] = []
-    if Path("packages.yml").exists():
-        commands.append("dbt deps")
     has_seeds = Path("dbt/seeds").is_dir() and any(Path("dbt/seeds").glob("*.csv"))
     if has_seeds:
         commands.append("dbt seed --full-refresh")

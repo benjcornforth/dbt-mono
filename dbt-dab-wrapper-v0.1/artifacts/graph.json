@@ -4,46 +4,13 @@
   "metadata": {
     "forge_version": "0.2.0",
     "project": "sales_data",
-    "generated_at": "2026-03-24T13:14:20.801616+00:00",
-    "git_commit": "2c4e3e8",
+    "generated_at": "2026-03-25T00:29:07.699196+00:00",
+    "git_commit": "21ae011",
     "compute_type": "serverless",
     "catalog": "main",
     "schema": "default"
   },
   "contracts": {
-    "model.sales_data.stg_customers": {
-      "apiVersion": "odcs/v3.0.0",
-      "kind": "DataContract",
-      "dataset": {
-        "name": "stg_customers",
-        "domain": "default",
-        "type": "table",
-        "description": "Model from models/sales/bronze/stg_customers.sql",
-        "catalog": "main",
-        "schema": "default",
-        "columns": []
-      },
-      "quality": {
-        "rules": [],
-        "dimension_summary": {}
-      },
-      "lineage": {
-        "materialization": "view",
-        "struct_column": "_lineage",
-        "schema_version": "3"
-      },
-      "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
-        "uses_quarantine": false
-      },
-      "tags": [],
-      "_meta": {
-        "sql_file": "models/sales/bronze/stg_customers.sql",
-        "sql_hash": "8b012f1bf5ae"
-      },
-      "_content_hash": "c989d9a5c6a0"
-    },
     "model.sales_data.raw_customers": {
       "apiVersion": "odcs/v3.0.0",
       "kind": "DataContract",
@@ -66,54 +33,20 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
         "uses_quarantine": false
       },
       "tags": [
-        "python_managed",
-        "shared"
+        "python_managed"
       ],
       "_meta": {
         "sql_file": "models/sales/bronze/raw_customers.sql",
-        "sql_hash": "80b4c7870426",
-        "managed_by": "python",
-        "domain": false
+        "sql_hash": "2af24ed38a3e",
+        "managed_by": "ingest_from_volume",
+        "domain": "sales"
       },
-      "_content_hash": "cccf548f8cb9"
-    },
-    "model.sales_data.stg_orders": {
-      "apiVersion": "odcs/v3.0.0",
-      "kind": "DataContract",
-      "dataset": {
-        "name": "stg_orders",
-        "domain": "default",
-        "type": "table",
-        "description": "Model from models/sales/bronze/stg_orders.sql",
-        "catalog": "main",
-        "schema": "default",
-        "columns": []
-      },
-      "quality": {
-        "rules": [],
-        "dimension_summary": {}
-      },
-      "lineage": {
-        "materialization": "view",
-        "struct_column": "_lineage",
-        "schema_version": "3"
-      },
-      "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
-        "uses_quarantine": false
-      },
-      "tags": [],
-      "_meta": {
-        "sql_file": "models/sales/bronze/stg_orders.sql",
-        "sql_hash": "27494b6056ba"
-      },
-      "_content_hash": "4e540b090061"
+      "_content_hash": "9b72820fa6e9"
     },
     "model.sales_data.raw_orders": {
       "apiVersion": "odcs/v3.0.0",
@@ -137,21 +70,20 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
         "uses_quarantine": false
       },
       "tags": [
-        "python_managed",
-        "shared"
+        "python_managed"
       ],
       "_meta": {
         "sql_file": "models/sales/bronze/raw_orders.sql",
-        "sql_hash": "a297328e6204",
-        "managed_by": "python",
-        "domain": false
+        "sql_hash": "066fba57499a",
+        "managed_by": "ingest_from_volume",
+        "domain": "sales"
       },
-      "_content_hash": "53cb8ccf87e3"
+      "_content_hash": "081e30b9a1fd"
     },
     "model.sales_data.file_manifest": {
       "apiVersion": "odcs/v3.0.0",
@@ -175,8 +107,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -184,11 +116,79 @@
       ],
       "_meta": {
         "sql_file": "models/sales/bronze/file_manifest.sql",
-        "sql_hash": "f3578e0f9322",
-        "managed_by": "python",
-        "domain": true
+        "sql_hash": "0dd9db8aca9e",
+        "managed_by": "ingest_from_volume",
+        "domain": "sales"
       },
-      "_content_hash": "3ee7975a34e2"
+      "_content_hash": "9df11dd3c147"
+    },
+    "model.sales_data.stg_customers": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "stg_customers",
+        "domain": "default",
+        "type": "table",
+        "description": "Model from models/sales/silver/stg_customers.sql",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [],
+        "dimension_summary": {}
+      },
+      "lineage": {
+        "materialization": "view",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [],
+      "_meta": {
+        "sql_file": "models/sales/silver/stg_customers.sql",
+        "sql_hash": "064ac8923a0a",
+        "domain": "sales"
+      },
+      "_content_hash": "5bc3098c57a9"
+    },
+    "model.sales_data.stg_orders": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "stg_orders",
+        "domain": "default",
+        "type": "table",
+        "description": "Model from models/sales/silver/stg_orders.sql",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [],
+        "dimension_summary": {}
+      },
+      "lineage": {
+        "materialization": "view",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [],
+      "_meta": {
+        "sql_file": "models/sales/silver/stg_orders.sql",
+        "sql_hash": "5dc953ac32b3",
+        "domain": "sales"
+      },
+      "_content_hash": "f91eb82d0a3e"
     },
     "model.sales_data.customer_clean": {
       "apiVersion": "odcs/v3.0.0",
@@ -212,16 +212,17 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
-        "uses_quarantine": false
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
+        "uses_quarantine": true
       },
       "tags": [],
       "_meta": {
         "sql_file": "models/sales/silver/customer_clean.sql",
-        "sql_hash": "90f139c27044"
+        "sql_hash": "21be94ab3e80",
+        "domain": "sales"
       },
-      "_content_hash": "9c833154de8b"
+      "_content_hash": "756f0d4dfd84"
     },
     "model.sales_data.customer_summary": {
       "apiVersion": "odcs/v3.0.0",
@@ -245,16 +246,17 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
         "uses_quarantine": false
       },
       "tags": [],
       "_meta": {
         "sql_file": "models/sales/silver/customer_summary.sql",
-        "sql_hash": "c7ac68cb9519"
+        "sql_hash": "9c6f299da488",
+        "domain": "sales"
       },
-      "_content_hash": "6bf810905afc"
+      "_content_hash": "040cf739c454"
     },
     "model.sales_data.customer_orders": {
       "apiVersion": "odcs/v3.0.0",
@@ -278,8 +280,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
         "uses_quarantine": false
       },
       "tags": [],
@@ -288,18 +290,19 @@
         "broadcast": [
           "c"
         ],
-        "sql_hash": "6653993df9db"
+        "sql_hash": "1ca170261fac",
+        "domain": "sales"
       },
-      "_content_hash": "203e90067570"
+      "_content_hash": "63c6907c80fe"
     },
-    "model.sales_data.stg_customers_v_previous": {
+    "model.sales_data.customer_clean_quarantine": {
       "apiVersion": "odcs/v3.0.0",
       "kind": "DataContract",
       "dataset": {
-        "name": "stg_customers_v_previous",
+        "name": "customer_clean_quarantine",
         "domain": "default",
         "type": "table",
-        "description": "Prior deployment version of stg_customers",
+        "description": "Quarantined rows from customer_clean",
         "catalog": "main",
         "schema": "default",
         "columns": []
@@ -314,18 +317,18 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
         "uses_quarantine": false
       },
       "tags": [
-        "prior_version",
+        "quarantine",
         "auto-generated"
       ],
       "_meta": {
-        "parent_model": "model.sales_data.stg_customers"
+        "parent_model": "model.sales_data.customer_clean"
       },
-      "_content_hash": "a3d63f11b2b2"
+      "_content_hash": "0e8b3d63918b"
     },
     "model.sales_data.raw_customers_v_previous": {
       "apiVersion": "odcs/v3.0.0",
@@ -349,8 +352,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -360,42 +363,7 @@
       "_meta": {
         "parent_model": "model.sales_data.raw_customers"
       },
-      "_content_hash": "52a46af43096"
-    },
-    "model.sales_data.stg_orders_v_previous": {
-      "apiVersion": "odcs/v3.0.0",
-      "kind": "DataContract",
-      "dataset": {
-        "name": "stg_orders_v_previous",
-        "domain": "default",
-        "type": "table",
-        "description": "Prior deployment version of stg_orders",
-        "catalog": "main",
-        "schema": "default",
-        "columns": []
-      },
-      "quality": {
-        "rules": [],
-        "dimension_summary": {}
-      },
-      "lineage": {
-        "materialization": "table",
-        "struct_column": "_lineage",
-        "schema_version": "3"
-      },
-      "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
-        "uses_quarantine": false
-      },
-      "tags": [
-        "prior_version",
-        "auto-generated"
-      ],
-      "_meta": {
-        "parent_model": "model.sales_data.stg_orders"
-      },
-      "_content_hash": "a9ac594dca00"
+      "_content_hash": "e1849cb4a701"
     },
     "model.sales_data.raw_orders_v_previous": {
       "apiVersion": "odcs/v3.0.0",
@@ -419,8 +387,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -430,7 +398,7 @@
       "_meta": {
         "parent_model": "model.sales_data.raw_orders"
       },
-      "_content_hash": "fbae5eff72e0"
+      "_content_hash": "d308d58667c5"
     },
     "model.sales_data.file_manifest_v_previous": {
       "apiVersion": "odcs/v3.0.0",
@@ -454,8 +422,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -465,7 +433,77 @@
       "_meta": {
         "parent_model": "model.sales_data.file_manifest"
       },
-      "_content_hash": "f4f30f5948d0"
+      "_content_hash": "b6c6e4093672"
+    },
+    "model.sales_data.stg_customers_v_previous": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "stg_customers_v_previous",
+        "domain": "default",
+        "type": "table",
+        "description": "Prior deployment version of stg_customers",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [],
+        "dimension_summary": {}
+      },
+      "lineage": {
+        "materialization": "table",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [
+        "prior_version",
+        "auto-generated"
+      ],
+      "_meta": {
+        "parent_model": "model.sales_data.stg_customers"
+      },
+      "_content_hash": "1658eaa867c8"
+    },
+    "model.sales_data.stg_orders_v_previous": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "stg_orders_v_previous",
+        "domain": "default",
+        "type": "table",
+        "description": "Prior deployment version of stg_orders",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [],
+        "dimension_summary": {}
+      },
+      "lineage": {
+        "materialization": "table",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [
+        "prior_version",
+        "auto-generated"
+      ],
+      "_meta": {
+        "parent_model": "model.sales_data.stg_orders"
+      },
+      "_content_hash": "50d4a446575e"
     },
     "model.sales_data.customer_clean_v_previous": {
       "apiVersion": "odcs/v3.0.0",
@@ -489,8 +527,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -500,7 +538,7 @@
       "_meta": {
         "parent_model": "model.sales_data.customer_clean"
       },
-      "_content_hash": "5a3b6d654a99"
+      "_content_hash": "12d72b0bc1d3"
     },
     "model.sales_data.customer_summary_v_previous": {
       "apiVersion": "odcs/v3.0.0",
@@ -524,8 +562,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -535,7 +573,7 @@
       "_meta": {
         "parent_model": "model.sales_data.customer_summary"
       },
-      "_content_hash": "1da0c6aed9ca"
+      "_content_hash": "66b21211d8dc"
     },
     "model.sales_data.customer_orders_v_previous": {
       "apiVersion": "odcs/v3.0.0",
@@ -559,8 +597,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -570,83 +608,7 @@
       "_meta": {
         "parent_model": "model.sales_data.customer_orders"
       },
-      "_content_hash": "6f7b3c89192f"
-    },
-    "udf.sales_data.loyalty_tier": {
-      "apiVersion": "odcs/v3.0.0",
-      "kind": "DataContract",
-      "dataset": {
-        "name": "loyalty_tier",
-        "domain": "default",
-        "type": "function",
-        "description": "Assigns GOLD/SILVER/BRONZE based on revenue",
-        "catalog": "main",
-        "schema": "default",
-        "columns": []
-      },
-      "quality": {
-        "rules": [],
-        "dimension_summary": {}
-      },
-      "lineage": {
-        "materialization": "function",
-        "struct_column": "_lineage",
-        "schema_version": "3"
-      },
-      "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
-        "uses_quarantine": false
-      },
-      "tags": [
-        "sql_udf",
-        "lang:sql"
-      ],
-      "_meta": {
-        "language": "SQL",
-        "returns": "string",
-        "params": "revenue: decimal(18,2)",
-        "vectorized": false
-      },
-      "_content_hash": "00cedc221637"
-    },
-    "udf.sales_data.clean_email": {
-      "apiVersion": "odcs/v3.0.0",
-      "kind": "DataContract",
-      "dataset": {
-        "name": "clean_email",
-        "domain": "default",
-        "type": "function",
-        "description": "Lowercase and trim email addresses",
-        "catalog": "main",
-        "schema": "default",
-        "columns": []
-      },
-      "quality": {
-        "rules": [],
-        "dimension_summary": {}
-      },
-      "lineage": {
-        "materialization": "function",
-        "struct_column": "_lineage",
-        "schema_version": "3"
-      },
-      "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
-        "uses_quarantine": false
-      },
-      "tags": [
-        "python_udf",
-        "lang:python"
-      ],
-      "_meta": {
-        "language": "PYTHON",
-        "returns": "string",
-        "params": "raw_email: string",
-        "vectorized": false
-      },
-      "_content_hash": "675b195a1c8b"
+      "_content_hash": "4e65d334ad85"
     },
     "udf.sales_data.average_score": {
       "apiVersion": "odcs/v3.0.0",
@@ -670,8 +632,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -684,7 +646,83 @@
         "params": "score_a: double, score_b: double",
         "vectorized": true
       },
-      "_content_hash": "528d4da5f648"
+      "_content_hash": "8966cd543a5e"
+    },
+    "udf.sales_data.clean_email": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "clean_email",
+        "domain": "default",
+        "type": "function",
+        "description": "Lowercase and trim email addresses",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [],
+        "dimension_summary": {}
+      },
+      "lineage": {
+        "materialization": "function",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [
+        "python_udf",
+        "lang:python"
+      ],
+      "_meta": {
+        "language": "PYTHON",
+        "returns": "string",
+        "params": "raw_email: string",
+        "vectorized": false
+      },
+      "_content_hash": "7bad1345938e"
+    },
+    "udf.sales_data.loyalty_tier": {
+      "apiVersion": "odcs/v3.0.0",
+      "kind": "DataContract",
+      "dataset": {
+        "name": "loyalty_tier",
+        "domain": "default",
+        "type": "function",
+        "description": "Assigns GOLD/SILVER/BRONZE based on revenue",
+        "catalog": "main",
+        "schema": "default",
+        "columns": []
+      },
+      "quality": {
+        "rules": [],
+        "dimension_summary": {}
+      },
+      "lineage": {
+        "materialization": "function",
+        "struct_column": "_lineage",
+        "schema_version": "3"
+      },
+      "provenance": {
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
+        "uses_quarantine": false
+      },
+      "tags": [
+        "sql_udf",
+        "lang:sql"
+      ],
+      "_meta": {
+        "language": "SQL",
+        "returns": "string",
+        "params": "revenue: decimal(18,2)",
+        "vectorized": false
+      },
+      "_content_hash": "578ab28b076a"
     },
     "check.sales_data.customer_summary.revenue_non_negative": {
       "apiVersion": "odcs/v3.0.0",
@@ -717,8 +755,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -732,7 +770,7 @@
         "column": "total_revenue",
         "model": "customer_summary"
       },
-      "_content_hash": "f0b8dbf33bf8"
+      "_content_hash": "82f255fdd566"
     },
     "check.sales_data.customer_summary.data_is_fresh": {
       "apiVersion": "odcs/v3.0.0",
@@ -765,8 +803,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -780,7 +818,7 @@
         "column": "last_order_date",
         "model": "customer_summary"
       },
-      "_content_hash": "d796e0b6e2a9"
+      "_content_hash": "f6ac782bde38"
     },
     "check.sales_data.customer_summary.has_customers": {
       "apiVersion": "odcs/v3.0.0",
@@ -813,8 +851,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -828,7 +866,7 @@
         "column": null,
         "model": "customer_summary"
       },
-      "_content_hash": "9120c7918afc"
+      "_content_hash": "b4efb61d071e"
     },
     "workflow.sales_data": {
       "apiVersion": "odcs/v3.0.0",
@@ -852,8 +890,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -863,7 +901,7 @@
       "_meta": {
         "yaml_path": "resources/jobs/PROCESS_sales.yml"
       },
-      "_content_hash": "7b7b06100d04"
+      "_content_hash": "f32f5d2be8d7"
     },
     "volume.sales_data.landing": {
       "apiVersion": "odcs/v3.0.0",
@@ -887,8 +925,8 @@
         "schema_version": "3"
       },
       "provenance": {
-        "git_commit": "2c4e3e8",
-        "generated_at": "2026-03-24T13:14:20.801616+00:00",
+        "git_commit": "21ae011",
+        "generated_at": "2026-03-25T00:29:07.699196+00:00",
         "uses_quarantine": false
       },
       "tags": [
@@ -899,7 +937,7 @@
         "location": "",
         "volume_type": "managed"
       },
-      "_content_hash": "9bddd2f83b46"
+      "_content_hash": "1521af817fcd"
     }
   },
   "edges": [
@@ -940,22 +978,16 @@
       "description": "stg_orders \u2192 customer_orders"
     },
     {
-      "from": "model.sales_data.stg_customers",
-      "to": "model.sales_data.stg_customers_v_previous",
-      "type": "prior_version",
-      "description": "stg_customers \u2192 prior version snapshot"
+      "from": "model.sales_data.customer_clean",
+      "to": "model.sales_data.customer_clean_quarantine",
+      "type": "quarantine",
+      "description": "customer_clean \u2192 quarantine"
     },
     {
       "from": "model.sales_data.raw_customers",
       "to": "model.sales_data.raw_customers_v_previous",
       "type": "prior_version",
       "description": "raw_customers \u2192 prior version snapshot"
-    },
-    {
-      "from": "model.sales_data.stg_orders",
-      "to": "model.sales_data.stg_orders_v_previous",
-      "type": "prior_version",
-      "description": "stg_orders \u2192 prior version snapshot"
     },
     {
       "from": "model.sales_data.raw_orders",
@@ -968,6 +1000,18 @@
       "to": "model.sales_data.file_manifest_v_previous",
       "type": "prior_version",
       "description": "file_manifest \u2192 prior version snapshot"
+    },
+    {
+      "from": "model.sales_data.stg_customers",
+      "to": "model.sales_data.stg_customers_v_previous",
+      "type": "prior_version",
+      "description": "stg_customers \u2192 prior version snapshot"
+    },
+    {
+      "from": "model.sales_data.stg_orders",
+      "to": "model.sales_data.stg_orders_v_previous",
+      "type": "prior_version",
+      "description": "stg_orders \u2192 prior version snapshot"
     },
     {
       "from": "model.sales_data.customer_clean",
@@ -1018,17 +1062,7 @@
       "description": "customer_summary validated by has_customers"
     },
     {
-      "from": "model.sales_data.stg_customers",
-      "to": "workflow.sales_data",
-      "type": "orchestrates"
-    },
-    {
       "from": "model.sales_data.raw_customers",
-      "to": "workflow.sales_data",
-      "type": "orchestrates"
-    },
-    {
-      "from": "model.sales_data.stg_orders",
       "to": "workflow.sales_data",
       "type": "orchestrates"
     },
@@ -1039,6 +1073,16 @@
     },
     {
       "from": "model.sales_data.file_manifest",
+      "to": "workflow.sales_data",
+      "type": "orchestrates"
+    },
+    {
+      "from": "model.sales_data.stg_customers",
+      "to": "workflow.sales_data",
+      "type": "orchestrates"
+    },
+    {
+      "from": "model.sales_data.stg_orders",
       "to": "workflow.sales_data",
       "type": "orchestrates"
     },
@@ -1058,17 +1102,12 @@
       "type": "orchestrates"
     },
     {
-      "from": "model.sales_data.stg_customers_v_previous",
+      "from": "model.sales_data.customer_clean_quarantine",
       "to": "workflow.sales_data",
       "type": "orchestrates"
     },
     {
       "from": "model.sales_data.raw_customers_v_previous",
-      "to": "workflow.sales_data",
-      "type": "orchestrates"
-    },
-    {
-      "from": "model.sales_data.stg_orders_v_previous",
       "to": "workflow.sales_data",
       "type": "orchestrates"
     },
@@ -1079,6 +1118,16 @@
     },
     {
       "from": "model.sales_data.file_manifest_v_previous",
+      "to": "workflow.sales_data",
+      "type": "orchestrates"
+    },
+    {
+      "from": "model.sales_data.stg_customers_v_previous",
+      "to": "workflow.sales_data",
+      "type": "orchestrates"
+    },
+    {
+      "from": "model.sales_data.stg_orders_v_previous",
       "to": "workflow.sales_data",
       "type": "orchestrates"
     },

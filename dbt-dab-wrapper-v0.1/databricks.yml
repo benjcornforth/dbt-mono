@@ -11,11 +11,11 @@ artifacts:
     path: .
 sync:
   include:
-  - dbt-dab-tools/
-  - sql/
+  - macros/
   - python/
-  - forge/
   - dbt/
+  - dbt_project.yml
+  - profiles.yml
   - forge.yml
 targets:
   dev:
