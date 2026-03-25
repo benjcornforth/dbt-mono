@@ -451,7 +451,7 @@ class ForgeTask:
         """Validate a DataFrame against the Pydantic model from type_safe."""
         from forge.type_safe import build_models
 
-        models = build_models()
+        models = build_models(profile_name=self.profile_name)
         class_name = "".join(p.capitalize() for p in model_name.split("_"))
         model_cls = getattr(models, class_name, None)
         if model_cls is None:
@@ -558,7 +558,7 @@ from forge.type_safe import build_models
 def main():
     task = ForgeTask()
     spark = task.spark_session()
-    models = build_models()
+    models = build_models(profile_name=task.profile_name)
     domain = task.config.get("domain", spark.conf.get("forge.domain", ""))
 
     # ── 1. Read ingestion config table from meta catalog ─────

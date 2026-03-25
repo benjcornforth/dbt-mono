@@ -1,0 +1,518 @@
+teardown:
+  name: TEARDOWN_sales
+  environment: dev
+  generated_at: '2026-03-25T10:44:29.581310+00:00'
+  project: sales_data
+  scope: fd
+  id: sales
+  archive:
+    table: operations.backups._backup_archive
+    note: All table data is archived as JSON rows before any changes
+  snapshot:
+    directory: resources/teardown/_backup/20260325_104429
+    contents: forge.yml, graph.json, workflow YAML, UDF source files, teardown plan
+    note: Complete project state captured for forge restore
+  removes:
+  - type: dab_job
+    name: SETUP_sales
+    action: delete workflow YAML + databricks bundle destroy
+    path: artifacts/targets/dev/resources/jobs/SETUP_sales.yml
+  - type: dab_job
+    name: PROCESS_sales
+    action: delete workflow YAML + databricks bundle destroy
+    path: artifacts/targets/dev/resources/jobs/PROCESS_sales.yml
+  - type: dab_job
+    name: TEARDOWN_sales
+    action: delete workflow YAML + databricks bundle destroy
+    path: artifacts/targets/dev/resources/jobs/TEARDOWN_sales.yml
+  - type: udf
+    name: meta.sales.average_score
+    action: DROP FUNCTION IF EXISTS meta.sales.average_score
+    note: "Functions are code, not data \u2014 safe to remove"
+  - type: udf
+    name: meta.sales.clean_email
+    action: DROP FUNCTION IF EXISTS meta.sales.clean_email
+    note: "Functions are code, not data \u2014 safe to remove"
+  - type: udf
+    name: meta.sales.loyalty_tier
+    action: DROP FUNCTION IF EXISTS meta.sales.loyalty_tier
+    note: "Functions are code, not data \u2014 safe to remove"
+  preserves:
+    tables:
+    - raw_customers
+    - raw_orders
+    - file_manifest
+    - stg_customers
+    - stg_orders
+    - customer_clean
+    - customer_summary
+    - customer_orders
+    schemas:
+    - dev schemas
+    note: All tables and data are preserved. Nothing is dropped.
+  backup:
+    directory: resources/teardown/_backup
+    note: Workflow YAML + table data archived before removal
+  steps:
+  - step: 1
+    name: snapshot_all_assets
+    action: snapshot
+    target: resources/teardown/_backup/20260325_104429
+  - step: 2
+    name: create_archive_table
+    action: sql
+    statements:
+    - CREATE SCHEMA IF NOT EXISTS operations.backups
+    - CREATE TABLE IF NOT EXISTS operations.backups._backup_archive (  asset_name
+      STRING,  asset_type STRING,  project STRING,  environment STRING,  archived_at
+      TIMESTAMP,  performed_by STRING,  git_sha STRING,  git_branch STRING,  dab_name
+      STRING,  row_count BIGINT,  snapshot_data STRING) USING DELTA
+  - step: 3
+    name: archive_assets
+    action: sql
+    statements:
+    - INSERT INTO operations.backups._backup_archive SELECT 'raw_customers' AS asset_name,
+      'table' AS asset_type, 'sales_data' AS project, 'dev' AS environment, current_timestamp()
+      AS archived_at, 'ben' AS performed_by, 'cf32846' AS git_sha, 'test/sales-project'
+      AS git_branch, 'PROCESS_sales' AS dab_name, COUNT(*) AS row_count, to_json(collect_list(to_json(struct(*))))
+      AS snapshot_data FROM main.sales.raw_customers
+    - INSERT INTO operations.backups._backup_archive SELECT 'raw_orders' AS asset_name,
+      'table' AS asset_type, 'sales_data' AS project, 'dev' AS environment, current_timestamp()
+      AS archived_at, 'ben' AS performed_by, 'cf32846' AS git_sha, 'test/sales-project'
+      AS git_branch, 'PROCESS_sales' AS dab_name, COUNT(*) AS row_count, to_json(collect_list(to_json(struct(*))))
+      AS snapshot_data FROM main.sales.raw_orders
+    - INSERT INTO operations.backups._backup_archive SELECT 'file_manifest' AS asset_name,
+      'table' AS asset_type, 'sales_data' AS project, 'dev' AS environment, current_timestamp()
+      AS archived_at, 'ben' AS performed_by, 'cf32846' AS git_sha, 'test/sales-project'
+      AS git_branch, 'PROCESS_sales' AS dab_name, COUNT(*) AS row_count, to_json(collect_list(to_json(struct(*))))
+      AS snapshot_data FROM main.sales.file_manifest
+    - INSERT INTO operations.backups._backup_archive SELECT 'stg_customers' AS asset_name,
+      'table' AS asset_type, 'sales_data' AS project, 'dev' AS environment, current_timestamp()
+      AS archived_at, 'ben' AS performed_by, 'cf32846' AS git_sha, 'test/sales-project'
+      AS git_branch, 'PROCESS_sales' AS dab_name, COUNT(*) AS row_count, to_json(collect_list(to_json(struct(*))))
+      AS snapshot_data FROM main.sales.stg_customers
+    - INSERT INTO operations.backups._backup_archive SELECT 'stg_orders' AS asset_name,
+      'table' AS asset_type, 'sales_data' AS project, 'dev' AS environment, current_timestamp()
+      AS archived_at, 'ben' AS performed_by, 'cf32846' AS git_sha, 'test/sales-project'
+      AS git_branch, 'PROCESS_sales' AS dab_name, COUNT(*) AS row_count, to_json(collect_list(to_json(struct(*))))
+      AS snapshot_data FROM main.sales.stg_orders
+    - INSERT INTO operations.backups._backup_archive SELECT 'customer_clean' AS asset_name,
+      'table' AS asset_type, 'sales_data' AS project, 'dev' AS environment, current_timestamp()
+      AS archived_at, 'ben' AS performed_by, 'cf32846' AS git_sha, 'test/sales-project'
+      AS git_branch, 'PROCESS_sales' AS dab_name, COUNT(*) AS row_count, to_json(collect_list(to_json(struct(*))))
+      AS snapshot_data FROM main.sales.customer_clean
+    - INSERT INTO operations.backups._backup_archive SELECT 'customer_summary' AS
+      asset_name, 'table' AS asset_type, 'sales_data' AS project, 'dev' AS environment,
+      current_timestamp() AS archived_at, 'ben' AS performed_by, 'cf32846' AS git_sha,
+      'test/sales-project' AS git_branch, 'PROCESS_sales' AS dab_name, COUNT(*) AS
+      row_count, to_json(collect_list(to_json(struct(*)))) AS snapshot_data FROM main.sales.customer_summary
+    - INSERT INTO operations.backups._backup_archive SELECT 'customer_orders' AS asset_name,
+      'table' AS asset_type, 'sales_data' AS project, 'dev' AS environment, current_timestamp()
+      AS archived_at, 'ben' AS performed_by, 'cf32846' AS git_sha, 'test/sales-project'
+      AS git_branch, 'PROCESS_sales' AS dab_name, COUNT(*) AS row_count, to_json(collect_list(to_json(struct(*))))
+      AS snapshot_data FROM main.sales.customer_orders
+    - "INSERT INTO operations.backups._backup_archive VALUES ('forge.yml', 'config',\
+      \ 'sales_data', 'dev', current_timestamp(), 'ben', 'cf32846', 'test/sales-project',\
+      \ 'PROCESS_sales', NULL, '# =============================================\n\
+      # forge.yml \u2014 Sales Data Pipeline\n# =============================================\n\
+      # The ONLY config file you edit (alongside dbt/ddl/ model definitions).\n# Everything\
+      \ else \u2014 SQL, workflows, profiles \u2014 is generated from this.\n#\n#\
+      \ =============================================\n# THE CANONICAL DDL TREE  (dbt/ddl/)\n\
+      # =============================================\n# Your models, seeds, volumes,\
+      \ and UDFs live under dbt/ddl/ in a\n# fixed directory structure.  Forge reads\
+      \ this tree to auto-detect\n# each asset''s class, layer, and domain \u2014\
+      \ no need to repeat those\n# in every YAML file.\n#\n# dbt/ddl/\n# \u251C\u2500\
+      \u2500 domain/<domain>/<layer>/<kind>/        \u2190 your business data\n# \u2502\
+      \   e.g.  domain/sales/bronze/models/raw_customers.yml\n# \u2502         domain/sales/silver/udfs/clean_email.yml\n\
+      # \u2502         domain/sales/gold/models/\n# \u2502\n# \u2514\u2500\u2500 shared/<layer>/<kind>/\
+      \                 \u2190 cross-domain config & ops\n#     e.g.  shared/meta/seeds/ingestion_config.yml\n\
+      #           shared/operations/models/\n#\n# <class>   = domain | shared    \
+      \       (top-level folder)\n# <domain>  = sales | \u2026                 (only\
+      \ for domain class)\n# <layer>   = bronze | silver | gold    (domain)\n#   \
+      \          meta | operations         (shared / system)\n# <kind>    = models\
+      \ | seeds | volumes | udfs\n#\n# What the path gives you automatically:\n# \
+      \  domain/sales/silver/models/customer_clean.yml\n#     \u2192 class: domain,\
+      \  domain: sales,  layer: silver\n#\n#   shared/meta/seeds/ingestion_config.yml\n\
+      #     \u2192 class: shared,  layer: meta   (namespace: must be set in the YAML)\n\
+      #\n# System assets (lineage, quarantine, backups) are auto-generated\n# by forge\
+      \ from the system_assets: section below \u2014 no DDL files needed.\nname: sales_data\
+      \          # dbt project name & profiles.yml key\n\n\n# --- Project identity\
+      \ ---\nscope: fd                 # short code used in catalog names  (e.g. dev_fd_bronze)\n\
+      id: sales                 # logical project id\n\n\n# =============================================\n\
+      # WHERE things land \u2014 naming rules\n# =============================================\n\
+      # Pattern tokens:\n#   {env}    \u2192 dev / prd          {scope}     \u2192\
+      \ fd (from above)\n#   {layer}  \u2192 bronze / silver \u2026  {user}      \u2192\
+      \ OS username\n#   {domain} \u2192 sales              {namespace} \u2192 config\
+      \ / operations\n#   {system} \u2192 lineage / backups\n#\n# Example: catalog_pattern\
+      \ \"{env}_{scope}_{layer}\" \u2192 dev_fd_bronze\n\nplacements:\n  families:\n\
+      \    # Your data models (bronze \u2192 silver \u2192 gold)\n    domain:\n  \
+      \    allowed_classes: [domain]\n      allowed_layers: [bronze, silver]\n   \
+      \   catalog_pattern: \"{env}_{scope}_{layer}\"\n      schema_pattern: \"{user}_{domain}\"\
+      \n\n    # Shared config / metadata tables\n    shared_meta:\n      allowed_classes:\
+      \ [shared]\n      allowed_layers: [meta]\n      catalog_pattern: \"{env}_{scope}_meta\"\
+      \n      schema_pattern: \"{user}_{namespace}\"\n\n    # Shared operational tables\n\
+      \    shared_ops:\n      allowed_classes: [shared]\n      allowed_layers: [operations]\n\
+      \      catalog_pattern: \"{env}_{scope}_operations\"\n      schema_pattern:\
+      \ \"{user}_{namespace}\"\n\n    # System-managed tables (lineage, quarantine)\n\
+      \    system_meta:\n      allowed_classes: [system]\n      allowed_layers: [meta]\n\
+      \      catalog_pattern: \"{env}_{scope}_meta\"\n      schema_pattern: \"{user}_{system}\"\
+      \n\n    # System-managed ops (backups, deploy state)\n    system_ops:\n    \
+      \  allowed_classes: [system]\n      allowed_layers: [operations]\n      catalog_pattern:\
+      \ \"{env}_{scope}_operations\"\n      schema_pattern: \"{user}_{system}\"\n\n\
+      # =============================================\n# WHAT lives where\n# =============================================\n\
+      \n# Business domains \u2014 each gets bronze/silver/gold schemas\ndomains:\n\
+      \  sales:\n    placement_family: domain\n\n# Shared namespaces \u2014 config\
+      \ tables, operational state\nshared_namespaces:\n  config:\n    placement_family:\
+      \ shared_meta\n    layer: meta\n  metadata:\n    placement_family: shared_meta\n\
+      \    layer: meta\n  operations:\n    placement_family: shared_ops\n    layer:\
+      \ operations\n\n# System assets \u2014 auto-managed by forge (toggle with enabled:\
+      \ true/false)\nsystem_assets:\n  lineage:\n    enabled: true\n    placement_family:\
+      \ system_meta\n    layer: meta\n    system: lineage\n  quarantine:\n    enabled:\
+      \ true\n    placement_family: system_meta\n    layer: meta\n    system: quarantine\n\
+      \  backups:\n    enabled: true\n    placement_family: system_ops\n    layer:\
+      \ operations\n    system: backups\n  deployment_state:\n    enabled: true\n\
+      \    placement_family: system_ops\n    layer: operations\n    system: deploy\n\
+      \n# =============================================\n# Environments\n# =============================================\n\
+      \nprofiles:\n  dev:\n    platform: databricks\n    databricks_profile: dev \
+      \      # matches [dev] section in ~/.databrickscfg\n    env: dev\n    compute:\n\
+      \      type: serverless\n      auto_scale: true\n\n  prod:\n    platform: databricks\n\
+      \    databricks_profile: PROD      # matches [PROD] section in ~/.databrickscfg\n\
+      \    env: prd\n    compute:\n      type: serverless\n    schedule: \"0 0 6 *\
+      \ * ?\"       # daily at 06:00 UTC\n\n# =============================================\n\
+      # Feature flags\n# =============================================\n\nfeatures:\n\
+      \  graph: true                     # dependency graph tracking\n  quarantine:\
+      \ true                # bad-row sidecar tables\n  validation_exceptions: true\
+      \     # soft-fail validation rules\n  prior_version: true             # previous-version\
+      \ snapshots\n  python_udfs: true               # register Python UDFs\n\nlineage:\n\
+      \  mode: full\n  origin_tracking: true\n\nportability:\n  postgres_compatible:\
+      \ true       # also generate Postgres-compatible SQL\n\n\nteardown:\n  mode:\
+      \ schema_cascade')"
+    - "INSERT INTO operations.backups._backup_archive VALUES ('artifacts/targets/dev/resources/jobs/SETUP_sales.yml',\
+      \ 'workflow', 'sales_data', 'dev', current_timestamp(), 'ben', 'cf32846', 'test/sales-project',\
+      \ 'PROCESS_sales', NULL, 'resources:\n  jobs:\n    SETUP_sales:\n      name:\
+      \ SETUP_sales (dev)\n      tasks:\n      - task_key: setup_udfs_dev_fd_meta_ben_lineage_shared\n\
+      \        timeout_seconds: 3600\n        sql_task:\n          file:\n       \
+      \     path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/000_udfs.sql\n\
+      \          warehouse_id: 724607f766691c81\n          parameters:\n         \
+      \   run_id: ''{{job.run_id}}''\n      - task_key: setup_lineage_dev_fd_meta_ben_lineage_graph\n\
+      \        timeout_seconds: 3600\n        sql_task:\n          file:\n       \
+      \     path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/001_lineage_graph.sql\n\
+      \          warehouse_id: 724607f766691c81\n          parameters:\n         \
+      \   run_id: ''{{job.run_id}}''\n        depends_on:\n        - task_key: setup_udfs_dev_fd_meta_ben_lineage_shared\n\
+      \      - task_key: setup_quarantine_dev_fd_meta_ben_lineage_tables\n       \
+      \ timeout_seconds: 3600\n        sql_task:\n          file:\n            path:\
+      \ /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/002_quarantine_tables.sql\n\
+      \          warehouse_id: 724607f766691c81\n          parameters:\n         \
+      \   run_id: ''{{job.run_id}}''\n        depends_on:\n        - task_key: setup_lineage_dev_fd_meta_ben_lineage_graph\n\
+      \      - task_key: setup_volume_dev_fd_bronze_ben_sales_definitions\n      \
+      \  timeout_seconds: 3600\n        sql_task:\n          file:\n            path:\
+      \ /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/003_volumes.sql\n\
+      \          warehouse_id: 724607f766691c81\n          parameters:\n         \
+      \   run_id: ''{{job.run_id}}''\n        depends_on:\n        - task_key: setup_quarantine_dev_fd_meta_ben_lineage_tables\n\
+      \      - task_key: setup_table_dev_fd_bronze_ben_sales_file_manifest\n     \
+      \   timeout_seconds: 3600\n        sql_task:\n          file:\n            path:\
+      \ /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/005_file_manifest.sql\n\
+      \          warehouse_id: 724607f766691c81\n          parameters:\n         \
+      \   run_id: ''{{job.run_id}}''\n        depends_on:\n        - task_key: setup_volume_dev_fd_bronze_ben_sales_definitions\n\
+      \      - task_key: setup_table_dev_fd_bronze_ben_sales_raw_customers\n     \
+      \   timeout_seconds: 3600\n        sql_task:\n          file:\n            path:\
+      \ /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/006_raw_customers.sql\n\
+      \          warehouse_id: 724607f766691c81\n          parameters:\n         \
+      \   run_id: ''{{job.run_id}}''\n        depends_on:\n        - task_key: setup_volume_dev_fd_bronze_ben_sales_definitions\n\
+      \      - task_key: setup_table_dev_fd_bronze_ben_sales_raw_orders\n        timeout_seconds:\
+      \ 3600\n        sql_task:\n          file:\n            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/007_raw_orders.sql\n\
+      \          warehouse_id: 724607f766691c81\n          parameters:\n         \
+      \   run_id: ''{{job.run_id}}''\n        depends_on:\n        - task_key: setup_volume_dev_fd_bronze_ben_sales_definitions\n\
+      \      - task_key: setup_table_dev_fd_silver_ben_sales_customer_clean\n    \
+      \    timeout_seconds: 3600\n        sql_task:\n          file:\n           \
+      \ path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/008_customer_clean.sql\n\
+      \          warehouse_id: 724607f766691c81\n          parameters:\n         \
+      \   run_id: ''{{job.run_id}}''\n        depends_on:\n        - task_key: setup_volume_dev_fd_bronze_ben_sales_definitions\n\
+      \      - task_key: setup_table_dev_fd_silver_ben_sales_customer_orders\n   \
+      \     timeout_seconds: 3600\n        sql_task:\n          file:\n          \
+      \  path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/009_customer_orders.sql\n\
+      \          warehouse_id: 724607f766691c81\n          parameters:\n         \
+      \   run_id: ''{{job.run_id}}''\n        depends_on:\n        - task_key: setup_volume_dev_fd_bronze_ben_sales_definitions\n\
+      \      - task_key: setup_table_dev_fd_silver_ben_sales_customer_summary\n  \
+      \      timeout_seconds: 3600\n        sql_task:\n          file:\n         \
+      \   path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/010_customer_summary.sql\n\
+      \          warehouse_id: 724607f766691c81\n          parameters:\n         \
+      \   run_id: ''{{job.run_id}}''\n        depends_on:\n        - task_key: setup_volume_dev_fd_bronze_ben_sales_definitions\n\
+      \      - task_key: setup_seed_dev_fd_meta_ben_config_ingestion_config\n    \
+      \    timeout_seconds: 3600\n        sql_task:\n          file:\n           \
+      \ path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/004_ingestion_config.sql\n\
+      \          warehouse_id: 724607f766691c81\n          parameters:\n         \
+      \   run_id: ''{{job.run_id}}''\n        depends_on:\n        - task_key: setup_table_dev_fd_silver_ben_sales_customer_summary\n\
+      \      environments:\n      - environment_key: default\n        spec:\n    \
+      \      client: ''2''\n          dependencies:\n          - dbt-databricks\n\
+      \          - pydantic>=2.0\n          - pyyaml\n')"
+    - "INSERT INTO operations.backups._backup_archive VALUES ('artifacts/targets/dev/resources/jobs/PROCESS_sales.yml',\
+      \ 'workflow', 'sales_data', 'dev', current_timestamp(), 'ben', 'cf32846', 'test/sales-project',\
+      \ 'PROCESS_sales', NULL, 'resources:\n  jobs:\n    PROCESS_sales:\n      name:\
+      \ PROCESS_sales (dev)\n      tasks:\n      - task_key: ingest_py_ingest_from_volume\n\
+      \        timeout_seconds: 3600\n        environment_key: default\n        spark_python_task:\n\
+      \          python_file: ../../python/ingest_from_volume.py\n          parameters:\n\
+      \          - --schema_bronze=ben_sales\n          - --schema_silver=ben_sales\n\
+      \          - --schema_meta=ben_config\n          - --schema_operations=ben_operations\n\
+      \          - --catalog_bronze=dev_fd_bronze\n          - --catalog_silver=dev_fd_silver\n\
+      \          - --catalog_meta=dev_fd_meta\n          - --catalog_operations=dev_fd_operations\n\
+      \          - --schema_backups=ben_backups\n          - --archive_table=dev_fd_operations.ben_backups._backup_archive\n\
+      \          - --git_commit=local\n          - --compute_type=serverless\n   \
+      \       - --domain=sales\n          - --schema_file_manifest=file_path:string|file_name:string|model_name:string|domain:string|file_format:string|row_count:int|file_size_bytes:int|checksum:string|ingested_at:timestamp|status:string\n\
+      \          - --schema_raw_customers=customer_id:int|first_name:string|last_name:string|email:string|signup_date:date|country:string|revenue:decimal(10,2)\n\
+      \          - --schema_raw_orders=order_id:int|customer_id:int|product:string|quantity:int|unit_price:decimal(10,2)|order_date:date\n\
+      \      - task_key: stage_customer_orders\n        timeout_seconds: 3600\n  \
+      \      sql_task:\n          file:\n            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/process/014_customer_orders.sql\n\
+      \          warehouse_id: 724607f766691c81\n          parameters:\n         \
+      \   run_id: ''{{job.run_id}}''\n        depends_on:\n        - task_key: clean_customer_clean\n\
+      \        - task_key: stage_stg_orders\n      - task_key: stage_customer_summary\n\
+      \        timeout_seconds: 3600\n        sql_task:\n          file:\n       \
+      \     path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/process/015_customer_summary.sql\n\
+      \          warehouse_id: 724607f766691c81\n          parameters:\n         \
+      \   run_id: ''{{job.run_id}}''\n        depends_on:\n        - task_key: stage_customer_orders\n\
+      \      - task_key: stage_stg_customers\n        timeout_seconds: 3600\n    \
+      \    sql_task:\n          file:\n            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/process/011_stg_customers.sql\n\
+      \          warehouse_id: 724607f766691c81\n          parameters:\n         \
+      \   run_id: ''{{job.run_id}}''\n        depends_on:\n        - task_key: ingest_py_ingest_from_volume\n\
+      \      - task_key: stage_stg_orders\n        timeout_seconds: 3600\n       \
+      \ sql_task:\n          file:\n            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/process/013_stg_orders.sql\n\
+      \          warehouse_id: 724607f766691c81\n          parameters:\n         \
+      \   run_id: ''{{job.run_id}}''\n        depends_on:\n        - task_key: ingest_py_ingest_from_volume\n\
+      \      - task_key: clean_customer_clean\n        timeout_seconds: 3600\n   \
+      \     sql_task:\n          file:\n            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/process/012_customer_clean.sql\n\
+      \          warehouse_id: 724607f766691c81\n          parameters:\n         \
+      \   run_id: ''{{job.run_id}}''\n        depends_on:\n        - task_key: stage_stg_customers\n\
+      \      - task_key: clean_customer_clean_quarantine\n        timeout_seconds:\
+      \ 3600\n        sql_task:\n          file:\n            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/process/012_customer_clean_quarantine.sql\n\
+      \          warehouse_id: 724607f766691c81\n          parameters:\n         \
+      \   run_id: ''{{job.run_id}}''\n        depends_on:\n        - task_key: clean_customer_clean\n\
+      \      environments:\n      - environment_key: default\n        spec:\n    \
+      \      client: ''2''\n          dependencies:\n          - dbt-databricks\n\
+      \          - pydantic>=2.0\n          - pyyaml\n          - whl: ../../dist/*.whl\n\
+      ')"
+    - "INSERT INTO operations.backups._backup_archive VALUES ('artifacts/targets/dev/resources/jobs/TEARDOWN_sales.yml',\
+      \ 'workflow', 'sales_data', 'dev', current_timestamp(), 'ben', 'cf32846', 'test/sales-project',\
+      \ 'PROCESS_sales', NULL, 'resources:\n  jobs:\n    TEARDOWN_sales:\n      name:\
+      \ TEARDOWN_sales (dev)\n      tasks:\n      - task_key: backup\n        timeout_seconds:\
+      \ 3600\n        sql_task:\n          file:\n            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/teardown/backup.sql\n\
+      \          warehouse_id: 724607f766691c81\n          parameters:\n         \
+      \   run_id: ''{{job.run_id}}''\n      - task_key: teardown\n        timeout_seconds:\
+      \ 3600\n        sql_task:\n          file:\n            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/teardown/teardown.sql\n\
+      \          warehouse_id: 724607f766691c81\n          parameters:\n         \
+      \   run_id: ''{{job.run_id}}''\n        depends_on:\n        - task_key: backup\n\
+      \      environments:\n      - environment_key: default\n        spec:\n    \
+      \      client: ''2''\n          dependencies:\n          - dbt-databricks\n\
+      \          - pydantic>=2.0\n          - pyyaml\n')"
+    - "INSERT INTO operations.backups._backup_archive VALUES ('artifacts/targets/dev/dbt/functions/average_score.sql',\
+      \ 'function', 'sales_data', 'dev', current_timestamp(), 'ben', 'cf32846', 'test/sales-project',\
+      \ 'PROCESS_sales', NULL, '-- UDF: average_score\n-- Pandas vectorized UDF\n\
+      -- Vectorized average using pandas \u2014 fast on large batches\nDROP FUNCTION\
+      \ IF EXISTS `dev_fd_silver`.`ben_sales`.average_score;\nCREATE FUNCTION `dev_fd_silver`.`ben_sales`.average_score(score_a\
+      \ double, score_b double)\nRETURNS double\nLANGUAGE PYTHON\nAS $$\nimport pandas\
+      \ as pd\ndef average_score(score_a: pd.Series, score_b: pd.Series) -> pd.Series:\n\
+      \    return (score_a + score_b) / 2.0\n$$;\n')"
+    - "INSERT INTO operations.backups._backup_archive VALUES ('artifacts/targets/dev/dbt/functions/clean_email.sql',\
+      \ 'function', 'sales_data', 'dev', current_timestamp(), 'ben', 'cf32846', 'test/sales-project',\
+      \ 'PROCESS_sales', NULL, '-- UDF: clean_email\n-- Lowercase and trim email addresses\n\
+      DROP FUNCTION IF EXISTS `dev_fd_silver`.`ben_sales`.clean_email;\nCREATE FUNCTION\
+      \ `dev_fd_silver`.`ben_sales`.clean_email(raw_email string)\nRETURNS string\n\
+      LANGUAGE PYTHON\nAS $$\ndef clean_email(raw_email):\n    if raw_email is None:\n\
+      \        return None\n    return raw_email.strip().lower()\n$$;\n')"
+    - "INSERT INTO operations.backups._backup_archive VALUES ('artifacts/targets/dev/dbt/functions/loyalty_tier.sql',\
+      \ 'function', 'sales_data', 'dev', current_timestamp(), 'ben', 'cf32846', 'test/sales-project',\
+      \ 'PROCESS_sales', NULL, '-- UDF: loyalty_tier\n-- Assigns GOLD/SILVER/BRONZE\
+      \ based on revenue\nDROP FUNCTION IF EXISTS `dev_fd_silver`.`ben_sales`.loyalty_tier;\n\
+      CREATE FUNCTION `dev_fd_silver`.`ben_sales`.loyalty_tier(revenue decimal(18,2))\n\
+      RETURNS string\nRETURN (CASE\n  WHEN revenue >= 1000 THEN ''GOLD''\n  WHEN revenue\
+      \ >=  500 THEN ''SILVER''\n  ELSE ''BRONZE''\nEND);\n')"
+    - "INSERT INTO operations.backups._backup_archive VALUES ('artifacts/targets/dev/dbt/models/sales/bronze/file_manifest.sql',\
+      \ 'model', 'sales_data', 'dev', current_timestamp(), 'ben', 'cf32846', 'test/sales-project',\
+      \ 'PROCESS_sales', NULL, '{{ config(materialized=''table'', schema=''ben_sales'',\
+      \ database=''dev_fd_bronze'') }}\n\n-- managed_by: ingest_from_volume\n-- This\
+      \ table is populated by an external process.\n-- Forge generates CREATE TABLE\
+      \ to keep it in the graph with tests.\n\nSELECT\n    CAST(NULL AS string) AS\
+      \ file_path,\n    CAST(NULL AS string) AS file_name,\n    CAST(NULL AS string)\
+      \ AS model_name,\n    CAST(NULL AS string) AS domain,\n    CAST(NULL AS string)\
+      \ AS file_format,\n    CAST(NULL AS int) AS row_count,\n    CAST(NULL AS int)\
+      \ AS file_size_bytes,\n    CAST(NULL AS string) AS checksum,\n    CAST(NULL\
+      \ AS timestamp) AS ingested_at,\n    CAST(NULL AS string) AS status\nWHERE 1\
+      \ = 0\n')"
+    - "INSERT INTO operations.backups._backup_archive VALUES ('artifacts/targets/dev/dbt/models/sales/bronze/raw_customers.sql',\
+      \ 'model', 'sales_data', 'dev', current_timestamp(), 'ben', 'cf32846', 'test/sales-project',\
+      \ 'PROCESS_sales', NULL, '{{ config(materialized=''table'', schema=''ben_sales'',\
+      \ database=''dev_fd_bronze'') }}\n\n-- managed_by: ingest_from_volume\n-- This\
+      \ table is populated by an external process.\n-- Forge generates CREATE TABLE\
+      \ to keep it in the graph with tests.\n\nSELECT\n    CAST(NULL AS int) AS customer_id,\n\
+      \    CAST(NULL AS string) AS first_name,\n    CAST(NULL AS string) AS last_name,\n\
+      \    CAST(NULL AS string) AS email,\n    CAST(NULL AS date) AS signup_date,\n\
+      \    CAST(NULL AS string) AS country,\n    CAST(NULL AS decimal(10,2)) AS revenue\n\
+      WHERE 1 = 0\n')"
+    - "INSERT INTO operations.backups._backup_archive VALUES ('artifacts/targets/dev/dbt/models/sales/bronze/raw_orders.sql',\
+      \ 'model', 'sales_data', 'dev', current_timestamp(), 'ben', 'cf32846', 'test/sales-project',\
+      \ 'PROCESS_sales', NULL, '{{ config(materialized=''table'', schema=''ben_sales'',\
+      \ database=''dev_fd_bronze'') }}\n\n-- managed_by: ingest_from_volume\n-- This\
+      \ table is populated by an external process.\n-- Forge generates CREATE TABLE\
+      \ to keep it in the graph with tests.\n\nSELECT\n    CAST(NULL AS int) AS order_id,\n\
+      \    CAST(NULL AS int) AS customer_id,\n    CAST(NULL AS string) AS product,\n\
+      \    CAST(NULL AS int) AS quantity,\n    CAST(NULL AS decimal(10,2)) AS unit_price,\n\
+      \    CAST(NULL AS date) AS order_date\nWHERE 1 = 0\n')"
+    - "INSERT INTO operations.backups._backup_archive VALUES ('artifacts/targets/dev/dbt/models/sales/silver/customer_clean.sql',\
+      \ 'model', 'sales_data', 'dev', current_timestamp(), 'ben', 'cf32846', 'test/sales-project',\
+      \ 'PROCESS_sales', NULL, '{{ config(\n    materialized=''table'', schema=''ben_sales'',\
+      \ database=''dev_fd_silver'', meta={''version'': ''v2''}, post_hook=\"{{ quarantine(''email\
+      \ IS NULL OR revenue < 0'') }}\"\n) }}\n\nselect\n    customer_id,\n    first_name,\n\
+      \    last_name,\n    email,\n    signup_date,\n    country,\n    revenue,\n\
+      \    {{ lineage_columns() }}\nfrom {{ ref(''stg_customers'') }}\n')"
+    - "INSERT INTO operations.backups._backup_archive VALUES ('artifacts/targets/dev/dbt/models/sales/silver/customer_orders.sql',\
+      \ 'model', 'sales_data', 'dev', current_timestamp(), 'ben', 'cf32846', 'test/sales-project',\
+      \ 'PROCESS_sales', NULL, '{{ config(\n    materialized=''table'', schema=''ben_sales'',\
+      \ database=''dev_fd_silver'', meta={''version'': ''v1''}\n) }}\n\nselect /*+\
+      \ BROADCAST(c) */\n    c.customer_id as customer_id,\n    c.first_name as first_name,\n\
+      \    c.last_name as last_name,\n    c.email as email,\n    c.country as country,\n\
+      \    o.order_id as order_id,\n    o.product as product,\n    o.quantity as quantity,\n\
+      \    o.unit_price as unit_price,\n    o.line_total as line_total,\n    o.order_date\
+      \ as order_date,\n    {{ lineage_columns() }}\nfrom {{ ref(''customer_clean'')\
+      \ }} c\ninner join {{ ref(''stg_orders'') }} o\n    on c.customer_id = o.customer_id\n\
+      ')"
+    - "INSERT INTO operations.backups._backup_archive VALUES ('artifacts/targets/dev/dbt/models/sales/silver/customer_summary.sql',\
+      \ 'model', 'sales_data', 'dev', current_timestamp(), 'ben', 'cf32846', 'test/sales-project',\
+      \ 'PROCESS_sales', NULL, '{{ config(\n    materialized=''table'', schema=''ben_sales'',\
+      \ database=''dev_fd_silver'', meta={''version'': ''v1''}\n) }}\n\nselect\n \
+      \   customer_id,\n    first_name,\n    last_name,\n    email,\n    country,\n\
+      \    count(order_id) as total_orders,\n    sum(line_total) as total_revenue,\n\
+      \    min(order_date) as first_order_date,\n    max(order_date) as last_order_date,\n\
+      \    loyalty_tier((sum(line_total))) as tier,\n    {{ lineage_columns(columns=[{''name'':\
+      \ ''total_orders'', ''expr'': ''count(order_id)'', ''op'': ''AGGREGATION''},\
+      \ {''name'': ''total_revenue'', ''expr'': ''sum(line_total)'', ''op'': ''AGGREGATION''},\
+      \ {''name'': ''first_order_date'', ''expr'': ''min(order_date)'', ''op'': ''AGGREGATION''},\
+      \ {''name'': ''last_order_date'', ''expr'': ''max(order_date)'', ''op'': ''AGGREGATION''},\
+      \ {''name'': ''tier'', ''expr'': ''loyalty_tier(total_revenue)'', ''udf_name'':\
+      \ ''loyalty_tier'', ''op'': ''SQL_UDF'', ''inputs'': [''total_revenue'']}])\
+      \ }}\nfrom {{ ref(''customer_orders'') }}\ngroup by\n    customer_id, first_name,\
+      \ last_name, email, country\n')"
+    - "INSERT INTO operations.backups._backup_archive VALUES ('artifacts/targets/dev/dbt/models/sales/silver/stg_customers.sql',\
+      \ 'model', 'sales_data', 'dev', current_timestamp(), 'ben', 'cf32846', 'test/sales-project',\
+      \ 'PROCESS_sales', NULL, '{{ config(\n    materialized=''view'', schema=''ben_sales'',\
+      \ database=''dev_fd_silver''\n) }}\n\nselect\n    customer_id,\n    first_name,\n\
+      \    last_name,\n    email,\n    cast(signup_date as date) as signup_date,\n\
+      \    country,\n    cast(revenue as decimal(10,2)) as revenue,\n    {{ lineage_columns(columns=[{''name'':\
+      \ ''signup_date'', ''expr'': ''cast(signup_date as date)'', ''op'': ''CAST'',\
+      \ ''inputs'': [''signup_date'']}, {''name'': ''revenue'', ''expr'': ''cast(revenue\
+      \ as decimal(10,2))'', ''op'': ''CAST'', ''inputs'': [''revenue'']}]) }}\nfrom\
+      \ {{ ref(''raw_customers'') }}\n')"
+    - "INSERT INTO operations.backups._backup_archive VALUES ('artifacts/targets/dev/dbt/models/sales/silver/stg_orders.sql',\
+      \ 'model', 'sales_data', 'dev', current_timestamp(), 'ben', 'cf32846', 'test/sales-project',\
+      \ 'PROCESS_sales', NULL, '{{ config(\n    materialized=''view'', schema=''ben_sales'',\
+      \ database=''dev_fd_silver''\n) }}\n\nselect\n    order_id,\n    customer_id,\n\
+      \    product,\n    quantity,\n    cast(unit_price as decimal(10,2)) as unit_price,\n\
+      \    (quantity) * (cast(unit_price as decimal(10,2))) as line_total,\n    cast(order_date\
+      \ as date) as order_date,\n    {{ lineage_columns(columns=[{''name'': ''unit_price'',\
+      \ ''expr'': ''cast(unit_price as decimal(10,2))'', ''op'': ''CAST'', ''inputs'':\
+      \ [''unit_price'']}, {''name'': ''line_total'', ''expr'': ''quantity * unit_price'',\
+      \ ''op'': ''EXPRESSION''}, {''name'': ''order_date'', ''expr'': ''cast(order_date\
+      \ as date)'', ''op'': ''CAST'', ''inputs'': [''order_date'']}]) }}\nfrom {{\
+      \ ref(''raw_orders'') }}\n')"
+    - "INSERT INTO operations.backups._backup_archive VALUES ('artifacts/targets/dev/dbt/models/schema.yml',\
+      \ 'model', 'sales_data', 'dev', current_timestamp(), 'ben', 'cf32846', 'test/sales-project',\
+      \ 'PROCESS_sales', NULL, 'version: 2\nmodels:\n- name: file_manifest\n  description:\
+      \ Tracks files ingested from Volumes\n  columns:\n  - name: file_path\n    description:\
+      \ Full Volume path to the ingested file\n    data_type: string\n    data_tests:\n\
+      \    - not_null\n  - name: file_name\n    description: File name only\n    data_type:\
+      \ string\n    data_tests:\n    - not_null\n  - name: model_name\n    description:\
+      \ Target model the file was loaded into\n    data_type: string\n    data_tests:\n\
+      \    - not_null\n  - name: domain\n    description: Domain this file belongs\
+      \ to\n    data_type: string\n  - name: file_format\n    description: File format\
+      \ (csv, json, parquet)\n    data_type: string\n  - name: row_count\n    description:\
+      \ Number of rows ingested\n    data_type: int\n  - name: file_size_bytes\n \
+      \   description: File size in bytes\n    data_type: int\n  - name: checksum\n\
+      \    description: MD5 checksum for dedup\n    data_type: string\n  - name: ingested_at\n\
+      \    description: When the file was ingested\n    data_type: timestamp\n   \
+      \ data_tests:\n    - not_null\n  - name: status\n    description: ''Ingestion\
+      \ status: SUCCESS, FAILED, SKIPPED''\n    data_type: string\n- name: raw_customers\n\
+      \  description: Raw customer data ingested from Volume\n  columns:\n  - name:\
+      \ customer_id\n    description: Unique customer identifier\n    data_type: int\n\
+      \  - name: first_name\n    data_type: string\n  - name: last_name\n    data_type:\
+      \ string\n  - name: email\n    data_type: string\n  - name: signup_date\n  \
+      \  data_type: date\n  - name: country\n    data_type: string\n  - name: revenue\n\
+      \    data_type: decimal(10,2)\n- name: raw_orders\n  description: Raw order\
+      \ data ingested from Volume\n  columns:\n  - name: order_id\n    description:\
+      \ Unique order identifier\n    data_type: int\n  - name: customer_id\n    description:\
+      \ FK to raw_customers\n    data_type: int\n  - name: product\n    data_type:\
+      \ string\n  - name: quantity\n    data_type: int\n  - name: unit_price\n   \
+      \ data_type: decimal(10,2)\n  - name: order_date\n    data_type: date\n- name:\
+      \ customer_clean\n  description: Clean customers - null emails and negative\
+      \ revenue quarantined\n  columns:\n  - name: customer_id\n    data_type: int\n\
+      \    data_tests:\n    - not_null\n    - unique\n  - name: first_name\n    data_type:\
+      \ string\n  - name: last_name\n    data_type: string\n  - name: email\n    description:\
+      \ Validated email (nulls quarantined)\n    data_type: string\n    data_tests:\n\
+      \    - not_null\n  - name: signup_date\n    data_type: date\n  - name: country\n\
+      \    data_type: string\n  - name: revenue\n    description: Non-negative revenue\
+      \ (negatives quarantined)\n    data_type: decimal(10,2)\n- name: customer_orders\n\
+      \  description: Joined clean customers with their orders\n  columns:\n  - name:\
+      \ customer_id\n  - name: first_name\n  - name: last_name\n  - name: email\n\
+      \  - name: country\n  - name: order_id\n    data_tests:\n    - not_null\n  \
+      \  - unique\n  - name: product\n  - name: quantity\n  - name: unit_price\n \
+      \ - name: line_total\n  - name: order_date\n- name: customer_summary\n  description:\
+      \ Aggregated customer metrics - gold layer\n  columns:\n  - name: customer_id\n\
+      \    data_type: int\n    data_tests:\n    - not_null\n    - unique\n  - name:\
+      \ first_name\n    data_type: string\n  - name: last_name\n    data_type: string\n\
+      \  - name: email\n    data_type: string\n  - name: country\n    data_type: string\n\
+      \  - name: total_orders\n    description: Count of orders per customer\n   \
+      \ data_type: int\n  - name: total_revenue\n    description: Sum of all order\
+      \ line totals\n    data_type: decimal(10,2)\n  - name: first_order_date\n  \
+      \  data_type: date\n  - name: last_order_date\n    data_type: date\n  - name:\
+      \ tier\n    description: GOLD/SILVER/BRONZE loyalty tier\n    data_type: string\n\
+      - name: stg_customers\n  description: Staged customers with typed columns and\
+      \ lineage provenance\n  columns:\n  - name: customer_id\n    description: Unique\
+      \ customer identifier\n    data_type: int\n    data_tests:\n    - not_null\n\
+      \    - unique\n  - name: first_name\n    data_type: string\n  - name: last_name\n\
+      \    data_type: string\n  - name: email\n    description: Customer email (may\
+      \ be null in raw data)\n    data_type: string\n  - name: signup_date\n    data_type:\
+      \ date\n  - name: country\n    data_type: string\n  - name: revenue\n    data_type:\
+      \ decimal(10,2)\n- name: stg_orders\n  description: Staged orders with computed\
+      \ line_total and lineage provenance\n  columns:\n  - name: order_id\n    description:\
+      \ Unique order identifier\n    data_type: int\n    data_tests:\n    - not_null\n\
+      \    - unique\n  - name: customer_id\n    description: FK to customers\n   \
+      \ data_type: int\n    data_tests:\n    - not_null\n  - name: product\n    data_type:\
+      \ string\n  - name: quantity\n    data_type: int\n  - name: unit_price\n   \
+      \ data_type: decimal(10,2)\n  - name: line_total\n  - name: order_date\n   \
+      \ data_type: date\n')"
+  - step: 4
+    name: remove_workflow_yaml_setup_sales
+    action: delete_file
+    target: artifacts/targets/dev/resources/jobs/SETUP_sales.yml
+  - step: 5
+    name: remove_workflow_yaml_process_sales
+    action: delete_file
+    target: artifacts/targets/dev/resources/jobs/PROCESS_sales.yml
+  - step: 6
+    name: remove_workflow_yaml_teardown_sales
+    action: delete_file
+    target: artifacts/targets/dev/resources/jobs/TEARDOWN_sales.yml
+  - step: 7
+    name: drop_udfs
+    action: sql
+    statements:
+    - DROP FUNCTION IF EXISTS meta.sales.average_score
+    - DROP FUNCTION IF EXISTS meta.sales.clean_email
+    - DROP FUNCTION IF EXISTS meta.sales.loyalty_tier
+  - step: 8
+    name: confirm
+    action: log
+    message: 'Teardown complete.
+
+      Snapshot saved: resources/teardown/_backup/20260325_104429/
+
+      Table data archived to: operations.backups._backup_archive
+
+      Tables preserved: raw_customers, raw_orders, file_manifest, stg_customers, stg_orders,
+      customer_clean, customer_summary, customer_orders
+
+      Schemas preserved (use forge dev-down for dev schemas)
+
+      To re-instate: forge deploy
+
+      To restore: forge restore --snapshot 20260325_104429'
+  reinstate:
+    command: forge deploy
+    note: Re-running deploy recreates the workflow and all orchestration from source

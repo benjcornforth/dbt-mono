@@ -39,6 +39,7 @@
 from __future__ import annotations
 
 import json
+import os
 import textwrap
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -47,6 +48,8 @@ from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
+
+from forge.compute_resolver import resolve_profile
 
 # =============================================
 # LINEAGE STRUCT — typed Python equivalent
@@ -185,6 +188,70 @@ def _load_columns_from_schema_yml(schema_path: Path) -> dict[str, list[dict]]:
             })
         result[model_name] = cols
     return result
+
+
+def _detect_profile_name(profile_name: str | None = None, *, root: Path | None = None) -> str | None:
+    """Resolve the active forge profile name for artifact discovery."""
+    if profile_name:
+        return profile_name
+
+    for env_var in ("FORGE_PROFILE", "FORGE_TARGET", "DATABRICKS_BUNDLE_TARGET", "DBT_TARGET"):
+        env_value = os.environ.get(env_var)
+        if env_value:
+            return env_value
+
+    config_path = (root or Path(".")).resolve() / "forge.yml"
+    if not config_path.exists():
+        return None
+
+    config = yaml.safe_load(config_path.read_text()) or {}
+    return resolve_profile(config).get("_name")
+
+
+def _metadata_candidates(profile_name: str | None = None) -> list[str]:
+    candidates: list[str] = []
+    if profile_name:
+        candidates.extend([
+            f"artifacts/targets/{profile_name}/target/manifest.json",
+            f"artifacts/targets/{profile_name}/dbt/models/schema.yml",
+        ])
+    candidates.extend([
+        "target/manifest.json",
+        "dbt/models/schema.yml",
+    ])
+    return candidates
+
+
+def _autodiscover_tables(profile_name: str | None = None) -> dict[str, list[dict]]:
+    """Find manifest/schema metadata from per-profile artifacts, staged bundles, or legacy roots."""
+    import sys as _sys
+
+    search_roots = [Path(".").resolve()]
+    try:
+        # On Databricks, co_filename points to the actual script under
+        # .bundle/<name>/<target>/files/python/<script>.py
+        # so files/ is the staged project root.
+        _caller = Path(_sys._getframe(2).f_code.co_filename).resolve()
+        _files_root = _caller.parent.parent  # python/ -> files/
+        if _files_root not in search_roots:
+            search_roots.append(_files_root)
+    except (AttributeError, ValueError):
+        pass
+
+    for root in search_roots:
+        resolved_profile = _detect_profile_name(profile_name, root=root)
+        for rel in _metadata_candidates(resolved_profile):
+            path = root / rel
+            if not path.exists():
+                continue
+            if path.name == "manifest.json":
+                return _load_columns_from_manifest(path)
+            return _load_columns_from_schema_yml(path)
+
+    raise FileNotFoundError(
+        "No manifest.json or schema.yml found. "
+        "Run 'forge compile --profile <name>' or provide a path."
+    )
 
 
 # =============================================
@@ -539,6 +606,7 @@ def build_models(
     manifest_path: str | Path | None = None,
     schema_yml_path: str | Path | None = None,
     schema: str = "default",
+    profile_name: str | None = None,
 ) -> ModelRegistry:
     """
     Build type-safe Pydantic models from dbt metadata.
@@ -546,6 +614,7 @@ def build_models(
     Provide ONE of:
       - manifest_path  — reads target/manifest.json (post-compile)
       - schema_yml_path — reads dbt/models/schema.yml (pre-compile)
+            - profile_name — prefers artifacts/targets/<profile>/... during auto-discovery
 
     Returns a ModelRegistry with one class per model:
         models.StgOrders, models.CustomerClean, etc.
@@ -555,43 +624,7 @@ def build_models(
     elif schema_yml_path:
         tables = _load_columns_from_schema_yml(Path(schema_yml_path))
     else:
-        # Auto-discover: check relative paths + paths relative to the
-        # calling script (needed on Databricks where CWD != project root).
-        import sys as _sys
-        search_roots = [Path(".")]
-        try:
-            # On Databricks, co_filename points to the actual script under
-            # .bundle/<name>/<target>/files/python/<script>.py
-            # so files/ is the project root.
-            _caller = Path(_sys._getframe(1).f_code.co_filename)
-            _files_root = _caller.parent.parent  # python/ -> files/
-            if _files_root != Path("."):
-                search_roots.append(_files_root)
-        except (AttributeError, ValueError):
-            pass
-
-        candidates = [
-            "target/manifest.json",
-            "dbt/models/schema.yml",
-        ]
-        found = False
-        for root in search_roots:
-            for rel in candidates:
-                p = root / rel
-                if p.exists():
-                    if p.name == "manifest.json":
-                        tables = _load_columns_from_manifest(p)
-                    else:
-                        tables = _load_columns_from_schema_yml(p)
-                    found = True
-                    break
-            if found:
-                break
-        if not found:
-            raise FileNotFoundError(
-                "No manifest.json or schema.yml found. "
-                "Run 'dbt compile' or provide a path."
-            )
+        tables = _autodiscover_tables(profile_name)
 
     registry = ModelRegistry()
     for model_name, cols in tables.items():
@@ -610,6 +643,7 @@ def generate_sdk_file(
     schema_yml_path: str | Path | None = None,
     schema: str = "default",
     output_path: str | Path = "sdk/models.py",
+    profile_name: str | None = None,
 ) -> Path:
     """
     Generate a static Python file with typed Pydantic models.
@@ -623,20 +657,7 @@ def generate_sdk_file(
     elif schema_yml_path:
         tables = _load_columns_from_schema_yml(Path(schema_yml_path))
     else:
-        for candidate in [
-            Path("target/manifest.json"),
-            Path("dbt/models/schema.yml"),
-        ]:
-            if candidate.exists():
-                if candidate.name == "manifest.json":
-                    tables = _load_columns_from_manifest(candidate)
-                else:
-                    tables = _load_columns_from_schema_yml(candidate)
-                break
-        else:
-            raise FileNotFoundError(
-                "No manifest.json or schema.yml found."
-            )
+        tables = _autodiscover_tables(profile_name)
 
     # Collect which imports we need
     needed_types: set[str] = {"BaseModel", "Field"}

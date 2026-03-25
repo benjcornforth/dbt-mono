@@ -29,6 +29,7 @@ from typing import Any
 
 import yaml as _yaml
 
+from forge.compute_resolver import resolve_profile
 from forge.project_spec import load_project_spec
 
 
@@ -92,6 +93,7 @@ def build_graph(
     forge_config: dict,
     manifest_path: Path | None = None,
     dbt_project_dir: Path | None = None,
+    workflow_dir: Path | None = None,
 ) -> dict:
     """
     Build the full lineage graph from dbt manifest + forge config.
@@ -153,7 +155,15 @@ def build_graph(
     # ── Inject DAB workflow node ─────────────────────────
     project_id = forge_config.get("id", project_name)
     wf_name = f"PROCESS_{project_id}"
-    wf_path = Path(f"resources/jobs/{wf_name}.yml")
+    if workflow_dir is None:
+        profile_name = resolve_profile(forge_config).get("_name")
+        if profile_name:
+            wf_root = Path("artifacts") / "targets" / profile_name / "resources" / "jobs"
+        else:
+            wf_root = Path("resources/jobs")
+    else:
+        wf_root = workflow_dir
+    wf_path = wf_root / f"{wf_name}.yml"
     if wf_path.exists():
         graph["contracts"][f"workflow.{project_name}"] = _make_contract(
             dataset_name=project_name,
@@ -1046,6 +1056,7 @@ def walk_column_lineage(
     project_spec = load_project_spec(ddl_path, forge_config=forge_config)
     models = project_spec.models
     udfs = project_spec.udfs
+    seeds = project_spec.seeds
 
     if model_name not in models:
         return {"error": f"Model '{model_name}' not found in dbt/ddl"}
@@ -1182,7 +1193,6 @@ def walk_column_lineage(
 
     # ── Recurse upstream ─────────────────────────
     upstream: list[dict] = []
-    seeds = raw.get("seeds", {})
     if source_model and source_model in models:
         source_cols = models[source_model].get("columns", {})
         for src_col in source_columns:

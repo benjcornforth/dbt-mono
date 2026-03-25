@@ -175,6 +175,10 @@ def _graph_snapshot_path(profile_name: str | None = None) -> Path:
     return _PROJECT_ROOT / "artifacts" / "graph.json"
 
 
+def _default_workflow_output_dir(profile_name: str) -> Path:
+    return _target_artifact_root(profile_name) / "resources" / "jobs"
+
+
 def _prepare_target_project(target: str, config: dict) -> tuple[Path, dict, dict]:
     target_root = _target_artifact_root(target)
     _reset_dir(target_root)
@@ -541,7 +545,7 @@ def _build_target_bundle(target: str, config: dict, sql_mode: bool) -> dict[str,
 
         dbt_results = compile_all(ddl_path, Path("dbt") / "models", forge_config=target_config)
 
-        graph = build_graph(target_config, dbt_project_dir=Path("dbt"))
+        graph = build_graph(target_config, dbt_project_dir=Path("dbt"), workflow_dir=Path("resources") / "jobs")
         workflows = build_domain_workflows(target_config, graph, sql_mode=sql_mode, sql_root=Path("sql"))
         job_artifacts: list[dict[str, str]] = []
         for wf in workflows:
@@ -907,9 +911,11 @@ def backup(
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
-    if profile:
-        prof = resolve_profile(config, profile_name=profile)
-        config["environment"] = prof.get("env", config.get("environment", "dev"))
+    selected_profile = profile or resolve_profile(config).get("_name")
+    workflow_dir = None
+    if selected_profile:
+        config, _ = _materialize_profile_config(config, selected_profile)
+        workflow_dir = _default_workflow_output_dir(selected_profile)
 
     if list_all:
         snaps = list_backups()
@@ -930,7 +936,7 @@ def backup(
         typer.echo("To restore: forge restore --snapshot <timestamp>")
         return
 
-    graph = build_graph(config)
+    graph = build_graph(config, workflow_dir=workflow_dir)
     result = build_backup(config, graph, include_data=data)
 
     typer.echo(f"📸 Backup created: {result.snapshot_dir}/")
@@ -981,11 +987,13 @@ def teardown(
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
-    if profile:
-        prof = resolve_profile(config, profile_name=profile)
-        config["environment"] = prof.get("env", config.get("environment", "dev"))
+    selected_profile = profile or resolve_profile(config).get("_name")
+    workflow_dir = None
+    if selected_profile:
+        config, _ = _materialize_profile_config(config, selected_profile)
+        workflow_dir = _default_workflow_output_dir(selected_profile)
 
-    graph = build_graph(config)
+    graph = build_graph(config, workflow_dir=workflow_dir)
     plan = build_teardown_plan(config, graph, wipe_all=wipe_all)
 
     # Always write the plan YAML for audit
@@ -1166,16 +1174,19 @@ def graph(
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
-    if profile:
-        selected_profile = _require_profile_name(config, command_name="forge graph", profile=profile)
+    selected_profile = profile or resolve_profile(config).get("_name")
+    workflow_dir = None
+    if selected_profile:
+        selected_profile = _require_profile_name(config, command_name="forge graph", profile=selected_profile)
         config, _ = _materialize_profile_config(config, selected_profile)
+        workflow_dir = _default_workflow_output_dir(selected_profile)
 
     direction_value = direction.upper()
     if direction_value not in {"LR", "RL", "TB", "BT"}:
         typer.echo("❌ --direction must be one of: LR, RL, TB, BT")
         raise typer.Exit(1)
 
-    diagram = render_mermaid(build_graph(config), direction=direction_value)
+    diagram = render_mermaid(build_graph(config, workflow_dir=workflow_dir), direction=direction_value)
     result = _render_mermaid_markdown([("Asset Graph", diagram)]) if _is_markdown_output(output) else diagram
 
     if output:
@@ -1203,7 +1214,8 @@ def diff(
     snapshot_path = _graph_snapshot_path(selected_profile)
     legacy_snapshot_path = _graph_snapshot_path()
 
-    new_graph = build_graph(config)
+    workflow_dir = _default_workflow_output_dir(selected_profile)
+    new_graph = build_graph(config, workflow_dir=workflow_dir)
     old_graph = load_graph(snapshot_path)
 
     if old_graph is None and legacy_snapshot_path != snapshot_path:
@@ -1251,6 +1263,7 @@ def diff(
 def explain(
     model_dot_column: str = typer.Argument(..., help="Model.column to explain (e.g. customer_summary.total_revenue)"),
     ddl: str = typer.Option(DDL_DEFAULT, "--ddl", help="Path to DDL file or directory"),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Forge profile (from forge.yml profiles:)"),
     mermaid_flag: bool = typer.Option(False, "--mermaid", help="Output Mermaid provenance diagram"),
     full: bool = typer.Option(False, "--full", help="Show full detail including upstream checks"),
     light: bool = typer.Option(False, "--light", help="Lightweight view: expressions + columns only"),
@@ -1279,7 +1292,14 @@ def explain(
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
-    graph = build_graph(config, dbt_project_dir=dbt_dir)
+    selected_profile = profile or resolve_profile(config).get("_name")
+    workflow_dir = None
+    if selected_profile:
+        selected_profile = _require_profile_name(config, command_name="forge explain", profile=selected_profile)
+        config, _ = _materialize_profile_config(config, selected_profile)
+        workflow_dir = _default_workflow_output_dir(selected_profile)
+
+    graph = build_graph(config, dbt_project_dir=dbt_dir, workflow_dir=workflow_dir)
     tree = walk_column_lineage(graph, model_name, column_name, dbt_dir, forge_config=config)
 
     if "error" in tree:
@@ -1326,6 +1346,7 @@ def _filter_tree_by_version(tree: dict, version: str) -> dict:
 def codegen(
     output: str = typer.Option("sdk/models.py", "--output", "-o", help="Output file path"),
     check: bool = typer.Option(False, "--check", help="CI mode: fail if generated file is stale"),
+    profile: str | None = typer.Option(None, "--profile", help="Forge profile to use for generated metadata discovery"),
 ):
     """forge codegen → generates type-safe Pydantic models from dbt schema"""
     if not CONFIG_FILE.exists():
@@ -1335,11 +1356,12 @@ def codegen(
     config = yaml.safe_load(CONFIG_FILE.read_text())
     schema = config.get("schema", "default")
     output_path = Path(output)
+    selected_profile = _require_profile_name(config, command_name="forge codegen", profile=profile)
 
     # Read existing content for --check comparison
     old_content = output_path.read_text() if output_path.exists() else None
 
-    out = generate_sdk_file(schema=schema, output_path=output_path)
+    out = generate_sdk_file(schema=schema, output_path=output_path, profile_name=selected_profile)
     new_content = out.read_text()
 
     if check:
@@ -1365,7 +1387,7 @@ def workflow(
     mermaid: bool = typer.Option(False, "--mermaid", help="Output Mermaid diagram"),
     dab: bool = typer.Option(False, "--dab", help="Output databricks.yml jobs section"),
     sql: bool = typer.Option(True, "--sql/--no-sql", help="Use sql_task (pure SQL) instead of dbt_task. Default: on. --no-sql to use dbt_task."),
-    output: Optional[str] = typer.Option(None, "--output", "-o", help="Write output to file (default: resources/jobs/<name>.yml for --dab)"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Write output to file (default: artifacts/targets/<profile>/resources/jobs/<name>.yml for --dab)"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Forge profile (from forge.yml profiles:)"),
 ):
     """forge workflow → generates stage-based Databricks Workflow DAG"""
@@ -1377,7 +1399,8 @@ def workflow(
     selected_profile = _require_profile_name(config, command_name="forge workflow", profile=profile)
     config, _ = _materialize_profile_config(config, selected_profile)
 
-    graph = build_graph(config)
+    workflow_dir = _default_workflow_output_dir(selected_profile)
+    graph = build_graph(config, workflow_dir=workflow_dir)
     workflows = build_domain_workflows(config, graph, sql_mode=sql, sql_root=_default_pure_sql_output(selected_profile))
 
     if mermaid:
@@ -1393,8 +1416,9 @@ def workflow(
 
     # Default output path for --dab mode: write each workflow to its own file
     if dab and not output:
+        workflow_out_dir = _default_workflow_output_dir(selected_profile)
         for wf in workflows:
-            wf_out = Path(f"resources/jobs/{wf.name}.yml")
+            wf_out = workflow_out_dir / f"{wf.name}.yml"
             wf_out.parent.mkdir(parents=True, exist_ok=True)
             wf_out.write_text(wf.to_databricks_yml())
             typer.echo(f"✅ Workflow written to {wf_out}")
@@ -1446,7 +1470,8 @@ def visual_docs(
     column_lineage_path = docs_dir / column_lineage_filename
     visual_doc_path = docs_dir / "VISUAL_DOCUMENTATION.md"
 
-    graph = build_graph(config)
+    workflow_dir = _default_workflow_output_dir(selected_profile)
+    graph = build_graph(config, workflow_dir=workflow_dir)
     workflows = build_domain_workflows(config, graph, sql_mode=True, sql_root=_default_pure_sql_output(selected_profile))
     pipeline_markdown = _render_mermaid_markdown([("Pipeline Workflow", render_workflows_mermaid(workflows))])
     table_lineage_markdown = _render_mermaid_markdown([

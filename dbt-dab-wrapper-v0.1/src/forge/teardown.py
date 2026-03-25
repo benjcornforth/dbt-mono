@@ -352,7 +352,7 @@ def build_teardown_plan(
     now = datetime.now(timezone.utc).isoformat()
 
     wf_name = f"PROCESS_{project_id}"
-    wf_path = f"resources/jobs/{wf_name}.yml"
+    workflow_files = _workflow_files(forge_config)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     backup_dir = "resources/teardown/_backup"
 
@@ -363,13 +363,13 @@ def build_teardown_plan(
     preserves: list[TeardownAsset] = []
 
     # 1. DAB workflow job
-    if Path(wf_path).exists():
+    for wf_file in workflow_files:
         removes.append(TeardownAsset(
             asset_type="dab_job",
-            name=wf_name,
+            name=wf_file.stem,
             action="remove",
             method="delete workflow YAML + databricks bundle destroy",
-            path=wf_path,
+            path=_project_relative(wf_file),
         ))
 
     # 2. UDFs (functions are code — safe to drop)
@@ -553,11 +553,11 @@ def build_teardown_plan(
             continue
         content = src_path.read_text()
         dst = sf['dst']
-        if dst.startswith('functions/'):
+        if dst.startswith('functions/') or '/dbt/functions/' in dst:
             a_type = 'function'
-        elif dst.startswith('dbt_models/'):
+        elif dst.startswith('dbt_models/') or '/dbt/models/' in dst:
             a_type = 'model'
-        elif dst.endswith('.yml') and 'PROCESS_' in dst:
+        elif dst.endswith('.yml') and ('PROCESS_' in dst or 'SETUP_' in dst or 'TEARDOWN_' in dst or 'resources/jobs/' in dst):
             a_type = 'workflow'
         else:
             a_type = 'config'
@@ -580,13 +580,13 @@ def build_teardown_plan(
         ))
 
     # Step: Remove workflow YAML file (already snapshotted in step 1)
-    if Path(wf_path).exists():
+    for wf_file in workflow_files:
         step_num += 1
         steps.append(TeardownStep(
             step=step_num,
-            name="remove_workflow_yaml",
+            name=f"remove_workflow_yaml_{wf_file.stem.lower()}",
             action="delete_file",
-            target=wf_path,
+            target=_project_relative(wf_file),
         ))
 
     # Step: Drop UDFs
@@ -693,6 +693,46 @@ def _resolve_schema(pattern: str, env: str, project_id: str, scope: str) -> str:
     user = getpass.getuser()
     return pattern.format(env=env, id=project_id, scope=scope, user=user, schema=project_id)
 
+
+def _active_profile_name(forge_config: dict) -> str:
+    profile = resolve_default_profile(forge_config)
+    return profile.get("_name") or profile.get("env") or forge_config.get("environment", "dev")
+
+
+def _target_root(forge_config: dict) -> Path:
+    return Path("artifacts") / "targets" / _active_profile_name(forge_config)
+
+
+def _workflow_dir(forge_config: dict) -> Path:
+    return _target_root(forge_config) / "resources" / "jobs"
+
+
+def _compiled_dbt_root(forge_config: dict) -> Path:
+    return _target_root(forge_config) / "dbt"
+
+
+def _project_relative(path: Path) -> str:
+    return path.as_posix()
+
+
+def _workflow_files(forge_config: dict) -> list[Path]:
+    project_id = forge_config.get("id", forge_config.get("name", ""))
+    patterns = [
+        f"SETUP_{project_id}*.yml",
+        f"PROCESS_{project_id}*.yml",
+        f"TEARDOWN_{project_id}*.yml",
+    ]
+    for base_dir in (_workflow_dir(forge_config), Path("resources") / "jobs"):
+        if not base_dir.exists():
+            continue
+        matches: list[Path] = []
+        for pattern in patterns:
+            matches.extend(sorted(base_dir.glob(pattern)))
+        if matches:
+            unique: dict[str, Path] = {m.as_posix(): m for m in matches}
+            return list(unique.values())
+    return []
+
 # =============================================
 # SNAPSHOT HELPERS
 # =============================================
@@ -708,10 +748,6 @@ def collect_snapshot_files(forge_config: dict) -> list[dict[str, str]]:
     Returns a list of {src, dst} dicts — portable file mappings.
     Reused by both build_backup() and build_teardown_plan().
     """
-    project_id = forge_config.get("id", forge_config.get("name", ""))
-    wf_name = f"PROCESS_{project_id}"
-    wf_path = f"resources/jobs/{wf_name}.yml"
-
     snapshot_files: list[dict[str, str]] = []
 
     # forge.yml
@@ -719,26 +755,28 @@ def collect_snapshot_files(forge_config: dict) -> list[dict[str, str]]:
         snapshot_files.append({"src": "forge.yml", "dst": "forge.yml"})
 
     # Workflow YAML
-    if Path(wf_path).exists():
-        snapshot_files.append({"src": wf_path, "dst": f"{wf_name}.yml"})
+    for wf_file in _workflow_files(forge_config):
+        snapshot_files.append({"src": str(wf_file), "dst": _project_relative(wf_file)})
 
     # UDF source files
-    udf_dir = Path("dbt/functions")
+    udf_dir = _compiled_dbt_root(forge_config) / "functions"
+    if not udf_dir.exists():
+        udf_dir = Path("dbt/functions")
     if udf_dir.exists():
         for udf_file in sorted(udf_dir.glob("*.sql")):
-            snapshot_files.append({"src": str(udf_file), "dst": f"functions/{udf_file.name}"})
+            snapshot_files.append({"src": str(udf_file), "dst": _project_relative(udf_file)})
         for udf_file in sorted(udf_dir.glob("*.py")):
-            snapshot_files.append({"src": str(udf_file), "dst": f"functions/{udf_file.name}"})
+            snapshot_files.append({"src": str(udf_file), "dst": _project_relative(udf_file)})
 
     # dbt model source files
-    models_dir = Path("dbt/models")
+    models_dir = _compiled_dbt_root(forge_config) / "models"
+    if not models_dir.exists():
+        models_dir = Path("dbt/models")
     if models_dir.exists():
         for model_file in sorted(models_dir.rglob("*.sql")):
-            rel = model_file.relative_to(models_dir)
-            snapshot_files.append({"src": str(model_file), "dst": f"dbt_models/{rel}"})
+            snapshot_files.append({"src": str(model_file), "dst": _project_relative(model_file)})
         for model_file in sorted(models_dir.rglob("*.yml")):
-            rel = model_file.relative_to(models_dir)
-            snapshot_files.append({"src": str(model_file), "dst": f"dbt_models/{rel}"})
+            snapshot_files.append({"src": str(model_file), "dst": _project_relative(model_file)})
 
     return snapshot_files
 
@@ -877,11 +915,11 @@ def build_backup(
                 continue
             content = src_path.read_text()
             dst = sf['dst']
-            if dst.startswith('functions/'):
+            if dst.startswith('functions/') or '/dbt/functions/' in dst:
                 a_type = 'function'
-            elif dst.startswith('dbt_models/'):
+            elif dst.startswith('dbt_models/') or '/dbt/models/' in dst:
                 a_type = 'model'
-            elif dst.endswith('.yml') and 'PROCESS_' in dst:
+            elif dst.endswith('.yml') and ('PROCESS_' in dst or 'SETUP_' in dst or 'TEARDOWN_' in dst or 'resources/jobs/' in dst):
                 a_type = 'workflow'
             else:
                 a_type = 'config'
@@ -997,15 +1035,41 @@ def restore_snapshot(
         return [f"Snapshot not found: {snapshot_id}"]
 
     log: list[str] = []
+    restored_new_style = False
 
     # Restore forge.yml
     src = snap_dir / "forge.yml"
     if src.exists():
         shutil.copy2(src, "forge.yml")
         log.append("Restored forge.yml")
+        restored_new_style = True
 
-    # Restore workflow YAML
-    for f in snap_dir.glob("PROCESS_*.yml"):
+    # Restore exact project-relative paths from new-style snapshots.
+    reserved_files = {"BACKUP_manifest.yml", "TEARDOWN_plan.yml", "graph.json"}
+    for f in sorted(snap_dir.rglob("*")):
+        if not f.is_file():
+            continue
+        rel = f.relative_to(snap_dir)
+        if rel.as_posix() == "forge.yml":
+            continue
+        if rel.as_posix() in reserved_files or rel.name in reserved_files:
+            continue
+        if rel.parts and rel.parts[0] in {"artifacts", "resources", "dbt"}:
+            dst = Path(*rel.parts)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, dst)
+            log.append(f"Restored {dst}")
+            restored_new_style = True
+
+    if restored_new_style:
+        log.append("")
+        log.append("Snapshot restored. Run 'forge deploy' to redeploy all assets.")
+        return log
+
+    # Legacy restore: workflow YAML
+    for f in snap_dir.glob("*.yml"):
+        if not any(f.name.startswith(prefix) for prefix in ("PROCESS_", "SETUP_", "TEARDOWN_")):
+            continue
         dst = Path("resources/jobs") / f.name
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(f, dst)
