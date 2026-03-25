@@ -18,6 +18,7 @@ import hashlib
 import os
 import sys
 import re
+from glob import glob
 from datetime import datetime, timezone
 
 # Databricks runs python_task scripts via exec(compile(f.read(), filename, 'exec')).
@@ -27,6 +28,13 @@ _script_path = os.path.abspath(sys._getframe().f_code.co_filename)
 _files_dir = os.path.dirname(os.path.dirname(_script_path))  # python/ → files/
 if _files_dir not in sys.path:
     sys.path.insert(0, _files_dir)
+_dist_dir = os.path.join(_files_dir, "dist")
+if os.path.isdir(_dist_dir):
+    if _dist_dir not in sys.path:
+        sys.path.insert(0, _dist_dir)
+    for _wheel_path in sorted(glob(os.path.join(_dist_dir, "*.whl"))):
+        if _wheel_path not in sys.path:
+            sys.path.insert(0, _wheel_path)
 
 from forge.type_safe import build_models
 
