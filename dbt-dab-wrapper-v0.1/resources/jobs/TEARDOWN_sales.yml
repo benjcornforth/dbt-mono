@@ -7,7 +7,7 @@ resources:
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/backup.sql
+            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/teardown/backup.sql
           warehouse_id: 724607f766691c81
           parameters:
             run_id: '{{job.run_id}}'
@@ -15,7 +15,7 @@ resources:
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/teardown.sql
+            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/teardown/teardown.sql
           warehouse_id: 724607f766691c81
           parameters:
             run_id: '{{job.run_id}}'

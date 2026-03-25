@@ -11,12 +11,17 @@ resources:
           parameters:
           - --schema_bronze=ben_sales
           - --schema_silver=ben_sales
-          - --schema_gold=ben_sales
+          - --schema_meta=ben_config
+          - --schema_operations=ben_operations
           - --catalog_bronze=dev_fd_bronze
           - --catalog_silver=dev_fd_silver
           - --catalog_meta=dev_fd_meta
+          - --catalog_operations=dev_fd_operations
+          - --schema_backups=ben_backups
+          - --archive_table=dev_fd_operations.ben_backups._backup_archive
           - --git_commit=local
           - --compute_type=serverless
+          - --domain=sales
           - --schema_file_manifest=file_path:string|file_name:string|model_name:string|domain:string|file_format:string|row_count:int|file_size_bytes:int|checksum:string|ingested_at:timestamp|status:string
           - --schema_raw_customers=customer_id:int|first_name:string|last_name:string|email:string|signup_date:date|country:string|revenue:decimal(10,2)
           - --schema_raw_orders=order_id:int|customer_id:int|product:string|quantity:int|unit_price:decimal(10,2)|order_date:date
@@ -24,7 +29,7 @@ resources:
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/011_customer_orders.sql
+            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/process/014_customer_orders.sql
           warehouse_id: 724607f766691c81
           parameters:
             run_id: '{{job.run_id}}'
@@ -35,7 +40,7 @@ resources:
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/012_customer_summary.sql
+            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/process/015_customer_summary.sql
           warehouse_id: 724607f766691c81
           parameters:
             run_id: '{{job.run_id}}'
@@ -45,7 +50,7 @@ resources:
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/008_stg_customers.sql
+            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/process/011_stg_customers.sql
           warehouse_id: 724607f766691c81
           parameters:
             run_id: '{{job.run_id}}'
@@ -55,7 +60,7 @@ resources:
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/010_stg_orders.sql
+            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/process/013_stg_orders.sql
           warehouse_id: 724607f766691c81
           parameters:
             run_id: '{{job.run_id}}'
@@ -65,7 +70,7 @@ resources:
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/009_customer_clean.sql
+            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/process/012_customer_clean.sql
           warehouse_id: 724607f766691c81
           parameters:
             run_id: '{{job.run_id}}'
@@ -75,7 +80,7 @@ resources:
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/009_customer_clean_quarantine.sql
+            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/process/012_customer_clean_quarantine.sql
           warehouse_id: 724607f766691c81
           parameters:
             run_id: '{{job.run_id}}'

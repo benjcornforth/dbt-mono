@@ -32,6 +32,8 @@ from typing import Any
 
 import yaml
 
+from forge.project_spec import load_project_spec
+
 
 # =============================================
 # DDL YAML PARSER
@@ -275,16 +277,7 @@ def load_raw_ddl(ddl_path: Path, forge_config: dict | None = None) -> dict:
       dbt/ddl/domain/{domain}/{layer}/{models|udfs|seeds|volumes}/**/*.yml
       dbt/ddl/shared/{layer}/{models|udfs|seeds|volumes}/**/*.yml
     """
-    if not ddl_path.exists():
-        raise FileNotFoundError(f"DDL path not found: {ddl_path}")
-    if not ddl_path.is_dir():
-        raise ValueError(
-            f"DDL path must be a directory tree rooted at dbt/ddl/. Got: {ddl_path}"
-        )
-
-    if _uses_v1_placements(forge_config):
-        return _load_raw_ddl_v1(ddl_path)
-    return _load_raw_ddl_legacy(ddl_path, forge_config=forge_config)
+    return load_project_spec(ddl_path, forge_config=forge_config).to_raw_ddl()
 
 
 def _merge_section(
@@ -311,17 +304,17 @@ def _merge_section(
 
 def load_ddl(ddl_path: Path, forge_config: dict | None = None) -> dict[str, dict]:
     """Load models from a file or directory and return the models dict."""
-    return load_raw_ddl(ddl_path, forge_config=forge_config).get("models", {})
+    return load_project_spec(ddl_path, forge_config=forge_config).models
 
 
 def load_udfs(ddl_path: Path, forge_config: dict | None = None) -> dict[str, dict]:
     """Load UDFs from a file or directory and return the udfs dict."""
-    return load_raw_ddl(ddl_path, forge_config=forge_config).get("udfs", {})
+    return load_project_spec(ddl_path, forge_config=forge_config).udfs
 
 
 def load_seeds(ddl_path: Path, forge_config: dict | None = None) -> dict[str, dict]:
     """Load seed definitions from a file or directory."""
-    return load_raw_ddl(ddl_path, forge_config=forge_config).get("seeds", {})
+    return load_project_spec(ddl_path, forge_config=forge_config).seeds
 
 
 def _seed_inline_rows(seed_name: str, seed_def: dict) -> list[dict[str, Any]] | None:
@@ -341,12 +334,12 @@ def _seed_inline_rows(seed_name: str, seed_def: dict) -> list[dict[str, Any]] | 
 
 def load_volumes(ddl_path: Path, forge_config: dict | None = None) -> dict[str, dict]:
     """Load volume definitions from a file or directory."""
-    return load_raw_ddl(ddl_path, forge_config=forge_config).get("volumes", {})
+    return load_project_spec(ddl_path, forge_config=forge_config).volumes
 
 
 def load_sources(ddl_path: Path, forge_config: dict | None = None) -> dict[str, dict]:
     """Load external source definitions from a file or directory."""
-    return load_raw_ddl(ddl_path, forge_config=forge_config).get("sources", {})
+    return load_project_spec(ddl_path, forge_config=forge_config).sources
 
 
 def _resolve_authored_location(

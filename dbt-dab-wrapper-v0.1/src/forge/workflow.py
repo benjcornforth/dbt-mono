@@ -46,6 +46,7 @@ import yaml
 
 
 from forge.compute_resolver import read_databrickscfg, get_schema_variables, resolve_profile
+from forge.project_spec import ProjectSpec, load_project_spec
 
 
 # =============================================
@@ -57,6 +58,14 @@ STAGES = ["ingest", "stage", "clean", "enrich", "serve"]
 SQL_SETUP_DIR = Path("sql") / "setup"
 SQL_PROCESS_DIR = Path("sql") / "process"
 SQL_TEARDOWN_DIR = Path("sql") / "teardown"
+
+
+def _resolve_sql_root(sql_root: Path | None = None) -> Path:
+    return sql_root or Path("sql")
+
+
+def _resolve_sql_phase_dir(phase: str, sql_root: Path | None = None) -> Path:
+    return _resolve_sql_root(sql_root) / phase
 
 
 def _sql_task_path(file_path: Path) -> str:
@@ -733,10 +742,52 @@ def _resolve_dbt_vars(forge_config: dict) -> dict[str, str]:
     return {**schema_vars, **extra}
 
 
+def _load_workflow_project_spec(forge_config: dict) -> ProjectSpec | None:
+    """Load the authored project registry for workflow generation when DDL exists."""
+    dbt_dir = Path(forge_config.get("dbt_project_dir", "dbt"))
+    ddl_path = dbt_dir / "ddl"
+    if not ddl_path.exists():
+        return None
+    return load_project_spec(ddl_path, forge_config=forge_config)
+
+
+def _managed_by_model_defs(project_spec: ProjectSpec | None) -> dict[str, dict[str, Any]]:
+    if project_spec is None:
+        return {}
+
+    managed: dict[str, dict[str, Any]] = {}
+    for model_name, model_def in project_spec.models.items():
+        if isinstance(model_def, dict) and model_def.get("managed_by"):
+            managed[model_name] = model_def
+    return managed
+
+
+def _collect_managed_by_values(
+    project_spec: ProjectSpec | None,
+    contracts: dict[str, Any],
+) -> set[str]:
+    values: set[str] = set()
+
+    if project_spec is not None:
+        for model_def in project_spec.models.values():
+            if isinstance(model_def, dict):
+                managed_by = model_def.get("managed_by")
+                if managed_by:
+                    values.add(managed_by)
+
+    for contract in contracts.values():
+        managed_by = contract.get("_meta", {}).get("managed_by")
+        if managed_by:
+            values.add(managed_by)
+
+    return values
+
+
 def build_workflow(
     forge_config: dict,
     graph: dict,
     sql_mode: bool = False,
+    sql_root: Path | None = None,
 ) -> Workflow:
     """
     Build a Databricks Workflow from the lineage graph.
@@ -824,11 +875,9 @@ def build_workflow(
     from forge.python_task import load_python_tasks
     python_tasks = load_python_tasks()
 
-    # ── Load DDL model defs for managed_by column schemas ──
-    from forge.simple_ddl import load_ddl
-    dbt_dir = Path(forge_config.get("dbt_project_dir", "dbt"))
-    ddl_path = dbt_dir / "ddl"
-    ddl_models = load_ddl(ddl_path, forge_config=forge_config) if ddl_path.exists() else {}
+    # ── Load authored project registry once for workflow-time DDL lookups ──
+    project_spec = _load_workflow_project_spec(forge_config)
+    managed_by_models = _managed_by_model_defs(project_spec)
 
     # ── Load custom_tasks from forge.yml ──────────────
     custom_tasks = load_custom_tasks(forge_config)
@@ -851,7 +900,7 @@ def build_workflow(
     # ── Build sql file index (sql_mode) ─────────────
     sql_file_map: dict[str, str] = {}  # model_name → sql/NNN_model.sql
     if sql_mode:
-        sql_dir = SQL_PROCESS_DIR
+        sql_dir = _resolve_sql_phase_dir("process", sql_root)
         if sql_dir.is_dir():
             for f in sorted(sql_dir.iterdir()):
                 if f.suffix == ".sql" and "_" in f.stem:
@@ -943,11 +992,7 @@ def build_workflow(
     # PROCESS (they ingest fresh data each cycle) and also in SETUP (schema
     # creation).  Root model tasks are rewired to depend on them so the
     # DAG flows: ingest → staging → … → serve.
-    managed_by_values: set[str] = set()
-    for cid, contract in contracts.items():
-        mb = contract.get("_meta", {}).get("managed_by")
-        if mb:
-            managed_by_values.add(mb)
+    managed_by_values = _collect_managed_by_values(project_spec, contracts)
 
     domain_name = forge_config.get("_domain")  # set by build_domain_workflows
     ingest_task_names: list[str] = []
@@ -970,9 +1015,7 @@ def build_workflow(
 
             # Bake DDL column schemas for managed_by models so the python
             # task can cast CSV columns without reading the target table.
-            for m_name, m_def in ddl_models.items():
-                if not isinstance(m_def, dict) or not m_def.get("managed_by"):
-                    continue
+            for m_name, m_def in managed_by_models.items():
                 cols = m_def.get("columns", {})
                 if cols:
                     col_parts = []
@@ -1078,6 +1121,7 @@ def build_domain_workflows(
     forge_config: dict,
     graph: dict,
     sql_mode: bool = False,
+    sql_root: Path | None = None,
 ) -> list[Workflow]:
     """Build one Databricks Workflow per domain.
 
@@ -1094,7 +1138,7 @@ def build_domain_workflows(
     project_id = forge_config.get("id", forge_config.get("name", "unnamed"))
 
     if not domains or mode == "shared":
-        process_workflows = [build_workflow(forge_config, graph, sql_mode=sql_mode)]
+        process_workflows = [build_workflow(forge_config, graph, sql_mode=sql_mode, sql_root=sql_root)]
     else:
         process_workflows = []
         contracts = graph.get("contracts", {})
@@ -1126,20 +1170,20 @@ def build_domain_workflows(
             # Build the workflow with a domain-aware name.
             domain_config = {**forge_config}
             domain_config["_domain"] = domain_name
-            wf = build_workflow(domain_config, domain_graph, sql_mode=sql_mode)
+            wf = build_workflow(domain_config, domain_graph, sql_mode=sql_mode, sql_root=sql_root)
             wf.name = f"{wf.name}{workflow_suffix}"
             process_workflows.append(wf)
 
     # Build setup + process + teardown workflows
     workflows: list[Workflow] = []
-    workflows.append(build_setup_workflow(forge_config))
+    workflows.append(build_setup_workflow(forge_config, sql_root=sql_root))
     workflows.extend(process_workflows)
-    workflows.append(build_teardown_workflow(forge_config, graph))
+    workflows.append(build_teardown_workflow(forge_config, graph, sql_root=sql_root))
 
     return workflows
 
 
-def build_setup_workflow(forge_config: dict) -> Workflow:
+def build_setup_workflow(forge_config: dict, sql_root: Path | None = None) -> Workflow:
     """Build a SETUP workflow from setup SQL tasks.
 
     This is a separate job that runs before the main PROCESS workflow.
@@ -1170,7 +1214,9 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
     tasks: list[WorkflowTask] = []
 
     # UDFs task — runs after setup so catalog/schema exist
-    udf_sql = SQL_SETUP_DIR / "000_udfs.sql"
+    setup_dir = _resolve_sql_phase_dir("setup", sql_root)
+
+    udf_sql = setup_dir / "000_udfs.sql"
     if udf_sql.exists():
         tasks.append(WorkflowTask(
             name=_setup_sql_task_name("udfs", udf_sql, "shared"),
@@ -1183,7 +1229,7 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
         ))
 
     # Lineage graph task — creates tables + seeds DAG edges
-    lineage_sql = SQL_SETUP_DIR / "001_lineage_graph.sql"
+    lineage_sql = setup_dir / "001_lineage_graph.sql"
     if lineage_sql.exists():
         lineage_deps = [tasks[-1].name] if tasks else []
         tasks.append(WorkflowTask(
@@ -1197,7 +1243,7 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
         ))
 
     # Quarantine tables task — creates transform_quarantine + ingest_quarantine
-    sql_dir_setup = SQL_SETUP_DIR
+    sql_dir_setup = setup_dir
     if sql_dir_setup.is_dir():
         for f in sorted(sql_dir_setup.iterdir()):
             if f.name.endswith("_quarantine_tables.sql"):
@@ -1214,7 +1260,7 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
                 break
 
     # Volumes task — CREATE VOLUME IF NOT EXISTS
-    sql_dir = SQL_SETUP_DIR
+    sql_dir = setup_dir
     if sql_dir.is_dir():
         for f in sorted(sql_dir.iterdir()):
             if f.name.endswith("_volumes.sql"):
@@ -1236,7 +1282,7 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
                     break
 
     # Model definition SQL files — physical tables are defined in SETUP.
-    sql_dir = SQL_SETUP_DIR
+    sql_dir = setup_dir
     if sql_dir.is_dir():
         last_setup_task = tasks[-1].name if tasks else None
         for f in sorted(sql_dir.iterdir()):
@@ -1306,7 +1352,7 @@ def build_setup_workflow(forge_config: dict) -> Workflow:
     )
 
 
-def build_teardown_workflow(forge_config: dict, graph: dict) -> Workflow:
+def build_teardown_workflow(forge_config: dict, graph: dict, sql_root: Path | None = None) -> Workflow:
     """Build a TEARDOWN workflow: drops tables/schemas from the lineage graph.
 
     This is a separate job that can be run to clean up resources.
@@ -1334,6 +1380,8 @@ def build_teardown_workflow(forge_config: dict, graph: dict) -> Workflow:
         except Exception:
             pass
 
+    teardown_dir = _resolve_sql_phase_dir("teardown", sql_root)
+
     # Collect model names from graph (reverse order for teardown)
     contracts = graph.get("contracts", {})
     model_names = []
@@ -1354,7 +1402,7 @@ def build_teardown_workflow(forge_config: dict, graph: dict) -> Workflow:
             name="backup",
             stage="serve",
             task_type="sql",
-            sql_file=_sql_task_path(SQL_TEARDOWN_DIR / "backup.sql"),
+            sql_file=_sql_task_path(teardown_dir / "backup.sql"),
             models=[],
             depends_on=[],
             compute_type=compute_type,
@@ -1363,7 +1411,7 @@ def build_teardown_workflow(forge_config: dict, graph: dict) -> Workflow:
             name="teardown",
             stage="serve",
             task_type="sql",
-            sql_file=_sql_task_path(SQL_TEARDOWN_DIR / "teardown.sql"),
+            sql_file=_sql_task_path(teardown_dir / "teardown.sql"),
             models=[],
             depends_on=["backup"],
             compute_type=compute_type,

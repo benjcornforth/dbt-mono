@@ -169,6 +169,12 @@ def _default_pure_sql_output(profile_name: str) -> Path:
     return _target_artifact_root(profile_name) / "sql"
 
 
+def _graph_snapshot_path(profile_name: str | None = None) -> Path:
+    if profile_name:
+        return _target_artifact_root(profile_name) / "graph.json"
+    return _PROJECT_ROOT / "artifacts" / "graph.json"
+
+
 def _prepare_target_project(target: str, config: dict) -> tuple[Path, dict, dict]:
     target_root = _target_artifact_root(target)
     _reset_dir(target_root)
@@ -536,7 +542,7 @@ def _build_target_bundle(target: str, config: dict, sql_mode: bool) -> dict[str,
         dbt_results = compile_all(ddl_path, Path("dbt") / "models", forge_config=target_config)
 
         graph = build_graph(target_config, dbt_project_dir=Path("dbt"))
-        workflows = build_domain_workflows(target_config, graph, sql_mode=sql_mode)
+        workflows = build_domain_workflows(target_config, graph, sql_mode=sql_mode, sql_root=Path("sql"))
         job_artifacts: list[dict[str, str]] = []
         for wf in workflows:
             wf_path = Path("resources") / "jobs" / f"{wf.name}.yml"
@@ -836,7 +842,7 @@ def deploy(
     except Exception as exc:
         typer.echo(f"  ⚠️  Bundle deploy skipped: {exc}")
 
-    typer.echo("🎉 Deploy complete! Run 'forge diff' to see graph changes.")
+    typer.echo(f"🎉 Deploy complete! Run 'forge diff --profile {target_name}' to see graph changes.")
 
 
 @app.command()
@@ -1182,6 +1188,7 @@ def graph(
 
 @app.command()
 def diff(
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Forge profile (from forge.yml profiles:)"),
     mermaid: bool = typer.Option(False, "--mermaid", help="Output Mermaid diff diagram"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Write diff output to file"),
 ):
@@ -1191,10 +1198,18 @@ def diff(
         raise typer.Exit(1)
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
-    snapshot_path = Path("artifacts") / "graph.json"
+    selected_profile = _require_profile_name(config, command_name="forge diff", profile=profile)
+    config, _ = _materialize_profile_config(config, selected_profile)
+    snapshot_path = _graph_snapshot_path(selected_profile)
+    legacy_snapshot_path = _graph_snapshot_path()
 
     new_graph = build_graph(config)
     old_graph = load_graph(snapshot_path)
+
+    if old_graph is None and legacy_snapshot_path != snapshot_path:
+        old_graph = load_graph(legacy_snapshot_path)
+        if old_graph is not None:
+            typer.echo(f"📦 Using legacy graph snapshot → {legacy_snapshot_path}")
 
     if old_graph is None:
         typer.echo("📊 No previous graph snapshot found — building baseline.")
@@ -1363,7 +1378,7 @@ def workflow(
     config, _ = _materialize_profile_config(config, selected_profile)
 
     graph = build_graph(config)
-    workflows = build_domain_workflows(config, graph, sql_mode=sql)
+    workflows = build_domain_workflows(config, graph, sql_mode=sql, sql_root=_default_pure_sql_output(selected_profile))
 
     if mermaid:
         diagram = render_workflows_mermaid(workflows)
@@ -1432,7 +1447,7 @@ def visual_docs(
     visual_doc_path = docs_dir / "VISUAL_DOCUMENTATION.md"
 
     graph = build_graph(config)
-    workflows = build_domain_workflows(config, graph, sql_mode=True)
+    workflows = build_domain_workflows(config, graph, sql_mode=True, sql_root=_default_pure_sql_output(selected_profile))
     pipeline_markdown = _render_mermaid_markdown([("Pipeline Workflow", render_workflows_mermaid(workflows))])
     table_lineage_markdown = _render_mermaid_markdown([
         ("Current Table Relationships", render_current_table_relationships_mermaid(graph))

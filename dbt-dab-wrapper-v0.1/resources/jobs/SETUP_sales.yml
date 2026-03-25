@@ -3,101 +3,114 @@ resources:
     SETUP_sales:
       name: SETUP_sales (dev)
       tasks:
-      - task_key: setup
-        timeout_seconds: 3600
-        environment_key: default
-        dbt_task:
-          project_directory: ${workspace.file_path}
-          commands:
-          - dbt deps
-          - 'dbt seed --full-refresh --vars ''{"schema_bronze": "dev_bronze", "schema_silver":
-            "dev_silver", "schema_gold": "dev_gold", "catalog_bronze": "dev_sales_bronze",
-            "catalog_silver": "dev_sales_silver", "catalog_meta": "dev_sales_meta",
-            "catalog_operations": "dev_sales_operations", "schema_backups": "ben_backups",
-            "archive_table": "dev_sales_operations.ben_backups._backup_archive", "git_commit":
-            "local", "compute_type": "serverless"}'''
-          catalog: main
-          warehouse_id: 724607f766691c81
-      - task_key: create_udfs
+      - task_key: setup_udfs_dev_fd_meta_ben_lineage_shared
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/000_udfs.sql
+            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/000_udfs.sql
+          warehouse_id: 724607f766691c81
+          parameters:
+            run_id: '{{job.run_id}}'
+      - task_key: setup_lineage_dev_fd_meta_ben_lineage_graph
+        timeout_seconds: 3600
+        sql_task:
+          file:
+            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/001_lineage_graph.sql
           warehouse_id: 724607f766691c81
           parameters:
             run_id: '{{job.run_id}}'
         depends_on:
-        - task_key: setup
-      - task_key: seed_lineage_graph
+        - task_key: setup_udfs_dev_fd_meta_ben_lineage_shared
+      - task_key: setup_quarantine_dev_fd_meta_ben_lineage_tables
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/001_lineage_graph.sql
+            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/002_quarantine_tables.sql
           warehouse_id: 724607f766691c81
           parameters:
             run_id: '{{job.run_id}}'
         depends_on:
-        - task_key: create_udfs
-      - task_key: create_quarantine_tables
+        - task_key: setup_lineage_dev_fd_meta_ben_lineage_graph
+      - task_key: setup_volume_dev_fd_bronze_ben_sales_definitions
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/002_quarantine_tables.sql
+            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/003_volumes.sql
           warehouse_id: 724607f766691c81
           parameters:
             run_id: '{{job.run_id}}'
         depends_on:
-        - task_key: seed_lineage_graph
-      - task_key: create_volumes
+        - task_key: setup_quarantine_dev_fd_meta_ben_lineage_tables
+      - task_key: setup_table_dev_fd_bronze_ben_sales_file_manifest
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/003_volumes.sql
+            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/005_file_manifest.sql
           warehouse_id: 724607f766691c81
           parameters:
             run_id: '{{job.run_id}}'
         depends_on:
-        - task_key: create_quarantine_tables
-      - task_key: create_file_manifest
+        - task_key: setup_volume_dev_fd_bronze_ben_sales_definitions
+      - task_key: setup_table_dev_fd_bronze_ben_sales_raw_customers
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/005_file_manifest.sql
+            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/006_raw_customers.sql
           warehouse_id: 724607f766691c81
           parameters:
             run_id: '{{job.run_id}}'
         depends_on:
-        - task_key: create_volumes
-      - task_key: create_raw_customers
+        - task_key: setup_volume_dev_fd_bronze_ben_sales_definitions
+      - task_key: setup_table_dev_fd_bronze_ben_sales_raw_orders
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/006_raw_customers.sql
+            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/007_raw_orders.sql
           warehouse_id: 724607f766691c81
           parameters:
             run_id: '{{job.run_id}}'
         depends_on:
-        - task_key: create_volumes
-      - task_key: create_raw_orders
+        - task_key: setup_volume_dev_fd_bronze_ben_sales_definitions
+      - task_key: setup_table_dev_fd_silver_ben_sales_customer_clean
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/007_raw_orders.sql
+            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/008_customer_clean.sql
           warehouse_id: 724607f766691c81
           parameters:
             run_id: '{{job.run_id}}'
         depends_on:
-        - task_key: create_volumes
-      - task_key: seed_ingestion_config
+        - task_key: setup_volume_dev_fd_bronze_ben_sales_definitions
+      - task_key: setup_table_dev_fd_silver_ben_sales_customer_orders
         timeout_seconds: 3600
         sql_task:
           file:
-            path: ../../sql/004_ingestion_config.sql
+            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/009_customer_orders.sql
           warehouse_id: 724607f766691c81
           parameters:
             run_id: '{{job.run_id}}'
         depends_on:
-        - task_key: create_raw_orders
+        - task_key: setup_volume_dev_fd_bronze_ben_sales_definitions
+      - task_key: setup_table_dev_fd_silver_ben_sales_customer_summary
+        timeout_seconds: 3600
+        sql_task:
+          file:
+            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/010_customer_summary.sql
+          warehouse_id: 724607f766691c81
+          parameters:
+            run_id: '{{job.run_id}}'
+        depends_on:
+        - task_key: setup_volume_dev_fd_bronze_ben_sales_definitions
+      - task_key: setup_seed_dev_fd_meta_ben_config_ingestion_config
+        timeout_seconds: 3600
+        sql_task:
+          file:
+            path: /Users/ben/Documents/Business/dbt-dab/dbt-dab-wrapper-v0.1/artifacts/targets/dev/sql/setup/004_ingestion_config.sql
+          warehouse_id: 724607f766691c81
+          parameters:
+            run_id: '{{job.run_id}}'
+        depends_on:
+        - task_key: setup_table_dev_fd_silver_ben_sales_customer_summary
       environments:
       - environment_key: default
         spec:

@@ -29,7 +29,7 @@ from typing import Any
 
 import yaml as _yaml
 
-from forge.simple_ddl import load_raw_ddl as _load_raw_ddl
+from forge.project_spec import load_project_spec
 
 
 def _resolve_ddl_path(dbt_dir: Path) -> Path | None:
@@ -579,9 +579,9 @@ def _add_sql_udf_nodes(
     if not ddl_path:
         return
 
-    raw = _load_raw_ddl(ddl_path, forge_config=forge_config)
-    udfs = raw.get("udfs", {})
-    models = raw.get("models", {})
+    project_spec = load_project_spec(ddl_path, forge_config=forge_config)
+    udfs = project_spec.udfs
+    models = project_spec.models
 
     if not udfs:
         return
@@ -685,8 +685,8 @@ def _add_check_nodes(
     if not ddl_path:
         return
 
-    raw = _load_raw_ddl(ddl_path, forge_config=forge_config)
-    models = raw.get("models", {})
+    project_spec = load_project_spec(ddl_path, forge_config=forge_config)
+    models = project_spec.models
     project = graph["metadata"]["project"]
     schema = graph["metadata"]["schema"]
 
@@ -1043,9 +1043,9 @@ def walk_column_lineage(
     if not ddl_path:
         return {"error": f"No canonical dbt/ddl directory found in {dbt_dir}"}
 
-    raw = _load_raw_ddl(ddl_path, forge_config=forge_config)
-    models = raw.get("models", {})
-    udfs = raw.get("udfs", {})
+    project_spec = load_project_spec(ddl_path, forge_config=forge_config)
+    models = project_spec.models
+    udfs = project_spec.udfs
 
     if model_name not in models:
         return {"error": f"Model '{model_name}' not found in dbt/ddl"}
