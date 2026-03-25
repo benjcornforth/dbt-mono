@@ -2017,6 +2017,218 @@ def _compile_lineage_struct(
         return f"    cast('{json_str}' as varchar(8000)) AS _lineage"
 
 
+def _is_ephemeral_model(model_def: dict[str, Any] | None) -> bool:
+    return isinstance(model_def, dict) and model_def.get("materialized") == "ephemeral"
+
+
+def _indent_sql_block(sql: str, spaces: int = 4) -> str:
+    prefix = " " * spaces
+    return "\n".join(prefix + line if line else line for line in sql.splitlines())
+
+
+def _resolve_pure_sql_relation(
+    source_name: str,
+    default_catalog: str,
+    default_schema: str,
+    *,
+    models: dict[str, dict] | None = None,
+    model_locations: dict[str, tuple[str, str]] | None = None,
+    source_locations: dict[str, tuple[str, str]] | None = None,
+    git_commit: str = "unknown",
+    deploy_ts: str = "",
+    compute_type: str = "serverless",
+    platform: str = "databricks",
+    udf_qualifiers: dict[str, str] | None = None,
+    inline_stack: set[str] | None = None,
+) -> str:
+    all_models = models or {}
+    if source_name in all_models and _is_ephemeral_model(all_models[source_name]):
+        seen = set(inline_stack or ())
+        if source_name in seen:
+            cycle = " -> ".join([*sorted(seen), source_name])
+            raise ValueError(f"Circular ephemeral dependency detected: {cycle}")
+        if not model_locations or source_name not in model_locations:
+            raise ValueError(f"Ephemeral model '{source_name}' has no resolved location.")
+
+        ep_catalog, ep_schema = model_locations[source_name]
+        inline_sql = _compile_pure_sql_query(
+            source_name,
+            all_models[source_name],
+            ep_catalog,
+            ep_schema,
+            git_commit=git_commit,
+            deploy_ts=deploy_ts,
+            compute_type=compute_type,
+            platform=platform,
+            models=all_models,
+            model_locations=model_locations,
+            source_locations=source_locations,
+            udf_qualifiers=udf_qualifiers,
+            inline_stack=seen | {source_name},
+        ).rstrip()
+        if inline_sql.endswith(";"):
+            inline_sql = inline_sql[:-1].rstrip()
+        return f"(\n{_indent_sql_block(inline_sql, 4)}\n)"
+
+    if source_locations and source_name in source_locations:
+        s_cat, s_sch = source_locations[source_name]
+        return f"`{s_cat}`.`{s_sch}`.`{source_name}`"
+
+    return f"`{default_catalog}`.`{default_schema}`.`{source_name}`"
+
+
+def _compile_pure_sql_query(
+    model_name: str,
+    model_def: dict,
+    catalog: str,
+    schema: str,
+    *,
+    git_commit: str = "unknown",
+    deploy_ts: str = "",
+    compute_type: str = "serverless",
+    platform: str = "databricks",
+    models: dict[str, dict] | None = None,
+    model_locations: dict[str, tuple[str, str]] | None = None,
+    source_locations: dict[str, tuple[str, str]] | None = None,
+    udf_qualifiers: dict[str, str] | None = None,
+    inline_stack: set[str] | None = None,
+) -> str:
+    columns = model_def.get("columns", {})
+    is_join = "sources" in model_def or "join" in model_def or "joins" in model_def
+    is_agg = "group_by" in model_def
+
+    lines: list[str] = []
+
+    def _fq(source_name: str) -> str:
+        return _resolve_pure_sql_relation(
+            source_name,
+            catalog,
+            schema,
+            models=models,
+            model_locations=model_locations,
+            source_locations=source_locations,
+            git_commit=git_commit,
+            deploy_ts=deploy_ts,
+            compute_type=compute_type,
+            platform=platform,
+            udf_qualifiers=udf_qualifiers,
+            inline_stack=inline_stack,
+        )
+
+    has_udf_on_aggregate = False
+    if is_agg:
+        for _, col_def in columns.items():
+            cd = col_def if isinstance(col_def, dict) else {}
+            if "udf" not in cd:
+                continue
+            udf_call = cd["udf"]
+            args_start = udf_call.index("(")
+            args_str = udf_call[args_start + 1 : udf_call.rindex(")")]
+            for arg in (a.strip() for a in args_str.split(",")):
+                sibling = columns.get(arg)
+                if isinstance(sibling, dict) and "expr" in sibling:
+                    has_udf_on_aggregate = True
+                    break
+            if has_udf_on_aggregate:
+                break
+
+    if has_udf_on_aggregate:
+        inner_col_lines = []
+        for col_name, col_def in columns.items():
+            cd = _normalize_column_def(col_def)
+            if "udf" in cd:
+                continue
+            inner_col_lines.append(_compile_column_select(col_name, cd, None, None, all_columns=columns))
+
+        from_lines: list[str] = []
+        if is_join:
+            (base_alias, base_source), join_steps = _resolve_join_plan(model_def)
+            from_lines.append(f"    FROM {_fq(base_source)} {base_alias}")
+            for step in join_steps:
+                from_lines.append(f"    {step['type']} {_fq(step['source'])} {step['alias']}")
+                from_lines.append(f"        ON {step['on']}")
+        else:
+            source = model_def.get("source", "")
+            if source:
+                from_lines.append(f"    FROM {_fq(source)}")
+
+        group_cols = model_def.get("group_by", [])
+        inner_col_lines.append("    array_distinct(flatten(collect_list(coalesce(_lineage.origin_files, array(_origin_file))))) as _collected_origin_files")
+        inner_col_lines.append("    array_distinct(flatten(collect_list(coalesce(_lineage.ingested_ats, array(_inserted_at))))) as _collected_ingested_ats")
+
+        lines.append("WITH _agg AS (")
+        lines.append("    SELECT")
+        lines.append(",\n".join(f"    {cl}" for cl in inner_col_lines))
+        lines.extend(from_lines)
+        if group_cols:
+            lines.append("    GROUP BY")
+            lines.append(f"        {', '.join(group_cols)}")
+        lines.append(")")
+
+        outer_col_lines = []
+        for col_name, col_def in columns.items():
+            cd = _normalize_column_def(col_def)
+            if "udf" in cd:
+                outer_col_lines.append(_compile_column_select(col_name, cd, None, udf_qualifiers))
+            else:
+                outer_col_lines.append(f"    {col_name}")
+
+        lineage_sql = _compile_lineage_struct(
+            model_name, model_def, schema, git_commit, deploy_ts, compute_type, columns, platform,
+            is_agg=True,
+            agg_from_cte=True,
+        )
+        outer_col_lines.append(lineage_sql)
+
+        lines.append("SELECT")
+        lines.append(",\n".join(outer_col_lines))
+        lines.append("FROM _agg")
+
+        quarantine_filter = model_def.get("quarantine")
+        if quarantine_filter:
+            lines.append(f"WHERE NOT ({quarantine_filter})")
+
+        lines.append(";")
+        return "\n".join(lines)
+
+    col_lines = []
+    for col_name, col_def in columns.items():
+        col_lines.append(_compile_column_select(col_name, _normalize_column_def(col_def), None, udf_qualifiers, all_columns=columns))
+
+    lineage_sql = _compile_lineage_struct(
+        model_name, model_def, schema, git_commit, deploy_ts, compute_type, columns, platform,
+        is_agg=is_agg,
+    )
+    col_lines.append(lineage_sql)
+
+    lines.append("SELECT")
+    lines.append(",\n".join(col_lines))
+
+    if is_join:
+        (base_alias, base_source), join_steps = _resolve_join_plan(model_def)
+        lines.append(f"FROM {_fq(base_source)} {base_alias}")
+        for step in join_steps:
+            lines.append(f"{step['type']} {_fq(step['source'])} {step['alias']}")
+            lines.append(f"    ON {step['on']}")
+    else:
+        source = model_def.get("source", "")
+        if source:
+            lines.append(f"FROM {_fq(source)}")
+
+    if is_agg:
+        group_cols = model_def.get("group_by", [])
+        if group_cols:
+            lines.append("GROUP BY")
+            lines.append(f"    {', '.join(group_cols)}")
+
+    quarantine_filter = model_def.get("quarantine")
+    if quarantine_filter:
+        lines.append(f"WHERE NOT ({quarantine_filter})")
+
+    lines.append(";")
+    return "\n".join(lines)
+
+
 def compile_pure_sql_model(
     model_name: str,
     model_def: dict,
@@ -2028,6 +2240,9 @@ def compile_pure_sql_model(
     platform: str = "databricks",
     source_locations: dict[str, tuple[str, str]] | None = None,
     udf_qualifiers: dict[str, str] | None = None,
+    models: dict[str, dict] | None = None,
+    model_locations: dict[str, tuple[str, str]] | None = None,
+    inline_stack: set[str] | None = None,
 ) -> str:
     """
     Compile a model to standalone SQL — no Jinja, no dbt.
@@ -2099,8 +2314,23 @@ def compile_pure_sql_model(
 
     materialized = model_def.get("materialized", "view")
     columns = model_def.get("columns", {})
-    is_join = "sources" in model_def or "join" in model_def or "joins" in model_def
-    is_agg = "group_by" in model_def
+
+    if materialized == "ephemeral":
+        return _compile_pure_sql_query(
+            model_name,
+            model_def,
+            catalog,
+            schema,
+            git_commit=git_commit,
+            deploy_ts=deploy_ts,
+            compute_type=compute_type,
+            platform=platform,
+            models=models,
+            model_locations=model_locations,
+            source_locations=source_locations,
+            udf_qualifiers=udf_qualifiers,
+            inline_stack=inline_stack,
+        ) + "\n"
 
     lines: list[str] = []
     lines.append(f"-- Model: {model_name}")
@@ -2165,158 +2395,22 @@ def compile_pure_sql_model(
         lines.append("")
         lines.append(f"INSERT INTO {fq_name}")
 
-    # SELECT columns
-    # Detect if any UDF references an aggregated sibling — if so, use CTE
-    has_udf_on_aggregate = False
-    if is_agg:
-        for col_name, col_def in columns.items():
-            cd = col_def if isinstance(col_def, dict) else {}
-            if "udf" not in cd:
-                continue
-            # Check if any argument references a sibling with expr
-            udf_call = cd["udf"]
-            args_start = udf_call.index("(")
-            args_str = udf_call[args_start + 1 : udf_call.rindex(")")]
-            for arg in (a.strip() for a in args_str.split(",")):
-                sibling = columns.get(arg)
-                if isinstance(sibling, dict) and "expr" in sibling:
-                    has_udf_on_aggregate = True
-                    break
-            if has_udf_on_aggregate:
-                break
-
-    if has_udf_on_aggregate:
-        # CTE approach: aggregate in inner query, apply UDFs in outer query
-        # Inner CTE: all non-UDF columns with their expressions
-        inner_col_lines = []
-        for col_name, col_def in columns.items():
-            cd = col_def
-            if isinstance(cd, str):
-                cd = {"type": cd}
-            elif cd is None:
-                cd = {}
-            if "udf" in cd:
-                continue  # skip UDF columns — computed in outer SELECT
-            inner_col_lines.append(_compile_column_select(col_name, cd, None, None, all_columns=columns))
-
-        # FROM clause
-        def _fq(source_name: str) -> str:
-            if source_locations and source_name in source_locations:
-                s_cat, s_sch = source_locations[source_name]
-                return f"`{s_cat}`.`{s_sch}`.`{source_name}`"
-            return f"`{catalog}`.`{schema}`.`{source_name}`"
-
-        from_lines: list[str] = []
-        if is_join:
-            (base_alias, base_source), join_steps = _resolve_join_plan(model_def)
-            from_lines.append(f"    FROM {_fq(base_source)} {base_alias}")
-            for step in join_steps:
-                from_lines.append(f"    {step['type']} {_fq(step['source'])} {step['alias']}")
-                from_lines.append(f"        ON {step['on']}")
-        else:
-            source = model_def.get("source", "")
-            if source:
-                from_lines.append(f"    FROM {_fq(source)}")
-
-        group_cols = model_def.get("group_by", [])
-
-        # Add collect_list columns for origin_files and ingested_ats
-        inner_col_lines.append("    array_distinct(flatten(collect_list(coalesce(_lineage.origin_files, array(_origin_file))))) as _collected_origin_files")
-        inner_col_lines.append("    array_distinct(flatten(collect_list(coalesce(_lineage.ingested_ats, array(_inserted_at))))) as _collected_ingested_ats")
-
-        lines.append(f"WITH _agg AS (")
-        lines.append("    SELECT")
-        lines.append(",\n".join(f"    {cl}" for cl in inner_col_lines))
-        lines.extend(from_lines)
-        if group_cols:
-            lines.append(f"    GROUP BY")
-            lines.append(f"        {', '.join(group_cols)}")
-        lines.append(")")
-
-        # Outer SELECT: passthrough all CTE columns + apply UDFs + lineage
-        outer_col_lines = []
-        for col_name, col_def in columns.items():
-            cd = col_def
-            if isinstance(cd, str):
-                cd = {"type": cd}
-            elif cd is None:
-                cd = {}
-            if "udf" in cd:
-                # UDF on CTE column — arguments are now plain column refs
-                outer_col_lines.append(_compile_column_select(col_name, cd, None, udf_qualifiers))
-            else:
-                outer_col_lines.append(f"    {col_name}")
-
-        lineage_sql = _compile_lineage_struct(
-            model_name, model_def, schema, git_commit, deploy_ts, compute_type, columns, platform,
-            is_agg=True,
-            agg_from_cte=True,
-        )
-        outer_col_lines.append(lineage_sql)
-
-        lines.append("SELECT")
-        lines.append(",\n".join(outer_col_lines))
-        lines.append("FROM _agg")
-
-        # Quarantine: exclude bad rows from the main table
-        quarantine_filter = model_def.get("quarantine")
-        if quarantine_filter:
-            lines.append(f"WHERE NOT ({quarantine_filter})")
-
-        lines.append(";")
-    else:
-        # Standard path: no CTE needed
-        col_lines = []
-        for col_name, col_def in columns.items():
-            if isinstance(col_def, str):
-                col_def = {"type": col_def}
-            elif col_def is None:
-                col_def = {}
-            col_lines.append(_compile_column_select(col_name, col_def, None, udf_qualifiers, all_columns=columns))
-
-        # Lineage struct (static, no Jinja)
-        lineage_sql = _compile_lineage_struct(
-            model_name, model_def, schema, git_commit, deploy_ts, compute_type, columns, platform,
-            is_agg=is_agg,
-        )
-        col_lines.append(lineage_sql)
-
-        lines.append("SELECT")
-        lines.append(",\n".join(col_lines))
-
-        # FROM clause — fully qualified table names instead of {{ ref() }}
-        # Use source_locations to resolve each source to its correct schema
-        def _fq(source_name: str) -> str:
-            if source_locations and source_name in source_locations:
-                s_cat, s_sch = source_locations[source_name]
-                return f"`{s_cat}`.`{s_sch}`.`{source_name}`"
-            return f"`{catalog}`.`{schema}`.`{source_name}`"
-
-        if is_join:
-            (base_alias, base_source), join_steps = _resolve_join_plan(model_def)
-            lines.append(f"FROM {_fq(base_source)} {base_alias}")
-
-            for step in join_steps:
-                lines.append(f"{step['type']} {_fq(step['source'])} {step['alias']}")
-                lines.append(f"    ON {step['on']}")
-        else:
-            source = model_def.get("source", "")
-            if source:
-                lines.append(f"FROM {_fq(source)}")
-
-        # GROUP BY
-        if is_agg:
-            group_cols = model_def.get("group_by", [])
-            if group_cols:
-                lines.append("GROUP BY")
-                lines.append(f"    {', '.join(group_cols)}")
-
-        # Quarantine: exclude bad rows from the main table
-        quarantine_filter = model_def.get("quarantine")
-        if quarantine_filter:
-            lines.append(f"WHERE NOT ({quarantine_filter})")
-
-        lines.append(";")
+    query_sql = _compile_pure_sql_query(
+        model_name,
+        model_def,
+        catalog,
+        schema,
+        git_commit=git_commit,
+        deploy_ts=deploy_ts,
+        compute_type=compute_type,
+        platform=platform,
+        models=models,
+        model_locations=model_locations,
+        source_locations=source_locations,
+        udf_qualifiers=udf_qualifiers,
+        inline_stack=inline_stack,
+    )
+    lines.append(query_sql)
 
     # ── Execution summary (shown as sql_task output) ──
     fq_name = f"`{catalog}`.`{schema}`.`{model_name}`"
@@ -3066,6 +3160,8 @@ def compile_all_pure_sql(
     ordered = topo_sort_models(models)
     for model_name in ordered:
         model_def = models[model_name]
+        if _is_ephemeral_model(model_def):
+            continue
         m_catalog, m_schema = model_locations[model_name]
 
         # Model SQL — resolve source refs to their correct schema too
@@ -3075,6 +3171,8 @@ def compile_all_pure_sql(
             compute_type=compute_type, platform=platform,
             source_locations=model_locations,
             udf_qualifiers=udf_qualifiers or None,
+            models=models,
+            model_locations=model_locations,
         )
 
         # Append lineage_log INSERT (captures run_id at runtime)
@@ -3094,7 +3192,7 @@ def compile_all_pure_sql(
             # the upstream source since they're filtered out of the model.
             q_source = model_def.get("source", "")
             q_source_fq = None
-            if q_source and q_source in model_locations:
+            if q_source and q_source in model_locations and not _is_ephemeral_model(models.get(q_source)):
                 s_cat, s_sch = model_locations[q_source]
                 q_source_fq = f"`{s_cat}`.`{s_sch}`.`{q_source}`"
 
@@ -3177,6 +3275,8 @@ def compile_teardown_sql(
     ordered = list(reversed(topo_sort_models(models)))
     for model_name in ordered:
         model_def = models[model_name]
+        if _is_ephemeral_model(model_def):
+            continue
         m_cat, m_sch = model_locations[model_name]
         fq = f"`{m_cat}`.`{m_sch}`.`{model_name}`"
         materialized = model_def.get("materialized", "view") if isinstance(model_def, dict) else "view"
@@ -3298,6 +3398,8 @@ def compile_backup_sql(
     ordered = topo_sort_models(models)
     for model_name in ordered:
         model_def = models[model_name]
+        if _is_ephemeral_model(model_def):
+            continue
         if isinstance(model_def, str) or model_def is None:
             continue
         materialized = model_def.get("materialized", "view")

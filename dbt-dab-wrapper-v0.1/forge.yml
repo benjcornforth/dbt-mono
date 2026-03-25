@@ -61,7 +61,7 @@ placements:
     # Your data models (bronze → silver → gold)
     domain:
       allowed_classes: [domain]
-      allowed_layers: [bronze, silver, gold]
+      allowed_layers: [bronze, silver]
       catalog_pattern: "{env}_{scope}_{layer}"
       schema_pattern: "{user}_{domain}"
 
@@ -76,7 +76,7 @@ placements:
     shared_ops:
       allowed_classes: [shared]
       allowed_layers: [operations]
-      catalog_pattern: "{env}_{scope}_ops"
+      catalog_pattern: "{env}_{scope}_operations"
       schema_pattern: "{user}_{namespace}"
 
     # System-managed tables (lineage, quarantine)
@@ -90,7 +90,7 @@ placements:
     system_ops:
       allowed_classes: [system]
       allowed_layers: [operations]
-      catalog_pattern: "{env}_{scope}_ops"
+      catalog_pattern: "{env}_{scope}_operations"
       schema_pattern: "{user}_{system}"
 
 # =============================================

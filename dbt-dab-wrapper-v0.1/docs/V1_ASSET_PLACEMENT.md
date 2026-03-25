@@ -295,6 +295,27 @@ models:
       email: { expr: "lower(email)" }
 ```
 
+### Ephemeral Models
+
+Use `materialized: ephemeral` for a model that should be inlined into downstream models instead of being created as its own table or view.
+
+```yaml
+models:
+  customer_enriched_base:
+    materialized: ephemeral
+    source: customer_orders
+    columns:
+      customer_id: {}
+      revenue_band: { expr: "case when line_total >= 100 then 'high' else 'standard' end" }
+```
+
+Rules:
+
+- dbt output compiles this as an ephemeral model
+- pure-SQL output does not emit a standalone SQL artifact for it
+- downstream pure-SQL models inline it as a subquery
+- teardown and backup flows ignore ephemeral models because they are not persisted objects
+
 ### Join Models
 
 Use `sources:` plus ordered `joins:` for non-trivial joins.
