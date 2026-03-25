@@ -5,7 +5,8 @@
 #
 # This is the dbt project config for forge.
 # Forge reads forge.yml, but dbt needs this file.
-# Project macros live in macros/.
+# User macros live in macros/.
+# Forge runtime macros are generated into artifacts/runtime/macros/.
 
 name: 'sales_data'
 version: '0.2.0'
@@ -20,7 +21,7 @@ model-paths: ["dbt/models", "dbt/sources"]
 seed-paths: ["dbt/seeds"]
 test-paths: ["dbt/tests"]
 analysis-paths: ["dbt/analysis"]
-macro-paths: ["macros"]               # project-level macros (if any)
+macro-paths: ["macros", "artifacts/runtime/macros"]
 snapshot-paths: ["dbt/snapshots"]
 asset-paths: ["dbt/assets"]
 

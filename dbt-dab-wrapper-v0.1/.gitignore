@@ -9,6 +9,7 @@ logs/
 
 # Target-rendered deployment artifacts
 # Only prd bundles are commit-eligible by default.
+artifacts/runtime/
 artifacts/targets/**
 !artifacts/targets/prd/
 !artifacts/targets/prd/**

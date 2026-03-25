@@ -74,6 +74,7 @@ from forge.compute_resolver import (
     read_databrickscfg,
     list_databrickscfg_profiles,
 )
+from forge.runtime_macros import ensure_builtin_runtime_macros
 
 app = typer.Typer(
     help="forge – dbt pipelines on Databricks, so simple a child could use it. "
@@ -400,6 +401,7 @@ def _verify_required_catalogs(conn, prof: dict, schema_vars: dict[str, str]) -> 
 
 
 def _run_dbt_operation_sql(sql_text: str, *, dbt_args: list[str], dbt_env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    ensure_builtin_runtime_macros(Path.cwd())
     return subprocess.run(
         ["dbt", "run-operation", "deploy_udfs", "--args", yaml.dump({"udfs_sql": sql_text})] + dbt_args,
         check=True,
@@ -484,6 +486,7 @@ def _deploy_staged_udfs(prof: dict, config: dict, *, dbt_args: list[str], dbt_en
 
 def _run_staged_dbt_commands(*, dbt_args: list[str], dbt_env: dict[str, str]) -> None:
     typer.echo("✅ Running dbt...")
+    ensure_builtin_runtime_macros(Path.cwd())
     try:
         subprocess.run(["dbt", "run"] + dbt_args, check=True, env=dbt_env)
     except FileNotFoundError:
@@ -610,6 +613,7 @@ def _stage_target_support_files(target_root: Path, target_config: dict) -> None:
     _copy_tree_if_exists(_PROJECT_ROOT / "src" / "forge", target_root / "forge")
     _copy_tree_if_exists(_PROJECT_ROOT / "macros", target_root / "macros")
     _copy_file_if_exists(_PROJECT_ROOT / "dbt_project.yml", target_root / "dbt_project.yml")
+    ensure_builtin_runtime_macros(target_root)
     generate_profiles_yml(target_config, output_path=target_root / "profiles.yml")
     (target_root / "forge.yml").write_text(
         yaml.dump(target_config, sort_keys=False, default_flow_style=False)
@@ -919,7 +923,7 @@ def setup(
         generate_profiles_yml(config, output_path=profiles_path)
         typer.echo("✅ Generated profiles.yml from forge.yml profiles")
 
-    typer.echo("🔗 Core macros (quarantine, lineage, python_udf, prior_version) are bundled in this project under macros/")
+    typer.echo("🔗 Forge runtime macros are generated under artifacts/runtime/macros/; macros/ is reserved for user-authored overrides")
     typer.echo("")
     typer.echo("💡 Databricks auth — choose one:")
     typer.echo("   a) databricks configure --profile DEFAULT   (recommended — zero env vars)")
@@ -2062,6 +2066,7 @@ def dev_up(
         if seed:
             typer.echo("  🌱 Seeding sample data...")
             try:
+                ensure_builtin_runtime_macros(Path.cwd())
                 subprocess.run(
                     ["dbt", "seed", "--project-dir", ".", "--profiles-dir", ".", "--target", "dev"],
                     check=True, capture_output=True,
@@ -2072,6 +2077,7 @@ def dev_up(
 
         typer.echo("  ▶ Running dbt in the staged dev project...")
         try:
+            ensure_builtin_runtime_macros(Path.cwd())
             subprocess.run(dbt_cmd, check=True)
             typer.echo("  ✅ Dev models materialized")
         except (FileNotFoundError, subprocess.CalledProcessError) as e:
@@ -2166,6 +2172,7 @@ def dev_down(
     drop_sql = f"DROP SCHEMA IF EXISTS {catalog}.{dev_schema} CASCADE"
 
     try:
+        ensure_builtin_runtime_macros(Path.cwd())
         subprocess.run(
             ["dbt", "run-operation", "run_query", "--args",
              yaml.dump({"sql": drop_sql}),

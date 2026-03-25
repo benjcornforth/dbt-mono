@@ -47,6 +47,7 @@ import yaml
 
 from forge.compute_resolver import read_databrickscfg, get_schema_variables, resolve_profile
 from forge.project_paths import GENERATED_CODE_ROOT, PROJECT_CODE_ROOT
+from forge.runtime_macros import BUILTIN_MACRO_OUTPUT_DIR
 from forge.project_spec import ProjectSpec, load_project_spec
 
 
@@ -491,6 +492,8 @@ def generate_bundle_config(
         sync_include.append("dbt/")
     if Path("macros").is_dir():
         sync_include.append("macros/")
+    if BUILTIN_MACRO_OUTPUT_DIR.is_dir():
+        sync_include.append(f"{BUILTIN_MACRO_OUTPUT_DIR.as_posix()}/")
     if Path("dbt_project.yml").exists():
         sync_include.append("dbt_project.yml")
     if Path("profiles.yml").exists():
