@@ -54,6 +54,7 @@ from forge.compute_resolver import (
     resolve_profile,
     _expand_env_prefix,
 )
+from forge.project_paths import PROJECT_PYTHON_DIR
 
 
 # =============================================
@@ -534,7 +535,7 @@ Driven by the ingestion_config seed (dbt/ddl/meta/seeds/) compiled
 into the meta catalog during setup.
 Tracks every file in the file_manifest table (per-domain, managed_by: python)
 defined in dbt/ddl/bronze/models/.
-Pydantic validation is provided by forge codegen (sdk/models.py).
+Pydantic validation is provided by forge codegen (dbt/generated/sdk/models.py).
 """
 from __future__ import annotations
 
@@ -543,13 +544,21 @@ import os
 import re
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
-# Databricks runs python_task scripts via exec(compile(...)), so add the
-# staged bundle root explicitly for reliable imports.
-_script_path = os.path.abspath(sys._getframe().f_code.co_filename)
-_files_dir = os.path.dirname(os.path.dirname(_script_path))
-if _files_dir not in sys.path:
-    sys.path.insert(0, _files_dir)
+# Databricks runs python_task scripts via exec(compile(...)), so locate the
+# staged bundle root dynamically instead of assuming a fixed script folder.
+_script_path = Path(os.path.abspath(sys._getframe().f_code.co_filename))
+_files_dir = next(
+    (
+        parent
+        for parent in (_script_path.parent, *_script_path.parent.parents)
+        if (parent / "forge.yml").exists() and (parent / "forge").is_dir()
+    ),
+    _script_path.parent.parent,
+)
+if str(_files_dir) not in sys.path:
+    sys.path.insert(0, str(_files_dir))
 
 from forge.python_task import ForgeTask
 from forge.type_safe import build_models
@@ -657,10 +666,10 @@ def scaffold_python_task(
     Generate a scaffold Python task file.
 
         scaffold_python_task("enrich_customers")
-        # → python/enrich_customers.py
+        # → dbt/project/python/enrich_customers.py
 
         scaffold_python_task("ingest_orders", template="ingest")
-        # → python/ingest_orders.py  (with Volume ingestion logic)
+        # → dbt/project/python/ingest_orders.py  (with Volume ingestion logic)
     """
     tmpl = _TEMPLATES.get(template)
     if tmpl is None:
@@ -669,7 +678,7 @@ def scaffold_python_task(
             f"Available: {', '.join(sorted(_TEMPLATES))}"
         )
 
-    out_dir = output_dir or Path("python")
+    out_dir = output_dir or PROJECT_PYTHON_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{name}.py"
 
@@ -688,23 +697,22 @@ def scaffold_python_task(
 
 
 # =============================================
-# LOAD PYTHON TASKS — auto-discovered from python/
+# LOAD PYTHON TASKS — auto-discovered from dbt/project/python/
 # =============================================
 
 def load_python_tasks(_forge_config: dict | None = None) -> list[dict]:
     """
-    Auto-discover python tasks from the python/ directory.
+    Auto-discover python tasks from the project-code directory.
 
-    Each .py file in python/ becomes a task.  No forge.yml config needed.
+    Each .py file in dbt/project/python/ becomes a task. No forge.yml config needed.
     Placement (SETUP vs PROCESS) is DDL-driven via managed_by headers.
 
     Returns list of task dicts with keys: name, file.
     """
-    py_dir = Path("python")
-    if not py_dir.is_dir():
+    if not PROJECT_PYTHON_DIR.is_dir():
         return []
     return [
-        {"name": f.stem, "file": f"python/{f.name}"}
-        for f in sorted(py_dir.iterdir())
-        if f.suffix == ".py" and not f.name.startswith("_")
+        {"name": file_path.stem, "file": file_path.as_posix()}
+        for file_path in sorted(PROJECT_PYTHON_DIR.iterdir())
+        if file_path.suffix == ".py" and not file_path.name.startswith("_")
     ]

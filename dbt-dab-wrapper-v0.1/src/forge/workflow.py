@@ -46,6 +46,7 @@ import yaml
 
 
 from forge.compute_resolver import read_databrickscfg, get_schema_variables, resolve_profile
+from forge.project_paths import GENERATED_CODE_ROOT, PROJECT_CODE_ROOT
 from forge.project_spec import ProjectSpec, load_project_spec
 
 
@@ -478,9 +479,11 @@ def generate_bundle_config(
         sync_include.append("sql/")
     if Path("dist").is_dir():
         sync_include.append("dist/")
-    # Python tasks need the script files plus the forge runtime source.
-    if Path("python").is_dir():
-        sync_include.append("python/")
+    # Project-specific Python code lives near dbt/ddl under dbt/project/.
+    if PROJECT_CODE_ROOT.is_dir():
+        sync_include.append(f"{PROJECT_CODE_ROOT.as_posix()}/")
+    if GENERATED_CODE_ROOT.is_dir():
+        sync_include.append(f"{GENERATED_CODE_ROOT.as_posix()}/")
     if Path("forge").is_dir():
         sync_include.append("forge/")
     # dbt metadata (schema.yml) needed by build_models() at runtime
@@ -871,7 +874,7 @@ def build_workflow(
             if src_model not in model_parents[tgt_model]:
                 model_parents[tgt_model].append(src_model)
 
-    # ── Load python_tasks (auto-discovered from python/) ──
+    # ── Load python_tasks (auto-discovered from dbt/project/python/) ──
     from forge.python_task import load_python_tasks
     python_tasks = load_python_tasks()
 

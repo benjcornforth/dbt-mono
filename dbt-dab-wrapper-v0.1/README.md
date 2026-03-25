@@ -239,6 +239,8 @@ artifacts/targets/dev/sql/teardown/teardown.sql
 ```
 forge.yml                ← project config + profiles (YOU edit)
 dbt/ddl/                ← canonical YAML source of truth (YOU edit)
+dbt/project/            ← project-specific Python tasks authored by developers
+dbt/generated/          ← generated Python SDK and other generated code
 dbt/migrations/*.yml     ← schema changes (you create)
 macros/                 ← local runtime macros staged into each target bundle
 src/forge/               ← CLI + engines (you don't touch)

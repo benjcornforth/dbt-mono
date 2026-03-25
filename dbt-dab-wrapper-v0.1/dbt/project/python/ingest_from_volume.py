@@ -10,7 +10,7 @@ Driven by the ingestion_config seed (dbt/ddl/meta/seeds/) loaded
 into the meta catalog by `dbt seed`.
 Tracks every file in the file_manifest table (managed_by: python)
 defined in dbt/ddl/bronze/models/.
-Pydantic validation is provided by forge codegen (dbt/project/sdk/models.py).
+Pydantic validation is provided by forge codegen (dbt/generated/sdk/models.py).
 """
 from __future__ import annotations
 

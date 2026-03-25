@@ -40,6 +40,8 @@ from forge.graph import (
     walk_column_lineage,
     render_provenance_tree,
 )
+from forge.project_paths import DEFAULT_SDK_OUTPUT, GENERATED_CODE_ROOT, PROJECT_CODE_ROOT, PROJECT_PYTHON_DIR
+from forge.project_spec import ProjectSpec, load_project_spec
 from forge.type_safe import build_models, generate_sdk_file
 from forge.workflow import build_workflow, build_domain_workflows, generate_bundle_config, render_workflows_mermaid, run_bundle_command
 from forge.teardown import (
@@ -177,6 +179,149 @@ def _graph_snapshot_path(profile_name: str | None = None) -> Path:
 
 def _default_workflow_output_dir(profile_name: str) -> Path:
     return _target_artifact_root(profile_name) / "resources" / "jobs"
+
+
+def _expected_generated_paths(project_spec: ProjectSpec, config: dict, profile_name: str) -> dict[str, list[dict[str, str]]]:
+    target_root = _target_artifact_root(profile_name)
+    project_id = config.get("id", "project")
+
+    def _status(path: Path) -> str:
+        return "present" if path.exists() else "missing"
+
+    models: list[dict[str, str]] = []
+    for name, definition in sorted(project_spec.models.items()):
+        layer = definition.get("layer", "default") if isinstance(definition, dict) else "default"
+        out_path = target_root / "dbt" / "models" / project_id / layer / f"{name}.sql"
+        source_path = project_spec.assets[next(ref for ref, asset in project_spec.assets.items() if asset.section == "models" and ref.name == name)].source_path
+        models.append({
+            "name": name,
+            "class": definition.get("class", "") if isinstance(definition, dict) else "",
+            "domain": definition.get("domain", "") if isinstance(definition, dict) else "",
+            "layer": layer,
+            "managed_by": definition.get("managed_by", "dbt") if isinstance(definition, dict) else "dbt",
+            "source": str(source_path),
+            "generated": str(out_path.relative_to(_PROJECT_ROOT)),
+            "status": _status(out_path),
+        })
+
+    def _entries(section: str, subdir: str, suffix: str = ".sql") -> list[dict[str, str]]:
+        rows: list[dict[str, str]] = []
+        for ref, asset in sorted(project_spec.assets.items(), key=lambda item: item[0].key):
+            if asset.section != section:
+                continue
+            out_path = target_root / "dbt" / subdir / f"{ref.name}{suffix}"
+            rows.append({
+                "name": ref.name,
+                "class": ref.asset_class or "",
+                "domain": ref.domain or "",
+                "layer": ref.layer or "",
+                "source": str(asset.source_path),
+                "generated": str(out_path.relative_to(_PROJECT_ROOT)),
+                "status": _status(out_path),
+            })
+        return rows
+
+    sources_path = target_root / "dbt" / "sources" / "_sources.yml"
+    schema_path = target_root / "dbt" / "models" / "schema.yml"
+    pure_sql_root = target_root / "sql"
+    jobs_root = target_root / "resources" / "jobs"
+
+    return {
+        "models": models,
+        "udfs": _entries("udfs", "functions"),
+        "volumes": _entries("volumes", "volumes"),
+        "seeds": [
+            {
+                "name": name,
+                "class": definition.get("class", "") if isinstance(definition, dict) else "",
+                "domain": definition.get("domain", "") if isinstance(definition, dict) else "",
+                "layer": definition.get("layer", "") if isinstance(definition, dict) else "",
+                "source": str(project_spec.assets[next(ref for ref, asset in project_spec.assets.items() if asset.section == "seeds" and ref.name == name)].source_path),
+                "generated": str(sources_path.relative_to(_PROJECT_ROOT)),
+                "status": _status(sources_path),
+            }
+            for name, definition in sorted(project_spec.seeds.items())
+        ],
+        "sources": [
+            {
+                "name": name,
+                "class": definition.get("class", "") if isinstance(definition, dict) else "",
+                "domain": definition.get("domain", "") if isinstance(definition, dict) else "",
+                "layer": definition.get("layer", "") if isinstance(definition, dict) else "",
+                "source": str(project_spec.assets[next(ref for ref, asset in project_spec.assets.items() if asset.section == "sources" and ref.name == name)].source_path),
+                "generated": str(sources_path.relative_to(_PROJECT_ROOT)),
+                "status": _status(sources_path),
+            }
+            for name, definition in sorted(project_spec.sources.items())
+        ],
+        "artifacts": {
+            "schema": {"path": str(schema_path.relative_to(_PROJECT_ROOT)), "status": _status(schema_path)},
+            "sources": {"path": str(sources_path.relative_to(_PROJECT_ROOT)), "status": _status(sources_path)},
+            "sql_setup": sorted(str(path.relative_to(_PROJECT_ROOT)) for path in (pure_sql_root / "setup").glob("*.sql")) if (pure_sql_root / "setup").is_dir() else [],
+            "sql_process": sorted(str(path.relative_to(_PROJECT_ROOT)) for path in (pure_sql_root / "process").glob("*.sql")) if (pure_sql_root / "process").is_dir() else [],
+            "sql_teardown": sorted(str(path.relative_to(_PROJECT_ROOT)) for path in (pure_sql_root / "teardown").glob("*.sql")) if (pure_sql_root / "teardown").is_dir() else [],
+            "jobs": sorted(str(path.relative_to(_PROJECT_ROOT)) for path in jobs_root.glob("*.yml")) if jobs_root.is_dir() else [],
+            "graph": {"path": str((_target_artifact_root(profile_name) / "graph.json").relative_to(_PROJECT_ROOT)), "status": _status(_target_artifact_root(profile_name) / "graph.json")},
+            "deploy_manifest": {"path": str((_target_artifact_root(profile_name) / "deploy_manifest.json").relative_to(_PROJECT_ROOT)), "status": _status(_target_artifact_root(profile_name) / "deploy_manifest.json")},
+        },
+    }
+
+
+def _render_inspect_markdown(*, config: dict, profile_name: str, summary: dict[str, object]) -> str:
+    lines: list[str] = []
+    lines.append(f"# Forge Inspect — {config.get('name', 'project')} ({profile_name})")
+    lines.append("")
+    lines.append(f"Project id: `{config.get('id', 'project')}`")
+    lines.append(f"Target root: `artifacts/targets/{profile_name}`")
+    lines.append("")
+    lines.append("## Authored DDL Inventory")
+    lines.append("")
+    for section in ("models", "udfs", "seeds", "volumes", "sources"):
+        rows = summary[section]
+        lines.append(f"### {section.capitalize()} ({len(rows)})")
+        lines.append("")
+        if not rows:
+            lines.append("(none)")
+            lines.append("")
+            continue
+        lines.append("| Name | Class | Domain | Layer | Source | Generated | Status |")
+        lines.append("|------|-------|--------|-------|--------|-----------|--------|")
+        for row in rows:
+            managed_by = f" / {row['managed_by']}" if section == "models" and row.get("managed_by") else ""
+            lines.append(
+                f"| {row['name']}{managed_by} | {row['class'] or '-'} | {row['domain'] or '-'} | {row['layer'] or '-'} | `{row['source']}` | `{row['generated']}` | {row['status']} |"
+            )
+        lines.append("")
+
+    artifacts = summary["artifacts"]
+    lines.append("## Generated Artifact Inventory")
+    lines.append("")
+    lines.append("| Artifact | Path | Status |")
+    lines.append("|----------|------|--------|")
+    lines.append(f"| schema.yml | `{artifacts['schema']['path']}` | {artifacts['schema']['status']} |")
+    lines.append(f"| _sources.yml | `{artifacts['sources']['path']}` | {artifacts['sources']['status']} |")
+    lines.append(f"| graph snapshot | `{artifacts['graph']['path']}` | {artifacts['graph']['status']} |")
+    lines.append(f"| deploy manifest | `{artifacts['deploy_manifest']['path']}` | {artifacts['deploy_manifest']['status']} |")
+    lines.append("")
+    for label, key in (("Setup SQL", "sql_setup"), ("Process SQL", "sql_process"), ("Teardown SQL", "sql_teardown"), ("Workflow YAML", "jobs")):
+        lines.append(f"### {label} ({len(artifacts[key])})")
+        lines.append("")
+        if not artifacts[key]:
+            lines.append("(none)")
+        else:
+            for path in artifacts[key]:
+                lines.append(f"- `{path}`")
+        lines.append("")
+
+    lines.append("## Generation Commands")
+    lines.append("")
+    lines.append(f"- `forge compile --profile {profile_name}` → dbt models, functions, sources, schema.yml")
+    lines.append(f"- `forge compile --pure-sql --profile {profile_name}` → setup/process/teardown SQL")
+    lines.append(f"- `forge workflow --dab --profile {profile_name}` → workflow YAML under target resources/jobs")
+    lines.append(f"- `forge diff --profile {profile_name}` → graph snapshot")
+    lines.append(f"- `forge build --target {profile_name}` → deploy manifest + staged bundle")
+    lines.append("")
+    return "\n".join(lines) + "\n"
 
 
 def _prepare_target_project(target: str, config: dict) -> tuple[Path, dict, dict]:
@@ -459,8 +604,9 @@ def _resolve_target_config(config: dict, profile_name: str) -> tuple[dict, dict]
 
 def _stage_target_support_files(target_root: Path, target_config: dict) -> None:
     _copy_tree_if_exists(_PROJECT_ROOT / "dbt" / "ddl", target_root / "dbt" / "ddl")
+    _copy_tree_if_exists(_PROJECT_ROOT / PROJECT_CODE_ROOT, target_root / PROJECT_CODE_ROOT)
+    _copy_tree_if_exists(_PROJECT_ROOT / GENERATED_CODE_ROOT, target_root / GENERATED_CODE_ROOT)
     _copy_tree_if_exists(_PROJECT_ROOT / "dbt" / "seeds", target_root / "dbt" / "seeds")
-    _copy_tree_if_exists(_PROJECT_ROOT / "python", target_root / "python")
     _copy_tree_if_exists(_PROJECT_ROOT / "src" / "forge", target_root / "forge")
     _copy_tree_if_exists(_PROJECT_ROOT / "macros", target_root / "macros")
     _copy_file_if_exists(_PROJECT_ROOT / "dbt_project.yml", target_root / "dbt_project.yml")
@@ -759,7 +905,8 @@ def setup(
     ):
         (shared_root / relative_path).mkdir(parents=True, exist_ok=True)
 
-    (project_root / "python").mkdir(parents=True, exist_ok=True)
+    (project_root / PROJECT_PYTHON_DIR).mkdir(parents=True, exist_ok=True)
+    (project_root / DEFAULT_SDK_OUTPUT.parent).mkdir(parents=True, exist_ok=True)
     (project_root / "artifacts").mkdir(parents=True, exist_ok=True)
 
     typer.echo(
@@ -1344,7 +1491,7 @@ def _filter_tree_by_version(tree: dict, version: str) -> dict:
 # =============================================
 @app.command()
 def codegen(
-    output: str = typer.Option("sdk/models.py", "--output", "-o", help="Output file path"),
+    output: str = typer.Option(DEFAULT_SDK_OUTPUT.as_posix(), "--output", "-o", help="Output file path"),
     check: bool = typer.Option(False, "--check", help="CI mode: fail if generated file is stale"),
     profile: str | None = typer.Option(None, "--profile", help="Forge profile to use for generated metadata discovery"),
 ):
@@ -1376,7 +1523,7 @@ def codegen(
         typer.echo(f"✅ {output} is up to date.")
     else:
         typer.echo(f"✅ Generated {out} with type-safe models for schema '{schema}'")
-        typer.echo("   Import with: from sdk.models import StgOrders, CustomerClean, ...")
+        typer.echo(f"   Generated models now live under {DEFAULT_SDK_OUTPUT.parent.as_posix()}/, separate from custom Python in {PROJECT_PYTHON_DIR.as_posix()}/.")
         typer.echo("   Wrong types → Pydantic raises immediately. No bad inserts.")
 
 # =============================================
@@ -1513,7 +1660,7 @@ def visual_docs(
 def python_task(
     name: str = typer.Argument(..., help="Name for the Python task (e.g. enrich_customers)"),
     stage: str = typer.Option("enrich", "--stage", "-s", help="Pipeline stage: ingest/stage/clean/enrich/serve"),
-    output: str = typer.Option("python", "--output", "-o", help="Output directory for task file"),
+    output: str = typer.Option(PROJECT_PYTHON_DIR.as_posix(), "--output", "-o", help="Output directory for task file"),
     description: str = typer.Option("", "--desc", help="Short description of the task"),
     template: str = typer.Option("default", "--template", "-t", help="Task template: default, ingest"),
 ):
@@ -1706,6 +1853,51 @@ def migrate(
 # =============================================
 # GUIDE – auto-generated project documentation
 # =============================================
+@app.command("inspect")
+def inspect_generated(
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Forge profile (from forge.yml profiles:)"),
+    ddl: str = typer.Option(DDL_DEFAULT, "--ddl", help="Path to DDL file or directory"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Write summary to file (default: artifacts/targets/<profile>/ddl_inspect.md)"),
+    json_flag: bool = typer.Option(False, "--json", help="Emit JSON instead of markdown"),
+):
+    """forge inspect → show what dbt/ddl authors and what Forge generates from it"""
+    if not CONFIG_FILE.exists():
+        typer.echo("❌ No forge.yml found. Run 'forge setup' first!")
+        raise typer.Exit(1)
+
+    ddl_path = _resolve_ddl(ddl)
+    if not ddl_path.exists():
+        typer.echo(f"❌ {ddl} not found. Create the canonical dbt/ddl/ tree first.")
+        raise typer.Exit(1)
+
+    config = yaml.safe_load(CONFIG_FILE.read_text())
+    selected_profile = _require_profile_name(config, command_name="forge inspect", profile=profile)
+    config, _ = _materialize_profile_config(config, selected_profile)
+    project_spec = load_project_spec(ddl_path, forge_config=config)
+    summary = _expected_generated_paths(project_spec, config, selected_profile)
+
+    if json_flag:
+        result = json.dumps(
+            {
+                "project": config.get("name", "project"),
+                "profile": selected_profile,
+                "target_root": str(_target_artifact_root(selected_profile).relative_to(_PROJECT_ROOT)),
+                **summary,
+            },
+            indent=2,
+        )
+        default_output = _target_artifact_root(selected_profile) / "ddl_inspect.json"
+    else:
+        result = _render_inspect_markdown(config=config, profile_name=selected_profile, summary=summary)
+        default_output = _target_artifact_root(selected_profile) / "ddl_inspect.md"
+
+    output_path = Path(output) if output else default_output
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(result)
+    typer.echo(f"✅ DDL inspection summary → {output_path}")
+    typer.echo("   Use this to map authored dbt/ddl assets to generated dbt, SQL, workflow, and graph artifacts.")
+
+
 @app.command()
 def guide(
     output: str = typer.Option(".instructions.md", "--output", "-o", help="Output file path"),

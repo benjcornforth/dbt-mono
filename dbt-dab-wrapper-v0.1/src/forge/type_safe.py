@@ -3,7 +3,7 @@
 # =============================================
 # THE CODE IS THE DOCUMENTATION
 #
-# Reads dbt manifest.json (or schema.yml) and generates
+# Reads compiled dbt metadata (manifest.json or schema.yml) and generates
 # type-safe Pydantic models for every dbt table/view.
 #
 # Two modes:
@@ -13,7 +13,7 @@
 #
 # Usage (runtime — zero codegen):
 #   from forge.type_safe import build_models
-#   models = build_models("target/manifest.json")
+#   models = build_models("artifacts/targets/dev/dbt/models/schema.yml")
 #   row = models.StgOrders(
 #       order_id=1001,
 #       customer_id=42,
@@ -29,7 +29,7 @@
 #   row.to_sql_values()  # → SQL VALUES clause
 #
 # Usage (codegen):
-#   forge codegen            # emits sdk/models.py
+#   forge codegen            # emits dbt/generated/sdk/models.py
 #   forge codegen --check    # CI: fails if stale
 #
 # Wrong types? Pydantic raises immediately:
@@ -50,6 +50,7 @@ import yaml
 from pydantic import BaseModel, Field, model_validator
 
 from forge.compute_resolver import resolve_profile
+from forge.project_paths import DEFAULT_SDK_OUTPUT
 
 # =============================================
 # LINEAGE STRUCT — typed Python equivalent
@@ -208,22 +209,27 @@ def _detect_profile_name(profile_name: str | None = None, *, root: Path | None =
     return resolve_profile(config).get("_name")
 
 
-def _metadata_candidates(profile_name: str | None = None) -> list[str]:
+def _metadata_candidates(root: Path, profile_name: str | None = None) -> list[str]:
     candidates: list[str] = []
     if profile_name:
         candidates.extend([
             f"artifacts/targets/{profile_name}/target/manifest.json",
             f"artifacts/targets/{profile_name}/dbt/models/schema.yml",
         ])
-    candidates.extend([
-        "target/manifest.json",
-        "dbt/models/schema.yml",
-    ])
+
+    # In staged bundle roots, compiled metadata lives directly under dbt/ or target/.
+    # In the workspace root, those shared paths are legacy and should not be used.
+    if not (root / "artifacts" / "targets").exists():
+        candidates.extend([
+            "target/manifest.json",
+            "dbt/models/schema.yml",
+        ])
+
     return candidates
 
 
 def _autodiscover_tables(profile_name: str | None = None) -> dict[str, list[dict]]:
-    """Find manifest/schema metadata from per-profile artifacts, staged bundles, or legacy roots."""
+    """Find manifest/schema metadata from per-profile artifacts or staged target bundles."""
     import sys as _sys
 
     search_roots = [Path(".").resolve()]
@@ -240,7 +246,7 @@ def _autodiscover_tables(profile_name: str | None = None) -> dict[str, list[dict
 
     for root in search_roots:
         resolved_profile = _detect_profile_name(profile_name, root=root)
-        for rel in _metadata_candidates(resolved_profile):
+        for rel in _metadata_candidates(root, resolved_profile):
             path = root / rel
             if not path.exists():
                 continue
@@ -250,7 +256,7 @@ def _autodiscover_tables(profile_name: str | None = None) -> dict[str, list[dict
 
     raise FileNotFoundError(
         "No manifest.json or schema.yml found. "
-        "Run 'forge compile --profile <name>' or provide a path."
+        "Run 'forge compile --profile <name>' or provide an explicit artifact path."
     )
 
 
@@ -612,9 +618,9 @@ def build_models(
     Build type-safe Pydantic models from dbt metadata.
 
     Provide ONE of:
-      - manifest_path  — reads target/manifest.json (post-compile)
-      - schema_yml_path — reads dbt/models/schema.yml (pre-compile)
-            - profile_name — prefers artifacts/targets/<profile>/... during auto-discovery
+            - manifest_path  — reads an explicit manifest.json path
+            - schema_yml_path — reads an explicit schema.yml path
+            - profile_name — auto-discovers artifacts/targets/<profile>/... or staged bundle-local metadata
 
     Returns a ModelRegistry with one class per model:
         models.StgOrders, models.CustomerClean, etc.
@@ -642,7 +648,7 @@ def generate_sdk_file(
     manifest_path: str | Path | None = None,
     schema_yml_path: str | Path | None = None,
     schema: str = "default",
-    output_path: str | Path = "sdk/models.py",
+    output_path: str | Path = DEFAULT_SDK_OUTPUT,
     profile_name: str | None = None,
 ) -> Path:
     """
