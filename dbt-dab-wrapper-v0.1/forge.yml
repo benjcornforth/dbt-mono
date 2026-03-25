@@ -1,89 +1,150 @@
+# =============================================
 # forge.yml — Sales Data Pipeline
-# The ONLY config file you ever edit (alongside dbt/ddl/ model definitions).
-# A child can change 3 lines and redeploy everything.
+# =============================================
+# The ONLY config file you edit (alongside dbt/ddl/ model definitions).
+# Everything else — SQL, workflows, profiles — is generated from this.
+#
+# =============================================
+# THE CANONICAL DDL TREE  (dbt/ddl/)
+# =============================================
+# Your models, seeds, volumes, and UDFs live under dbt/ddl/ in a
+# fixed directory structure.  Forge reads this tree to auto-detect
+# each asset's class, layer, and domain — no need to repeat those
+# in every YAML file.
+#
+# dbt/ddl/
+# ├── domain/<domain>/<layer>/<kind>/        ← your business data
+# │   e.g.  domain/sales/bronze/models/raw_customers.yml
+# │         domain/sales/silver/udfs/clean_email.yml
+# │         domain/sales/gold/models/
+# │
+# └── shared/<layer>/<kind>/                 ← cross-domain config & ops
+#     e.g.  shared/meta/seeds/ingestion_config.yml
+#           shared/operations/models/
+#
+# <class>   = domain | shared           (top-level folder)
+# <domain>  = sales | …                 (only for domain class)
+# <layer>   = bronze | silver | gold    (domain)
+#             meta | operations         (shared / system)
+# <kind>    = models | seeds | volumes | udfs
+#
+# What the path gives you automatically:
+#   domain/sales/silver/models/customer_clean.yml
+#     → class: domain,  domain: sales,  layer: silver
+#
+#   shared/meta/seeds/ingestion_config.yml
+#     → class: shared,  layer: meta   (namespace: must be set in the YAML)
+#
+# System assets (lineage, quarantine, backups) are auto-generated
+# by forge from the system_assets: section below — no DDL files needed.
+name: sales_data          # dbt project name & profiles.yml key
 
-name: sales_data
-scope: fd
-id: sales
+
+# --- Project identity ---
+scope: fd                 # short code used in catalog names  (e.g. dev_fd_bronze)
+id: sales                 # logical project id
+
+
+# =============================================
+# WHERE things land — naming rules
+# =============================================
+# Pattern tokens:
+#   {env}    → dev / prd          {scope}     → fd (from above)
+#   {layer}  → bronze / silver …  {user}      → OS username
+#   {domain} → sales              {namespace} → config / operations
+#   {system} → lineage / backups
+#
+# Example: catalog_pattern "{env}_{scope}_{layer}" → dev_fd_bronze
 
 placements:
   families:
+    # Your data models (bronze → silver → gold)
     domain:
       allowed_classes: [domain]
       allowed_layers: [bronze, silver, gold]
       catalog_pattern: "{env}_{scope}_{layer}"
       schema_pattern: "{user}_{domain}"
 
+    # Shared config / metadata tables
     shared_meta:
       allowed_classes: [shared]
       allowed_layers: [meta]
       catalog_pattern: "{env}_{scope}_meta"
       schema_pattern: "{user}_{namespace}"
 
+    # Shared operational tables
     shared_ops:
       allowed_classes: [shared]
       allowed_layers: [operations]
       catalog_pattern: "{env}_{scope}_ops"
       schema_pattern: "{user}_{namespace}"
 
+    # System-managed tables (lineage, quarantine)
     system_meta:
       allowed_classes: [system]
       allowed_layers: [meta]
       catalog_pattern: "{env}_{scope}_meta"
       schema_pattern: "{user}_{system}"
 
+    # System-managed ops (backups, deploy state)
     system_ops:
       allowed_classes: [system]
       allowed_layers: [operations]
       catalog_pattern: "{env}_{scope}_ops"
       schema_pattern: "{user}_{system}"
 
+# =============================================
+# WHAT lives where
+# =============================================
+
+# Business domains — each gets bronze/silver/gold schemas
 domains:
   sales:
     placement_family: domain
 
+# Shared namespaces — config tables, operational state
 shared_namespaces:
   config:
     placement_family: shared_meta
     layer: meta
-
   metadata:
     placement_family: shared_meta
     layer: meta
-
   operations:
     placement_family: shared_ops
     layer: operations
 
+# System assets — auto-managed by forge (toggle with enabled: true/false)
 system_assets:
   lineage:
     enabled: true
     placement_family: system_meta
     layer: meta
     system: lineage
-
   quarantine:
     enabled: true
     placement_family: system_meta
     layer: meta
     system: quarantine
-
   backups:
     enabled: true
     placement_family: system_ops
     layer: operations
     system: backups
-
   deployment_state:
     enabled: true
     placement_family: system_ops
     layer: operations
     system: deploy
 
+# =============================================
+# Environments
+# =============================================
+
 profiles:
   dev:
     platform: databricks
-    databricks_profile: dev
+    databricks_profile: dev       # matches [dev] section in ~/.databrickscfg
     env: dev
     compute:
       type: serverless
@@ -91,23 +152,26 @@ profiles:
 
   prod:
     platform: databricks
-    databricks_profile: PROD
+    databricks_profile: PROD      # matches [PROD] section in ~/.databrickscfg
     env: prd
     compute:
       type: serverless
-    schedule: "0 0 6 * * ?"
+    schedule: "0 0 6 * * ?"       # daily at 06:00 UTC
 
+# =============================================
+# Feature flags
+# =============================================
 
 features:
-  graph: true
-  quarantine: true
-  validation_exceptions: true
-  prior_version: true
-  python_udfs: true
+  graph: true                     # dependency graph tracking
+  quarantine: true                # bad-row sidecar tables
+  validation_exceptions: true     # soft-fail validation rules
+  prior_version: true             # previous-version snapshots
+  python_udfs: true               # register Python UDFs
 
 lineage:
   mode: full
   origin_tracking: true
 
 portability:
-  postgres_compatible: true
+  postgres_compatible: true       # also generate Postgres-compatible SQL

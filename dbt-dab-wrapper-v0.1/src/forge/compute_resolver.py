@@ -563,6 +563,79 @@ def resolve_asset_location(
     )
 
 
+def _v1_layer_maps(
+    env: str,
+    forge_config: dict[str, Any],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Build catalogs and schemas dicts from v1 placement families.
+
+    Walks each placement family, expands its ``catalog_pattern`` and
+    ``schema_pattern`` for every allowed layer, and returns two maps
+    keyed by logical layer name (bronze, silver, meta, …).
+
+    Identity tokens (domain / namespace / system) are resolved from
+    the first matching entry in ``domains:``, ``shared_namespaces:``,
+    or ``system_assets:`` respectively.
+    """
+    scope = _sanitize_identity(forge_config.get("scope", ""))
+    project_id = _sanitize_identity(
+        forge_config.get("id", forge_config.get("name", "project")),
+    )
+    user = _current_user_token()
+    skip_envs = set(forge_config.get("skip_env_prefix", ["prd", "prod"]))
+
+    families = forge_config.get("placements", {}).get("families", {})
+    domains_cfg = forge_config.get("domains", {})
+    namespaces_cfg = forge_config.get("shared_namespaces", {})
+
+    # Build layer → (family_name, family_def) — first family wins per layer
+    layer_family: dict[str, tuple[str, dict]] = {}
+    for fname, fdef in families.items():
+        if not isinstance(fdef, dict):
+            continue
+        for layer in fdef.get("allowed_layers", []):
+            if layer not in layer_family:
+                layer_family[layer] = (fname, fdef)
+
+    catalogs: dict[str, str] = {}
+    schemas: dict[str, str] = {}
+
+    for layer, (fname, fdef) in layer_family.items():
+        classes = set(fdef.get("allowed_classes", []))
+
+        # Resolve the default identity token for this family's class
+        identity: dict[str, str] = {"domain": "", "namespace": "", "system": ""}
+        if "domain" in classes:
+            identity["domain"] = _sanitize_identity(
+                next(iter(domains_cfg), project_id),
+            )
+        if "shared" in classes:
+            for ns_name, ns_def in namespaces_cfg.items():
+                if isinstance(ns_def, dict) and ns_def.get("placement_family") == fname:
+                    identity["namespace"] = _sanitize_identity(ns_name)
+                    break
+
+        tokens = {
+            "env": env, "scope": scope, "id": project_id, "user": user,
+            "layer": layer, "catalog": layer, "schema": layer,
+            **identity,
+        }
+
+        cat_pattern = fdef.get("catalog_pattern")
+        if cat_pattern:
+            catalogs[layer] = _expand_named_pattern(
+                cat_pattern, tokens=tokens, skip_envs=set(),
+            )
+
+        sch_pattern = fdef.get("schema_pattern")
+        if sch_pattern:
+            schemas[layer] = _expand_named_pattern(
+                sch_pattern, tokens=tokens, skip_envs=skip_envs,
+            )
+
+    return catalogs, schemas
+
+
 def _expand_env_prefix(
     profile: dict[str, Any],
     forge_config: dict | None = None,
@@ -588,6 +661,24 @@ def _expand_env_prefix(
 
     profile = dict(profile)  # shallow copy
 
+    # ---- v1 placement families ----
+    if _uses_v1_placements(forge_config):
+        if not profile.get("catalogs") or not profile.get("schemas"):
+            catalogs_map, schemas_map = _v1_layer_maps(env, forge_config)
+            if not profile.get("catalogs") and catalogs_map:
+                profile["catalogs"] = catalogs_map
+            if not profile.get("schemas") and schemas_map:
+                profile["schemas"] = schemas_map
+        base_catalog = profile.get("catalog", "bronze")
+        if base_catalog and "catalogs" in profile:
+            profile["catalog"] = profile["catalogs"].get(base_catalog, base_catalog)
+        if "schemas" in profile:
+            profile["schema"] = profile["schemas"].get(
+                "silver", next(iter(profile["schemas"].values())),
+            )
+        return profile
+
+    # ---- legacy path ----
     project_id = forge_config.get("id", forge_config.get("name", "project")).replace("-", "_")
     scope = forge_config.get("scope", "").replace("-", "_")
     skip_envs = set(forge_config.get("skip_env_prefix", ["prd", "prod"]))
@@ -729,16 +820,40 @@ def get_schema_variables(
     # Auto-inject archive_table when operations catalog exists
     if "catalog_operations" in variables:
         fc = forge_config or {}
-        user = re.sub(r"[^a-z0-9]+", "_", getpass.getuser().lower()).strip("_")
-        backups_schema = _apply_pattern(
-            fc.get("schema_pattern", "{user}_{id}"),
-            env=profile.get("env", "dev"),
-            project_id="backups",
-            logical_name="backups",
-            skip_envs=set(fc.get("skip_env_prefix", ["prd", "prod"])),
-            scope=fc.get("scope", ""),
-            user=user,
-        )
+        skip_envs = set(fc.get("skip_env_prefix", ["prd", "prod"]))
+
+        if _uses_v1_placements(fc):
+            # Resolve backups schema from the system_assets → backups family
+            systems = fc.get("system_assets", {})
+            backups_def = systems.get("backups", {})
+            backups_family_name = backups_def.get("placement_family", "")
+            families = fc.get("placements", {}).get("families", {})
+            backups_family = families.get(backups_family_name, {})
+            sch_pattern = backups_family.get("schema_pattern", "{user}_{system}")
+            tokens = {
+                "env": profile.get("env", "dev"),
+                "scope": _sanitize_identity(fc.get("scope", "")),
+                "id": _sanitize_identity(fc.get("id", fc.get("name", "project"))),
+                "user": _current_user_token(),
+                "layer": "operations",
+                "system": _sanitize_identity(backups_def.get("system", "backups")),
+                "namespace": "", "domain": "",
+            }
+            backups_schema = _expand_named_pattern(
+                sch_pattern, tokens=tokens, skip_envs=skip_envs,
+            )
+        else:
+            user = re.sub(r"[^a-z0-9]+", "_", getpass.getuser().lower()).strip("_")
+            backups_schema = _apply_pattern(
+                fc.get("schema_pattern", "{user}_{id}"),
+                env=profile.get("env", "dev"),
+                project_id="backups",
+                logical_name="backups",
+                skip_envs=skip_envs,
+                scope=fc.get("scope", ""),
+                user=user,
+            )
+
         variables["schema_backups"] = backups_schema
         variables["archive_table"] = (
             f"{variables['catalog_operations']}.{backups_schema}._backup_archive"
