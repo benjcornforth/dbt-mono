@@ -469,9 +469,11 @@ def generate_bundle_config(
         sync_include.append("sql/")
     if Path("dist").is_dir():
         sync_include.append("dist/")
-    # Python tasks need the script files; the forge runtime comes from the wheel.
+    # Python tasks need the script files plus the forge runtime source.
     if Path("python").is_dir():
         sync_include.append("python/")
+    if Path("forge").is_dir():
+        sync_include.append("forge/")
     # dbt metadata (schema.yml) needed by build_models() at runtime
     if Path("dbt").is_dir():
         sync_include.append("dbt/")

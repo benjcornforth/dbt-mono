@@ -1937,6 +1937,7 @@ def _compile_lineage_struct(
     *,
     is_agg: bool = False,
     agg_from_cte: bool = False,
+    models: dict[str, dict] | None = None,
 ) -> str:
     """
     Compile static lineage metadata as a named_struct() / jsonb_build_object().
@@ -1959,6 +1960,30 @@ def _compile_lineage_struct(
     contract_id = f"{schema}.{model_name}"
     sources_str = ", ".join(source_names)
 
+    def _source_lineage_sql(source_name: str, alias: str | None = None) -> tuple[str, str, str]:
+        source_models = models or {}
+        prefix = f"{alias}." if alias else ""
+        source_def = source_models.get(source_name)
+
+        if isinstance(source_def, dict):
+            if source_def.get("managed_by"):
+                return (
+                    f"array({prefix}_origin_file)",
+                    f"array({prefix}_inserted_at)",
+                    "cast(null as string)",
+                )
+            return (
+                f"{prefix}_lineage.origin_files",
+                f"{prefix}_lineage.ingested_ats",
+                f"to_json({prefix}_lineage)",
+            )
+
+        return (
+            "cast(array() as array<string>)",
+            "cast(array() as array<timestamp>)",
+            "cast(null as string)",
+        )
+
     # Build origin_files, ingested_ats, and upstream SQL expressions
     # _origin_file and _inserted_at are plain columns on managed_by (raw) tables.
     # Downstream models carry them forward via _lineage array fields.
@@ -1969,31 +1994,47 @@ def _compile_lineage_struct(
         ingested_ats_sql = "_collected_ingested_ats"
         upstream_sql = "cast(null as string)"
     elif is_agg:
-        # Standard agg path: use collect_list inline
-        origin_files_sql = "array_distinct(flatten(collect_list(coalesce(_lineage.origin_files, array(_origin_file)))))"
-        ingested_ats_sql = "array_distinct(flatten(collect_list(coalesce(_lineage.ingested_ats, array(_inserted_at)))))"
+        # Standard agg path: use collect_list inline over the real upstream source type.
+        if is_join:
+            aliases = list(model_def.get("sources", {}).keys())
+            source_pairs = [(alias, model_def["sources"][alias]) for alias in aliases]
+            of_parts = [_source_lineage_sql(src, alias)[0] for alias, src in source_pairs]
+            ia_parts = [_source_lineage_sql(src, alias)[1] for alias, src in source_pairs]
+            combined_of = of_parts[0]
+            for part in of_parts[1:]:
+                combined_of = f"array_union({combined_of}, {part})"
+            combined_ia = ia_parts[0]
+            for part in ia_parts[1:]:
+                combined_ia = f"array_union({combined_ia}, {part})"
+            origin_files_sql = f"array_distinct(flatten(collect_list({combined_of})))"
+            ingested_ats_sql = f"array_distinct(flatten(collect_list({combined_ia})))"
+        elif "source" in model_def:
+            source_origin_sql, source_ingested_sql, _ = _source_lineage_sql(model_def["source"])
+            origin_files_sql = f"array_distinct(flatten(collect_list({source_origin_sql})))"
+            ingested_ats_sql = f"array_distinct(flatten(collect_list({source_ingested_sql})))"
+        else:
+            origin_files_sql = "cast(array() as array<string>)"
+            ingested_ats_sql = "cast(array() as array<timestamp>)"
         upstream_sql = "cast(null as string)"
     elif is_join:
         aliases = list(model_def["sources"].keys())
         # Combine origin_files arrays from all join sides
-        of_parts = [f"coalesce({a}._lineage.origin_files, array({a}._origin_file))" for a in aliases]
+        of_parts = [_source_lineage_sql(model_def["sources"][a], a)[0] for a in aliases]
         origin_files_sql = of_parts[0]
         for p in of_parts[1:]:
             origin_files_sql = f"array_union({origin_files_sql}, {p})"
         # Combine ingested_ats arrays from all join sides
-        ia_parts = [f"coalesce({a}._lineage.ingested_ats, array({a}._inserted_at))" for a in aliases]
+        ia_parts = [_source_lineage_sql(model_def["sources"][a], a)[1] for a in aliases]
         ingested_ats_sql = ia_parts[0]
         for p in ia_parts[1:]:
             ingested_ats_sql = f"array_union({ingested_ats_sql}, {p})"
-        json_parts = [f"coalesce(to_json({a}._lineage), 'null')" for a in aliases]
+        json_parts = [f"coalesce({_source_lineage_sql(model_def['sources'][a], a)[2]}, 'null')" for a in aliases]
         upstream_sql = "concat('[', " + ", ',', ".join(json_parts) + ", ']')"
     elif "source" in model_def:
-        origin_files_sql = "coalesce(_lineage.origin_files, array(_origin_file))"
-        ingested_ats_sql = "coalesce(_lineage.ingested_ats, array(_inserted_at))"
-        upstream_sql = "to_json(_lineage)"
+        origin_files_sql, ingested_ats_sql, upstream_sql = _source_lineage_sql(model_def["source"])
     else:
-        origin_files_sql = "cast(null as array<string>)"
-        ingested_ats_sql = "cast(null as array<timestamp>)"
+        origin_files_sql = "cast(array() as array<string>)"
+        ingested_ats_sql = "cast(array() as array<timestamp>)"
         upstream_sql = "cast(null as string)"
 
     # Build per-column lineage entries
@@ -2215,8 +2256,42 @@ def _compile_pure_sql_query(
                 from_lines.append(f"    FROM {_fq(source)}")
 
         group_cols = model_def.get("group_by", [])
-        inner_col_lines.append("    array_distinct(flatten(collect_list(coalesce(_lineage.origin_files, array(_origin_file))))) as _collected_origin_files")
-        inner_col_lines.append("    array_distinct(flatten(collect_list(coalesce(_lineage.ingested_ats, array(_inserted_at))))) as _collected_ingested_ats")
+        if is_join:
+            aliases = list(model_def.get("sources", {}).keys())
+            join_origin_parts = []
+            join_ingested_parts = []
+            for alias in aliases:
+                source_name = model_def["sources"][alias]
+                source_def = (models or {}).get(source_name)
+                if isinstance(source_def, dict) and source_def.get("managed_by"):
+                    join_origin_parts.append(f"array({alias}._origin_file)")
+                    join_ingested_parts.append(f"array({alias}._inserted_at)")
+                elif isinstance(source_def, dict):
+                    join_origin_parts.append(f"{alias}._lineage.origin_files")
+                    join_ingested_parts.append(f"{alias}._lineage.ingested_ats")
+                else:
+                    join_origin_parts.append("cast(array() as array<string>)")
+                    join_ingested_parts.append("cast(array() as array<timestamp>)")
+            combined_origin = join_origin_parts[0]
+            for part in join_origin_parts[1:]:
+                combined_origin = f"array_union({combined_origin}, {part})"
+            combined_ingested = join_ingested_parts[0]
+            for part in join_ingested_parts[1:]:
+                combined_ingested = f"array_union({combined_ingested}, {part})"
+            inner_col_lines.append(f"    array_distinct(flatten(collect_list({combined_origin}))) as _collected_origin_files")
+            inner_col_lines.append(f"    array_distinct(flatten(collect_list({combined_ingested}))) as _collected_ingested_ats")
+        else:
+            source_name = model_def.get("source")
+            source_def = (models or {}).get(source_name) if source_name else None
+            if isinstance(source_def, dict) and source_def.get("managed_by"):
+                inner_col_lines.append("    array_distinct(flatten(collect_list(array(_origin_file)))) as _collected_origin_files")
+                inner_col_lines.append("    array_distinct(flatten(collect_list(array(_inserted_at)))) as _collected_ingested_ats")
+            elif isinstance(source_def, dict):
+                inner_col_lines.append("    array_distinct(flatten(collect_list(_lineage.origin_files))) as _collected_origin_files")
+                inner_col_lines.append("    array_distinct(flatten(collect_list(_lineage.ingested_ats))) as _collected_ingested_ats")
+            else:
+                inner_col_lines.append("    cast(array() as array<string>) as _collected_origin_files")
+                inner_col_lines.append("    cast(array() as array<timestamp>) as _collected_ingested_ats")
 
         lines.append("WITH _agg AS (")
         lines.append("    SELECT")
@@ -2239,6 +2314,7 @@ def _compile_pure_sql_query(
             model_name, model_def, schema, git_commit, deploy_ts, compute_type, columns, platform,
             is_agg=True,
             agg_from_cte=True,
+            models=models,
         )
         outer_col_lines.append(lineage_sql)
 
@@ -2260,6 +2336,7 @@ def _compile_pure_sql_query(
     lineage_sql = _compile_lineage_struct(
         model_name, model_def, schema, git_commit, deploy_ts, compute_type, columns, platform,
         is_agg=is_agg,
+        models=models,
     )
     col_lines.append(lineage_sql)
 

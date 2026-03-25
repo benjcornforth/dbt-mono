@@ -18,7 +18,6 @@ import hashlib
 import os
 import sys
 import re
-from glob import glob
 from datetime import datetime, timezone
 
 # Databricks runs python_task scripts via exec(compile(f.read(), filename, 'exec')).
@@ -28,13 +27,6 @@ _script_path = os.path.abspath(sys._getframe().f_code.co_filename)
 _files_dir = os.path.dirname(os.path.dirname(_script_path))  # python/ → files/
 if _files_dir not in sys.path:
     sys.path.insert(0, _files_dir)
-_dist_dir = os.path.join(_files_dir, "dist")
-if os.path.isdir(_dist_dir):
-    if _dist_dir not in sys.path:
-        sys.path.insert(0, _dist_dir)
-    for _wheel_path in sorted(glob(os.path.join(_dist_dir, "*.whl"))):
-        if _wheel_path not in sys.path:
-            sys.path.insert(0, _wheel_path)
 
 from forge.type_safe import build_models
 
@@ -110,12 +102,16 @@ def main():
     # Resolved catalog/schema names — baked into the task YAML at deploy time
     catalog_meta = params["catalog_meta"]
     catalog_bronze = params["catalog_bronze"]
-    schema = params["schema_bronze"]  # all layers share the same schema
+    schema_bronze = params["schema_bronze"]
+    schema_meta = params["schema_meta"]
 
-    print(f"📋 Runtime params: catalog_meta={catalog_meta}, catalog_bronze={catalog_bronze}, schema={schema}")
+    print(
+        f"📋 Runtime params: catalog_meta={catalog_meta}, catalog_bronze={catalog_bronze}, "
+        f"schema_bronze={schema_bronze}, schema_meta={schema_meta}"
+    )
 
     # ── 1. Read ingestion config seed from meta catalog ─────
-    config_table = f"{catalog_meta}.{schema}.ingestion_config"
+    config_table = f"{catalog_meta}.{schema_meta}.ingestion_config"
     print(f"📖 Reading ingestion config from {config_table}")
     all_rows = spark.table(config_table).collect()
     print(f"   Found {len(all_rows)} total config rows")
@@ -123,7 +119,7 @@ def main():
     print(f"   {len(configs)} active volume configs: {[r.source_name for r in configs]}")
 
     # ── 2. Read file manifest for dedup ─────────────────────
-    manifest_table = f"{catalog_bronze}.{schema}.file_manifest"
+    manifest_table = f"{catalog_bronze}.{schema_bronze}.file_manifest"
     try:
         existing = set(
             r.file_path
@@ -138,7 +134,7 @@ def main():
 
     # ── 3. For each config, list Volume + ingest new files ──
     for cfg in configs:
-        vol_path = f"/Volumes/{catalog_bronze}/{schema}/{cfg.volume_name}"
+        vol_path = f"/Volumes/{catalog_bronze}/{schema_bronze}/{cfg.volume_name}"
         print(f"\n🔍 [{cfg.source_name}] Listing volume: {vol_path}")
         try:
             files = [
@@ -162,7 +158,7 @@ def main():
 
             try:
                 # ── 4. Read file as DataFrame ───────────────────
-                target = f"{catalog_bronze}.{schema}.{cfg.target_model}"
+                target = f"{catalog_bronze}.{schema_bronze}.{cfg.target_model}"
                 ddl_schema = _build_schema(params, cfg.target_model)
 
                 read_opts = {}
@@ -215,7 +211,7 @@ def main():
                 now = datetime.now(timezone.utc)
 
                 # ── Record in ingest_quarantine (central table) ──
-                ingest_q_table = f"{catalog_meta}.{schema}.ingest_quarantine"
+                ingest_q_table = f"{catalog_meta}.{schema_meta}.ingest_quarantine"
                 q_df = spark.createDataFrame(
                     [{
                         "file_path": f["path"],

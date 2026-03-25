@@ -451,6 +451,7 @@ def _stage_target_support_files(target_root: Path, target_config: dict) -> None:
     _copy_tree_if_exists(_PROJECT_ROOT / "dbt" / "ddl", target_root / "dbt" / "ddl")
     _copy_tree_if_exists(_PROJECT_ROOT / "dbt" / "seeds", target_root / "dbt" / "seeds")
     _copy_tree_if_exists(_PROJECT_ROOT / "python", target_root / "python")
+    _copy_tree_if_exists(_PROJECT_ROOT / "src" / "forge", target_root / "forge")
     _copy_tree_if_exists(_PROJECT_ROOT / "macros", target_root / "macros")
     _copy_file_if_exists(_PROJECT_ROOT / "dbt_project.yml", target_root / "dbt_project.yml")
     generate_profiles_yml(target_config, output_path=target_root / "profiles.yml")

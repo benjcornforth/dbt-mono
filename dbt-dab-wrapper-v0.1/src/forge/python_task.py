@@ -490,21 +490,13 @@ from __future__ import annotations
 
 import os
 import sys
-from glob import glob
 
 # Databricks runs python_task scripts via exec(compile(...)), so add the
-# staged bundle root and bundled wheels explicitly for reliable imports.
+# staged bundle root explicitly for reliable imports.
 _script_path = os.path.abspath(sys._getframe().f_code.co_filename)
 _files_dir = os.path.dirname(os.path.dirname(_script_path))
 if _files_dir not in sys.path:
     sys.path.insert(0, _files_dir)
-_dist_dir = os.path.join(_files_dir, "dist")
-if os.path.isdir(_dist_dir):
-    if _dist_dir not in sys.path:
-        sys.path.insert(0, _dist_dir)
-    for _wheel_path in sorted(glob(os.path.join(_dist_dir, "*.whl"))):
-        if _wheel_path not in sys.path:
-            sys.path.insert(0, _wheel_path)
 
 from forge.python_task import ForgeTask
 
@@ -550,22 +542,14 @@ import hashlib
 import os
 import re
 import sys
-from glob import glob
 from datetime import datetime, timezone
 
 # Databricks runs python_task scripts via exec(compile(...)), so add the
-# staged bundle root and bundled wheels explicitly for reliable imports.
+# staged bundle root explicitly for reliable imports.
 _script_path = os.path.abspath(sys._getframe().f_code.co_filename)
 _files_dir = os.path.dirname(os.path.dirname(_script_path))
 if _files_dir not in sys.path:
     sys.path.insert(0, _files_dir)
-_dist_dir = os.path.join(_files_dir, "dist")
-if os.path.isdir(_dist_dir):
-    if _dist_dir not in sys.path:
-        sys.path.insert(0, _dist_dir)
-    for _wheel_path in sorted(glob(os.path.join(_dist_dir, "*.whl"))):
-        if _wheel_path not in sys.path:
-            sys.path.insert(0, _wheel_path)
 
 from forge.python_task import ForgeTask
 from forge.type_safe import build_models
