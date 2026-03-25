@@ -34,6 +34,75 @@ from pathlib import Path
 from typing import Any
 
 
+_DBT_PROJECT_TEMPLATE = """# =============================================
+# dbt_project.yml
+# =============================================
+# Forge-generated dbt project config.
+# Source of truth lives in forge.yml + dbt/ddl/.
+
+name: '{project_name}'
+version: '0.2.0'
+config-version: 2
+
+profile: '{project_name}'
+
+model-paths: ["dbt/models", "dbt/sources"]
+seed-paths: ["dbt/seeds"]
+test-paths: ["dbt/tests"]
+analysis-paths: ["dbt/analysis"]
+macro-paths: ["macros", "artifacts/runtime/macros"]
+snapshot-paths: ["dbt/snapshots"]
+asset-paths: ["dbt/assets"]
+
+clean-targets:
+    - "dbt/target"
+    - "dbt_packages"
+
+vars:
+    git_commit: "local"
+    compute_type: "serverless"
+    methodology_version: "v1"
+    catalog_bronze: "dev_fd_bronze"
+    catalog_silver: "dev_fd_silver"
+    catalog_meta: "dev_fd_meta"
+    schema_bronze: "ben_sales"
+    schema_silver: "ben_sales"
+    schema_gold: "ben_sales"
+
+seeds:
+    {project_name}:
+        ingestion_config:
+            +database: "{{{{ var('catalog_meta', 'dev_fd_meta') }}}}"
+            +schema: config
+
+models:
+    dbt_forge:
+        +materialized: view
+"""
+
+
+def generate_dbt_project_yml(
+        forge_config: dict[str, Any],
+        output_path: Path | None = None,
+        *,
+        overwrite: bool = True,
+) -> str:
+        """Generate a dbt_project.yml from forge.yml.
+
+        If overwrite is False and the file already exists, it is left untouched.
+        """
+        project_name = forge_config.get("name", "forge_project")
+        text = _DBT_PROJECT_TEMPLATE.format(project_name=project_name)
+
+        if output_path:
+                if output_path.exists() and not overwrite:
+                        return output_path.read_text()
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(text)
+
+        return text
+
+
 # =============================================
 # CONNECTION DETAILS
 # =============================================
@@ -84,6 +153,96 @@ class AssetLocation:
 _DATABRICKSCFG_PATH = Path.home() / ".databrickscfg"
 
 
+def resolve_databrickscfg_path(cfg_path: Path | None = None) -> Path:
+    """Resolve the Databricks config path, honoring DATABRICKS_CONFIG_FILE if set."""
+    if cfg_path is not None:
+        return cfg_path
+    override = os.environ.get("DATABRICKS_CONFIG_FILE")
+    if override:
+        return Path(override).expanduser()
+    return _DATABRICKSCFG_PATH
+
+
+def inspect_databrickscfg_profile(
+    profile_name: str = "DEFAULT",
+    cfg_path: Path | None = None,
+    *,
+    require_http_path: bool = False,
+) -> dict[str, Any]:
+    """Inspect one Databricks profile and report whether required fields are available."""
+    path = resolve_databrickscfg_path(cfg_path)
+    status: dict[str, Any] = {
+        "path": str(path),
+        "profile": profile_name,
+        "exists": path.exists(),
+        "found": False,
+        "host": None,
+        "has_token": False,
+        "has_http_path": False,
+        "has_cluster_id": False,
+        "missing": [],
+    }
+
+    if not path.exists():
+        status["missing"] = ["config_file"]
+        return status
+
+    cfg = configparser.ConfigParser()
+    cfg.read(path)
+    if profile_name not in cfg:
+        status["missing"] = ["profile"]
+        return status
+
+    status["found"] = True
+    creds = read_databrickscfg(profile_name, cfg_path=path)
+    status["host"] = creds.get("host")
+    status["has_token"] = bool(creds.get("token"))
+    status["has_http_path"] = bool(creds.get("http_path"))
+    status["has_cluster_id"] = bool(creds.get("cluster_id"))
+
+    missing: list[str] = []
+    if not creds.get("host"):
+        missing.append("host")
+    if not creds.get("token"):
+        missing.append("token")
+    if require_http_path and not creds.get("http_path"):
+        missing.append("http_path")
+    status["missing"] = missing
+    return status
+
+
+def require_databrickscfg_profile(
+    profile: dict[str, Any],
+    cfg_path: Path | None = None,
+    *,
+    require_http_path: bool = True,
+) -> dict[str, str]:
+    """Fail fast with actionable guidance if a Forge Databricks profile lacks required credentials."""
+    if profile.get("platform", "databricks") != "databricks":
+        return {}
+
+    dbr_profile = profile.get("databricks_profile") or profile.get("_name", "DEFAULT")
+    status = inspect_databrickscfg_profile(
+        dbr_profile,
+        cfg_path=cfg_path,
+        require_http_path=require_http_path,
+    )
+    if not status["missing"]:
+        return read_databrickscfg(dbr_profile, cfg_path=resolve_databrickscfg_path(cfg_path))
+
+    path = status["path"]
+    missing = ", ".join(status["missing"])
+    raise RuntimeError(
+        "Databricks credentials are not available for this Forge profile.\n"
+        f"  Forge profile: {profile.get('_name', '(unknown)')}\n"
+        f"  Databricks profile: {dbr_profile}\n"
+        f"  Config path: {path}\n"
+        f"  Missing: {missing}\n"
+        f"  Fix: update ~/.databrickscfg profile [{dbr_profile}] with the missing fields\n"
+        f"  Then validate with: forge auth --dbt --profile {profile.get('_name', dbr_profile)}"
+    )
+
+
 def read_databrickscfg(
     profile_name: str = "DEFAULT",
     cfg_path: Path | None = None,
@@ -95,13 +254,13 @@ def read_databrickscfg(
     Raises FileNotFoundError if the config file is missing.
     Raises KeyError if the profile doesn't exist.
     """
-    path = cfg_path or _DATABRICKSCFG_PATH
+    path = resolve_databrickscfg_path(cfg_path)
 
     if not path.exists():
         raise FileNotFoundError(
             f"Databricks config not found at {path}.\n"
-            f"Create it with: databricks configure --profile {profile_name}\n"
-            f"Or set env vars: DBT_DATABRICKS_HOST, DBT_DATABRICKS_TOKEN"
+                f"Create or update profile [{profile_name}] in ~/.databrickscfg.\n"
+                f"Then validate with: forge auth --dbt --profile {profile_name}"
         )
 
     cfg = configparser.ConfigParser()
@@ -133,7 +292,7 @@ def read_databrickscfg(
 
 def list_databrickscfg_profiles(cfg_path: Path | None = None) -> list[str]:
     """List available profile names from ~/.databrickscfg."""
-    path = cfg_path or _DATABRICKSCFG_PATH
+    path = resolve_databrickscfg_path(cfg_path)
     if not path.exists():
         return []
     cfg = configparser.ConfigParser()
@@ -945,28 +1104,6 @@ def generate_profiles_yml(
     if output_path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(text)
-
-    # Keep dbt_project.yml profile: and name: in sync with forge.yml name
-    dbt_project_path = (output_path.parent if output_path else Path(".")) / "dbt_project.yml"
-    if dbt_project_path.exists():
-        import re
-        dbt_text = dbt_project_path.read_text()
-        updated = re.sub(
-            r"^profile:\s*['\"]?[\w-]+['\"]?",
-            f"profile: '{project_name}'",
-            dbt_text,
-            count=1,
-            flags=re.MULTILINE,
-        )
-        updated = re.sub(
-            r"^name:\s*['\"]?[\w-]+['\"]?",
-            f"name: '{project_name}'",
-            updated,
-            count=1,
-            flags=re.MULTILINE,
-        )
-        if updated != dbt_text:
-            dbt_project_path.write_text(updated)
 
     return text
 

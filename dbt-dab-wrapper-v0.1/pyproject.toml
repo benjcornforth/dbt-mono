@@ -42,7 +42,7 @@ pydantic = ">=2.0"        # type-safe models for forge codegen + ingestion valid
 # =============================================
 # CLI Tools (installed separately)
 # =============================================
-# databricks-cli: Install via official installer
+# Databricks CLI: install the modern CLI with `bundle` and `auth` commands
 # curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
 
 # =============================================

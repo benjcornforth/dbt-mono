@@ -9,16 +9,25 @@ You edit two files. Forge generates everything else: SQL models, schema tests, D
 ## Quick Start
 
 ```bash
-# 1. Clone and setup
+# 1. Clone and install
 git clone <repo>
 cd dbt-forge
-./setup.sh
+poetry install
+curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
 
-# 2. Configure Databricks
-databricks auth login
+# 2. Verify you have the modern Databricks CLI
+which databricks
+databricks auth -h
+databricks bundle --help
 
-# 3. Define your tables under dbt/ddl/<layer>/<section>/
-# 4. Deploy
+# 3. Configure Databricks
+databricks auth login --host <workspace-url>
+poetry run forge auth --cli --profile dev
+poetry run forge auth --dbt --profile dev
+
+# 4. Define your tables under dbt/ddl/<layer>/<section>/
+# 5. Deploy
 poetry run forge build --target dev
 cd artifacts/targets/dev && databricks bundle deploy --target dev
 ```
@@ -35,18 +44,7 @@ A CLI that sits on top of **dbt** and **Databricks Asset Bundles (DAB)**. It tur
 
 ## Installation
 
-### Automated Setup (Recommended)
-
-```bash
-./setup.sh
-```
-
-This installs:
-- Python dependencies via Poetry
-- Databricks CLI (new version with bundle support)
-- Verifies all installations
-
-### Manual Setup
+### Install Tooling
 
 ```bash
 # Install Python dependencies
@@ -54,10 +52,13 @@ poetry install
 
 # Install Databricks CLI
 curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
 
-# Verify
+# Verify modern Databricks CLI support
 poetry run python --version
-databricks --version
+which databricks
+databricks auth -h
+databricks bundle --help
 ```
 
 ---
@@ -66,7 +67,9 @@ databricks --version
 
 ```bash
 # 1. Authenticate with Databricks
-databricks auth login
+databricks auth login --host <workspace-url>
+poetry run forge auth --cli --profile dev
+poetry run forge auth --dbt --profile dev
 
 # 2. Define your assets in dbt/ddl/<layer>/<section>/
 #    (models, UDFs, seeds, volumes)
@@ -79,6 +82,8 @@ cd artifacts/targets/dev && databricks bundle deploy --target dev
 ```
 
 That's the core loop. Edit `dbt/ddl/` → `forge build --target <env>` → deploy from `artifacts/targets/<env>/`.
+
+Databricks auth guidance lives in `docs/DATABRICKS_AUTH.md`.
 
 ### Atomic Commands
 

@@ -88,8 +88,9 @@ profiles:
 To connect to Databricks:
 
 ```bash
-databricks configure --profile DEFAULT
-# Enter your workspace URL and token
+databricks auth login --host <workspace-url>
+poetry run forge auth --cli --profile dev
+poetry run forge auth --dbt --profile dev
 ```
 
 ---

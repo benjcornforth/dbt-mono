@@ -43,7 +43,7 @@ from forge.graph import (
 from forge.project_paths import DEFAULT_SDK_OUTPUT, GENERATED_CODE_ROOT, PROJECT_CODE_ROOT, PROJECT_PYTHON_DIR
 from forge.project_spec import ProjectSpec, load_project_spec
 from forge.type_safe import build_models, generate_sdk_file
-from forge.workflow import build_workflow, build_domain_workflows, generate_bundle_config, render_workflows_mermaid, run_bundle_command
+from forge.workflow import build_workflow, build_domain_workflows, generate_bundle_config, render_workflows_mermaid, run_bundle_command, inspect_databricks_cli
 from forge.teardown import (
     build_teardown_plan,
     build_backup,
@@ -70,9 +70,12 @@ from forge.compute_resolver import (
     resolve_model_schema,
     _expand_env_prefix,
     generate_profiles_yml,
+    generate_dbt_project_yml,
     get_schema_variables,
     read_databrickscfg,
     list_databrickscfg_profiles,
+    inspect_databrickscfg_profile,
+    require_databrickscfg_profile,
 )
 from forge.runtime_macros import ensure_builtin_runtime_macros
 
@@ -351,6 +354,81 @@ def _build_dbt_env(conn) -> dict[str, str]:
     return dbt_env
 
 
+def _probe_databricks_cli_profile(profile_name: str) -> tuple[bool, str]:
+    cli_info = inspect_databricks_cli()
+    if not cli_info["installed"]:
+        return False, "Databricks CLI not found in PATH. Install the modern CLI with bundle/auth support."
+    if not cli_info["supports_auth"]:
+        version = cli_info.get("version") or "unknown"
+        return False, f"Installed Databricks CLI is legacy or incomplete ({version}) and does not support unified auth inspection. Upgrade to the modern Databricks CLI."
+    try:
+        result = subprocess.run(
+            [cli_info["path"], "auth", "env", "--profile", profile_name],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return True, (result.stdout or "").strip()
+    except FileNotFoundError:
+        return False, "Databricks CLI not found in PATH."
+    except subprocess.CalledProcessError as exc:
+        output = (exc.stderr or exc.stdout or "").strip()
+        if "No such command 'auth'" in output:
+            return False, "Installed Databricks CLI is legacy and does not support unified auth inspection. Upgrade to Databricks CLI 0.205+."
+        return False, output or "Databricks CLI rejected the profile."
+
+
+def _print_databricks_auth_status(
+    forge_profile_name: str,
+    prof: dict,
+    *,
+    mode: str,
+) -> bool:
+    if prof.get("platform", "databricks") != "databricks":
+        typer.echo(f"  · {forge_profile_name}: skipped (platform={prof.get('platform')})")
+        return True
+
+    dbr_profile = prof.get("databricks_profile") or prof.get("_name", forge_profile_name)
+    status = inspect_databrickscfg_profile(dbr_profile, require_http_path=(mode == "dbt"))
+    typer.echo(f"  · {forge_profile_name} -> {dbr_profile}")
+    typer.echo(f"      config: {status['path']}")
+
+    if not status["exists"]:
+        typer.echo("      ❌ ~/.databrickscfg not found")
+        typer.echo(f"      Fix: create profile [{dbr_profile}] in ~/.databrickscfg")
+        return False
+
+    if not status["found"]:
+        typer.echo("      ❌ profile not found in ~/.databrickscfg")
+        typer.echo(f"      Fix: create profile [{dbr_profile}] in ~/.databrickscfg")
+        return False
+
+    typer.echo(f"      host: {status['host'] or '(missing)'}")
+    if mode == "cli":
+        ok, detail = _probe_databricks_cli_profile(dbr_profile)
+        if ok:
+            typer.echo("      ✅ ready for Databricks CLI and bundle operations")
+            return True
+        typer.echo("      ❌ Databricks CLI auth failed")
+        if detail:
+            typer.echo(f"      Detail: {detail.splitlines()[0]}")
+        typer.echo(f"      Check with: databricks auth env --profile {dbr_profile}")
+        return False
+
+    typer.echo(f"      token: {'present' if status['has_token'] else 'missing'}")
+    typer.echo(f"      http_path: {'present' if status['has_http_path'] else 'missing'}")
+    if status["has_cluster_id"]:
+        typer.echo("      cluster_id: present")
+
+    if status["missing"]:
+        typer.echo(f"      ❌ missing fields: {', '.join(status['missing'])}")
+        typer.echo(f"      Fix: update ~/.databrickscfg profile [{dbr_profile}] with the missing fields")
+        return False
+
+    typer.echo("      ✅ ready for local dbt runtime")
+    return True
+
+
 def _build_dbt_runtime_vars(config: dict, prof: dict, conn) -> tuple[dict[str, str], list[str]]:
     schema_vars = get_schema_variables(prof, config)
     dbt_vars = {
@@ -612,7 +690,7 @@ def _stage_target_support_files(target_root: Path, target_config: dict) -> None:
     _copy_tree_if_exists(_PROJECT_ROOT / "dbt" / "seeds", target_root / "dbt" / "seeds")
     _copy_tree_if_exists(_PROJECT_ROOT / "src" / "forge", target_root / "forge")
     _copy_tree_if_exists(_PROJECT_ROOT / "macros", target_root / "macros")
-    _copy_file_if_exists(_PROJECT_ROOT / "dbt_project.yml", target_root / "dbt_project.yml")
+    generate_dbt_project_yml(target_config, output_path=target_root / "dbt_project.yml", overwrite=True)
     ensure_builtin_runtime_macros(target_root)
     generate_profiles_yml(target_config, output_path=target_root / "profiles.yml")
     (target_root / "forge.yml").write_text(
@@ -925,9 +1003,33 @@ def setup(
 
     typer.echo("🔗 Forge runtime macros are generated under artifacts/runtime/macros/; macros/ is reserved for user-authored overrides")
     typer.echo("")
-    typer.echo("💡 Databricks auth — choose one:")
-    typer.echo("   a) databricks configure --profile DEFAULT   (recommended — zero env vars)")
-    typer.echo("   b) export DBT_DATABRICKS_HOST=... DBT_DATABRICKS_TOKEN=...")
+    cli_info = inspect_databricks_cli()
+    if not cli_info["installed"]:
+        typer.echo("⚠️ Modern Databricks CLI not found.")
+        typer.echo("   Install with:")
+        typer.echo("   curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh")
+        typer.echo("   Then validate with:")
+        typer.echo("   databricks auth -h")
+        typer.echo("   databricks bundle --help")
+    elif not cli_info["supports_bundle"] or not cli_info["supports_auth"]:
+        typer.echo(f"⚠️ Legacy Databricks CLI detected: {cli_info.get('version', 'unknown')}")
+        typer.echo("   Forge requires the modern CLI with both `auth` and `bundle` commands.")
+        typer.echo("   Upgrade with:")
+        typer.echo("   curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh")
+    else:
+        typer.echo(f"✅ Databricks CLI ready: {cli_info.get('version', 'unknown')} ({cli_info.get('path')})")
+
+    shell_cli = shutil.which("databricks")
+    if cli_info["installed"] and shell_cli and cli_info.get("path") and shell_cli != cli_info["path"]:
+        typer.echo(f"⚠️ Shell PATH resolves `databricks` to {shell_cli}")
+        typer.echo(f"   Forge will use {cli_info['path']}")
+        typer.echo(f"   Put {Path(cli_info['path']).parent} earlier in PATH to keep shell commands consistent.")
+
+    typer.echo("")
+    typer.echo("💡 Databricks auth:")
+    typer.echo("   databricks auth login --host <workspace-url>")
+    typer.echo("   forge auth --cli --profile dev")
+    typer.echo("   forge auth --dbt --profile dev")
     typer.echo("")
     typer.echo("🎉 Setup complete! Now run:  forge deploy")
 
@@ -954,6 +1056,8 @@ def deploy(
     selected_profile = _require_profile_name(config, command_name="forge deploy", profile=profile, target=env)
     typer.echo(f"🚀 Deploying to {selected_profile}...")
     prof = resolve_profile(config, profile_name=selected_profile)
+    if local and prof.get("platform", "databricks") == "databricks":
+        require_databrickscfg_profile(prof, require_http_path=True)
     conn = resolve_connection(prof)
 
     typer.echo(f"  📋 Profile: {prof['_name']} ({conn.platform})")
@@ -2041,6 +2145,8 @@ def dev_up(
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
     prof = resolve_profile(config, profile_name="dev")
+    if prof.get("platform", "databricks") == "databricks":
+        require_databrickscfg_profile(prof, require_http_path=True)
     base_schema = prof.get("schema", "silver")
 
     import getpass
@@ -2159,6 +2265,8 @@ def dev_down(
 
     config = yaml.safe_load(CONFIG_FILE.read_text())
     prof = resolve_profile(config, profile_name="dev")
+    if prof.get("platform", "databricks") == "databricks":
+        require_databrickscfg_profile(prof, require_http_path=True)
     base_schema = prof.get("schema", "silver")
 
     import getpass
@@ -2171,20 +2279,76 @@ def dev_down(
     catalog = prof.get("catalog", "main")
     drop_sql = f"DROP SCHEMA IF EXISTS {catalog}.{dev_schema} CASCADE"
 
+    target_root, _, _ = _prepare_target_project("dev", config)
+
     try:
-        ensure_builtin_runtime_macros(Path.cwd())
-        subprocess.run(
-            ["dbt", "run-operation", "run_query", "--args",
-             yaml.dump({"sql": drop_sql}),
-             "--project-dir", ".", "--target", "dev"],
-            check=True, capture_output=True,
-        )
+        with _pushd(target_root):
+            ensure_builtin_runtime_macros(Path.cwd())
+            subprocess.run(
+                ["dbt", "run-operation", "run_query", "--args",
+                 yaml.dump({"sql": drop_sql}),
+                 "--project-dir", ".", "--profiles-dir", ".", "--target", "dev"],
+                check=True, capture_output=True,
+            )
         typer.echo(f"  ✅ Schema {dev_schema} dropped")
     except (FileNotFoundError, subprocess.CalledProcessError):
         typer.echo(f"  ⚠️  Could not auto-drop schema. Run manually:")
         typer.echo(f"     {drop_sql}")
 
     typer.echo(f"🎉 Dev environment torn down.")
+
+
+@app.command(name="auth")
+def auth_cmd(
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Forge profile to validate"),
+    cli: bool = typer.Option(False, "--cli", help="Validate Databricks CLI and bundle auth readiness"),
+    dbt: bool = typer.Option(False, "--dbt", help="Validate local dbt runtime readiness"),
+):
+    """forge auth → validate Databricks CLI auth and local dbt runtime readiness"""
+    if not CONFIG_FILE.exists():
+        typer.echo("❌ No forge.yml found. Run 'forge setup' first!")
+        raise typer.Exit(1)
+
+    config = yaml.safe_load(CONFIG_FILE.read_text())
+    forge_profiles = config.get("profiles", {})
+
+    if forge_profiles:
+        if profile and profile not in forge_profiles:
+            typer.echo(f"❌ Unknown profile '{profile}'.")
+            typer.echo(f"   Available profiles: {', '.join(forge_profiles.keys())}")
+            raise typer.Exit(1)
+        selected_names = [profile] if profile else list(forge_profiles.keys())
+    else:
+        selected_names = [profile or resolve_profile(config).get("_name", "DEFAULT")]
+
+    requested_modes = []
+    if cli:
+        requested_modes.append(("cli", "Databricks CLI / bundle auth"))
+    if dbt:
+        requested_modes.append(("dbt", "local dbt runtime"))
+    if not requested_modes:
+        requested_modes = [
+            ("cli", "Databricks CLI / bundle auth"),
+            ("dbt", "local dbt runtime"),
+        ]
+
+    failures = 0
+    for mode_name, mode_label in requested_modes:
+        typer.echo(f"🔐 Databricks credential status: {mode_label}")
+        typer.echo("")
+
+        for name in selected_names:
+            prof = resolve_profile(config, profile_name=name if forge_profiles else None)
+            ok = _print_databricks_auth_status(name, prof, mode=mode_name)
+            if not ok:
+                failures += 1
+            typer.echo("")
+
+    if failures:
+        typer.echo("Guide: docs/DATABRICKS_AUTH.md")
+        raise typer.Exit(1)
+
+    typer.echo("All checked Forge profiles passed the requested Databricks auth checks.")
 
 
 # =============================================
@@ -2241,6 +2405,16 @@ def profiles_cmd(
             typer.echo(f"      env: {env_tag}")
         if dbr_ref:
             typer.echo(f"      databricks_profile: {dbr_ref}")
+
+        auth_status = inspect_databrickscfg_profile(dbr_ref or name, require_http_path=show_connection or profile == name)
+        if auth_status["exists"] and auth_status["found"] and not auth_status["missing"]:
+            typer.echo("      dbt_auth: ~/.databrickscfg ready")
+        elif auth_status["exists"] and auth_status["found"]:
+            typer.echo(f"      dbt_auth: ~/.databrickscfg missing {', '.join(auth_status['missing'])}")
+        elif auth_status["exists"]:
+            typer.echo("      dbt_auth: ~/.databrickscfg profile missing")
+        else:
+            typer.echo("      dbt_auth: ~/.databrickscfg not found")
 
         # Show schemas/catalogs mapping (expanded from env: if needed)
         schemas_map = expanded.get("schemas", {})

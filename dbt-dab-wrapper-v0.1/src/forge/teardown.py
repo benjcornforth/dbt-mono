@@ -26,7 +26,6 @@
 #     ├── dbt/ddl/                    # authored DDL source of truth
 #     ├── dbt/project/                # authored project-specific Python
 #     ├── macros/                     # local macro source
-#     ├── dbt_project.yml             # dbt project config
 #     └── BACKUP_manifest.yml         # backup metadata
 #
 # Restore:
@@ -147,7 +146,7 @@ class TeardownPlan:
                 } if self.archive_table else None,
                 "snapshot": {
                     "directory": self.snapshot_dir,
-                    "contents": "forge.yml, graph.json, dbt/ddl, dbt/project, macros, dbt_project.yml",
+                    "contents": "forge.yml, graph.json, dbt/ddl, dbt/project, macros",
                     "note": "Complete project state captured for forge restore",
                 } if self.snapshot_dir else None,
                 "removes": [
@@ -230,7 +229,7 @@ class TeardownPlan:
 
         if self.snapshot_dir:
             lines.append(f"  📸 SNAPSHOTS all assets to: {self.snapshot_dir}")
-            lines.append(f"     (forge.yml, graph, dbt/ddl, dbt/project, macros, dbt_project.yml)")
+            lines.append(f"     (forge.yml, graph, dbt/ddl, dbt/project, macros)")
 
         lines.append("")
         tables = [a.name for a in self.preserves if a.asset_type == "table"]
@@ -761,9 +760,6 @@ def collect_snapshot_files(forge_config: dict) -> list[dict[str, str]]:
     _append_tree(Path("dbt") / "ddl")
     _append_tree(Path("dbt") / "project")
     _append_tree(Path("macros"))
-
-    if Path("dbt_project.yml").exists():
-        snapshot_files.append({"src": "dbt_project.yml", "dst": "dbt_project.yml"})
 
     return snapshot_files
 

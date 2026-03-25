@@ -616,6 +616,69 @@ def _check_command_exists(command: str) -> bool:
     import shutil
     return shutil.which(command) is not None
 
+def inspect_databricks_cli() -> dict[str, Any]:
+    """Inspect the installed Databricks CLI and report whether modern auth/bundle commands are available."""
+    import os
+    import shutil
+    import subprocess
+
+    cli_candidates = [
+        os.path.expanduser("~/.local/bin/databricks"),
+        os.path.expanduser("~/.local/bin/databricks-new"),
+        "/usr/local/bin/databricks",
+        "databricks",
+    ]
+
+    seen: set[str] = set()
+    installed: list[dict[str, Any]] = []
+
+    def _run(candidate: str, args: list[str]) -> tuple[bool, str]:
+        try:
+            result = subprocess.run(
+                [candidate] + args,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            output = ((result.stdout or "") + (result.stderr or "")).strip()
+            return result.returncode == 0, output
+        except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.CalledProcessError):
+            return False, ""
+
+    for candidate in cli_candidates:
+        resolved = shutil.which(candidate) if candidate == "databricks" else candidate
+        if not resolved or resolved in seen or not os.path.exists(resolved):
+            continue
+        seen.add(resolved)
+
+        _, version_output = _run(resolved, ["--version"])
+        supports_bundle, _ = _run(resolved, ["bundle", "--help"])
+        supports_auth, _ = _run(resolved, ["auth", "--help"])
+        installed.append({
+            "installed": True,
+            "path": resolved,
+            "version": version_output.splitlines()[0] if version_output else "unknown",
+            "supports_bundle": supports_bundle,
+            "supports_auth": supports_auth,
+        })
+
+    if not installed:
+        return {
+            "installed": False,
+            "path": None,
+            "version": None,
+            "supports_bundle": False,
+            "supports_auth": False,
+        }
+
+    for item in installed:
+        if item["supports_bundle"] and item["supports_auth"]:
+            return item
+    for item in installed:
+        if item["supports_bundle"]:
+            return item
+    return installed[0]
+
 
 # =============================================
 # CUSTOM TASKS – user-defined sql/python tasks
@@ -634,9 +697,8 @@ def load_custom_tasks(forge_config: dict) -> list[dict]:
                     - task_key: my_api_pull
                         python_task: python/my_api_pull.py
                         stage: ingest
-                        config:
-                            timeout_seconds: 7200
-
+                    "Modern Databricks CLI not found. Forge requires the CLI with both `bundle` and `auth` commands.\n"
+                    "Install with:\n"
     Returns list of task dicts with keys:
             task_key, task_type, file, stage, depends_on, config.
     """
