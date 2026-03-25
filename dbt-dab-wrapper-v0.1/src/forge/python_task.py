@@ -518,8 +518,8 @@ Stage: ingest
 Template: ingest_from_volume
 
 Ingests files from a Unity Catalog Volume into raw tables.
-Driven by the ingestion_config seed (dbt/ddl/meta/seeds/) loaded
-into the meta catalog by `dbt seed`.
+Driven by the ingestion_config seed (dbt/ddl/meta/seeds/) compiled
+into the meta catalog during setup.
 Tracks every file in the file_manifest table (per-domain, managed_by: python)
 defined in dbt/ddl/bronze/models/.
 Pydantic validation is provided by forge codegen (sdk/models.py).
@@ -540,7 +540,7 @@ def main():
     models = build_models()
     domain = task.config.get("domain", spark.conf.get("forge.domain", ""))
 
-    # ── 1. Read ingestion config seed from meta catalog ─────
+    # ── 1. Read ingestion config table from meta catalog ─────
     config_table = task.table(
         "ingestion_config", {{"catalog": "meta", "schema": "config"}}
     )

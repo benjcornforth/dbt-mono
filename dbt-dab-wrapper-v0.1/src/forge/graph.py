@@ -1632,6 +1632,64 @@ def render_mermaid(
     return "\n".join(lines)
 
 
+def render_current_table_relationships_mermaid(
+    graph: dict,
+    direction: str = "LR",
+) -> str:
+    """Render only direct relationships between current tables."""
+    lines = [f"flowchart {direction}"]
+
+    contracts = graph.get("contracts", {})
+    edges = graph.get("edges", [])
+
+    current_table_ids = {
+        cid
+        for cid, contract in contracts.items()
+        if contract.get("dataset", {}).get("type") in {"model", "table", "view", "incremental"}
+        and not set(contract.get("tags", [])) & {"quarantine", "prior_version", "auto-generated"}
+        and not contract.get("dataset", {}).get("name", "").endswith("_v_previous")
+    }
+
+    relationship_edges = [
+        edge
+        for edge in edges
+        if edge.get("type") == "ref"
+        and edge.get("from") in current_table_ids
+        and edge.get("to") in current_table_ids
+    ]
+
+    connected_ids = {
+        edge[side]
+        for edge in relationship_edges
+        for side in ("from", "to")
+    } or current_table_ids
+
+    node_ids: dict[str, str] = {}
+    used_node_ids: set[str] = set()
+
+    for cid in sorted(connected_ids):
+        base_id = contracts[cid]["dataset"]["name"].replace("-", "_").replace(".", "_")
+        candidate = base_id
+        suffix = 2
+        while candidate in used_node_ids:
+            candidate = f"{base_id}_{suffix}"
+            suffix += 1
+        node_ids[cid] = candidate
+        used_node_ids.add(candidate)
+
+    for cid in sorted(connected_ids):
+        name = contracts[cid]["dataset"]["name"]
+        safe_id = node_ids[cid]
+        lines.append(f'    {safe_id}["{name}"]')
+
+    for edge in relationship_edges:
+        src = node_ids[edge["from"]]
+        tgt = node_ids[edge["to"]]
+        lines.append(f"    {src} --> {tgt}")
+
+    return "\n".join(lines)
+
+
 # =============================================
 # EXPORT: ODCS INDIVIDUAL CONTRACTS
 # =============================================

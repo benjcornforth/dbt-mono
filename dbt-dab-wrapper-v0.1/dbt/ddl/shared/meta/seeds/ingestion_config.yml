@@ -2,17 +2,13 @@
 # One row per inbound data source. The Python ingestion task
 # reads this table to discover volumes, file patterns and targets.
 #
-# Loaded by `dbt seed` from dbt/seeds/ingestion_config.csv
+# Authored fully in DDL YAML and compiled into setup SQL by Forge.
 # Lives in the META catalog — shared across all domains.
 # forge codegen generates a Pydantic class: IngestionConfig
 seeds:
   ingestion_config:
     description: "File-matching rules for Volume ingestion"
     namespace: config
-    origin:
-      type: seed
-      path: dbt/seeds/ingestion_config.csv
-      format: csv
     columns:
       config_id:      { type: int, required: true, unique: true, description: "Unique config identifier" }
       ingest_type:    { type: string, required: true, description: "Discriminator: volume | api | kafka | jdbc | sftp" }
@@ -24,3 +20,24 @@ seeds:
       has_header:     { type: boolean, description: "Whether CSV has a header row" }
       delimiter:      { type: string, description: "CSV delimiter character" }
       active:         { type: boolean, description: "Toggle rule on/off" }
+    rows:
+      - config_id: 1
+        ingest_type: volume
+        source_name: customer_feed
+        target_model: raw_customers
+        volume_name: landing
+        file_regex: ^raw_customers.*\.csv$
+        file_format: csv
+        has_header: true
+        delimiter: ","
+        active: true
+      - config_id: 2
+        ingest_type: volume
+        source_name: order_feed
+        target_model: raw_orders
+        volume_name: landing
+        file_regex: ^raw_orders.*\.csv$
+        file_format: csv
+        has_header: true
+        delimiter: ","
+        active: true

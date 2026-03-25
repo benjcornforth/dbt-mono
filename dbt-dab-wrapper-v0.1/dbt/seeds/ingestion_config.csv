@@ -1,3 +1,0 @@
-config_id,ingest_type,source_name,target_model,volume_name,file_regex,file_format,has_header,delimiter,active
-1,volume,customer_feed,raw_customers,landing,"^raw_customers.*\.csv$",csv,true,",",true
-2,volume,order_feed,raw_orders,landing,"^raw_orders.*\.csv$",csv,true,",",true

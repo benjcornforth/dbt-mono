@@ -33,6 +33,7 @@ from forge.graph import (
     build_graph,
     diff_graphs,
     render_mermaid,
+    render_current_table_relationships_mermaid,
     save_graph,
     load_graph,
     export_individual_contracts,
@@ -1442,7 +1443,9 @@ def visual_docs(
     graph = build_graph(config)
     workflows = build_domain_workflows(config, graph, sql_mode=True)
     pipeline_markdown = _render_mermaid_markdown([("Pipeline Workflow", render_workflows_mermaid(workflows))])
-    table_lineage_markdown = _render_mermaid_markdown([("Asset Graph", render_mermaid(graph))])
+    table_lineage_markdown = _render_mermaid_markdown([
+        ("Current Table Relationships", render_current_table_relationships_mermaid(graph))
+    ])
 
     ddl_path = _resolve_ddl(DDL_DEFAULT)
     dbt_dir = ddl_path.parent if ddl_path.is_file() else ddl_path.parent
